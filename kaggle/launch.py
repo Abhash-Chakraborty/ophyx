@@ -39,6 +39,7 @@ def main():
     ap.add_argument("--timeout", type=int, default=12 * 3600)
     ap.add_argument("--datasets", nargs="*", default=[])
     ap.add_argument("--kernel-sources", nargs="*", default=[])
+    ap.add_argument("--include", nargs="*", default=[], help="files prepended before the script, in order")
     ap.add_argument("--no-internet", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
@@ -46,10 +47,14 @@ def main():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     cfg = json.loads(a.config)
     build = tempfile.mkdtemp(prefix=f"{a.name}-")
+    src = ""
+    for inc in a.include:
+        with open(os.path.join(root, inc)) as f:
+            src += f.read() + "\n\n"
     with open(os.path.join(root, a.script)) as f:
-        src = f.read()
+        src += f.read()
     with open(os.path.join(build, "main.py"), "w") as f:
-        f.write(f"CONFIG = {json.dumps(cfg)}\n" + src)
+        f.write(f"CONFIG = {cfg!r}\n" + src)
     meta = {
         "id": f"{USER}/{a.name}",
         "title": a.name,
