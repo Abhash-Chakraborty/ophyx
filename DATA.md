@@ -26,7 +26,7 @@ best tier is repeated and the weakest tier is left out.
 | Bucket | Tier | Unique tokens | Epochs | Training tokens | Share |
 |---|---|---|---|---|---|
 | Verified synthetic (our own textbooks, exercises, design-as-code) | A | ~0.25B | 4 | ~1.0B | 10% |
-| Rewritten code and ready-made verified sets (SwallowCode, OpenCoder annealing, KodCode) | A | ~1.3B | 2 | ~2.6B | 26% |
+| Rewritten code and ready-made verified sets (OpenCoder annealing; our own rewrites) | A | ~1.3B | 2 | ~2.6B | 26% |
 | Curated repos and top PyPI packages, repo-level | A | ~0.8B | 2 | ~1.6B | 16% |
 | Python docs, PEPs, stdlib, docs of top packages | A | ~0.15B | 4 | ~0.6B | 6% |
 | Edu-filtered Python files | B | ~2.2B | 1 | ~2.2B | 22% |
@@ -353,10 +353,11 @@ docstrings, make it self-contained, improve the algorithm) beats filtering alone
 budget. It's the most efficient upgrade available, because it turns existing tier B data into
 tier A instead of generating from nothing.
 
-- Use SwallowCode itself as the main rewritten bucket, after our filters, scorer and
-  decontamination.
-- Rewrite our own curated-repo files only where they score in the middle band (good ideas, weak
-  style), and only as much as spare free compute allows. SwallowCode already covers the volume. Top files stay as written; low files are dropped.
+- SwallowCode itself is not used (decision of 10 October, below). We do our own rewrites with
+  gpt-oss-120b (Apache-2.0) on the Groq and Cerebras free tiers, plus the free Nemotron models on
+  the Nara router.
+- Rewrite files that score in the middle band (good ideas, weak style), Stack-Edu first, as much
+  as free API quota allows. Top files stay as written; low files are dropped.
 - Keep behaviour: when the file has tests (verified repos), the rewrite must pass them. Otherwise
   it must parse, pass ruff, and keep the same public names and signatures.
 - Never rewrite in a way that loses the repo structure. Rewritten files go into the file-level
@@ -403,6 +404,19 @@ Built during post-training from the model's own outputs:
   correctness, not just syntax.
 
 ## Licences and ethics
+
+Decided 10 October 2026:
+
+- SwallowCode is excluded. It's under the Llama 3.3 licence, which would require the released
+  model's name to start with "Llama" and to carry "Built with Llama".
+- KodCode is excluded. It's CC BY-NC 4.0 (non-commercial), which clashes with an Apache-2.0
+  release. OpenCoder's MIT-licensed SFT sets and our own verified exercises cover the same ground.
+- Stack-Edu: only files whose `license_type` is `permissive` and whose detected licences are all
+  on the allowlist. That's 16.7% of its Python rows; "no_license" files are dropped.
+- Teacher models for synthetic data and rewrites: open-weight models whose licences allow training
+  on outputs (gpt-oss, Nemotron, Qwen). No closed-model outputs (OpenAI, Anthropic, Google), even
+  through a reseller.
+
 
 - Code: permissive allowlist only, confirmed per file. Track it per document so the data card can
   state exact numbers.
