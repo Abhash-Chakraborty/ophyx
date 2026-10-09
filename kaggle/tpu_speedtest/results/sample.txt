@@ -1,0 +1,45 @@
+def fibonacci(n):
+    """Return the n-th Fibonacci number."""
+
+@overload
+def fibonacci(n):
+    """Return the n-th Fibonacci number."""
+
+@overload
+def fibonacci(n):
+    """Return the n-th Fibonacci number."""
+
+@overload
+def fibonacci(n):
+    """Return the n-th Fibonacci number."""
+
+@overload
+def fibonacci(n):
+    """Return the n-th Fibonacci number."""
+
+@overload
+def fibonacci(n):
+    """Return the n-th Fibonacci number."""
+
+@overload
+def fibonacci(n):
+    """Return the n-th Fibonacci number."""
+
+@overload
+def fibonacci(n):
+    """Return the n-th Fibonacci number."""
+
+@overload
+def fibonacci(n):
+    """Return the n-th Fibonacci number."""
+
+@overload
+def fibonacci(n):
+    """Return the n-th Fibonacci number."""
+
+@overload
+def fibonacci(n):
+    """Return the n-th Fibonacci number."""
+
+@overload
+def fibonacci
