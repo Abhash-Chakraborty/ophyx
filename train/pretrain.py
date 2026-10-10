@@ -251,7 +251,17 @@ def make_loss(hidden, T):
 
     ce_chunk = jax.checkpoint(ce_chunk)
 
-    def loss_fn(params, batch):
+    def ce_chunk_w(emb, h, y, w):  # SFT: loss only where w > 0 (the answer)
+        logits = (h @ emb.T).astype(jnp.float32)
+        lse = jax.nn.logsumexp(logits, axis=-1)
+        tgt = jnp.take_along_axis(logits, y[..., None], axis=-1)[..., 0]
+        return jnp.sum(w * (lse - tgt)), jnp.sum(w * lse ** 2), jnp.sum(w)
+
+    ce_chunk_w = jax.checkpoint(ce_chunk_w)
+
+    def loss_fn(params, batch, w=None):
+        if w is not None:
+            return weighted(params, batch, w)
         x, y = batch[:, :-1], batch[:, 1:]
         h = hidden(params, x)
         emb = params["embed"].astype(jnp.dtype(cfg("dtype", "bfloat16")))
@@ -261,6 +271,20 @@ def make_loss(hidden, T):
         yc = y.reshape(B, n, chunk).transpose(1, 0, 2)
         ce_sum, z_sum = jax.lax.map(lambda a: ce_chunk(emb, a[0], a[1]), (hc, yc))
         ntok = B * T
+        ce = jnp.sum(ce_sum) / ntok
+        return ce + 1e-4 * jnp.sum(z_sum) / ntok, ce
+
+    def weighted(params, batch, w):
+        x, y = batch[:, :-1], batch[:, 1:]
+        h = hidden(params, x)
+        emb = params["embed"].astype(jnp.dtype(cfg("dtype", "bfloat16")))
+        B = h.shape[0]
+        n = T // chunk
+        hc = h.reshape(B, n, chunk, -1).transpose(1, 0, 2, 3)
+        yc = y.reshape(B, n, chunk).transpose(1, 0, 2)
+        wc = w.reshape(B, n, chunk).transpose(1, 0, 2)
+        ce_sum, z_sum, w_sum = jax.lax.map(lambda a: ce_chunk_w(emb, a[0], a[1], a[2]), (hc, yc, wc))
+        ntok = jnp.maximum(1.0, jnp.sum(w_sum))
         ce = jnp.sum(ce_sum) / ntok
         return ce + 1e-4 * jnp.sum(z_sum) / ntok, ce
 
@@ -338,6 +362,7 @@ def wsd_schedule(peak, warmup, total, decay_frac, min_frac):
 
 
 FIM_PREFIX, FIM_MIDDLE, FIM_SUFFIX = 3, 4, 5  # ids fixed by the tokenizer's special-token order
+USER_ID = 1  # <|user|>: every SFT example starts with it
 
 
 class Data:
@@ -347,6 +372,10 @@ class Data:
     switches the mix by training progress (e.g. tier A heavy during the LR decay). spec["fim_rate"]
     rearranges that share of windows from buckets listed in spec["fim_buckets"] into
     prefix/suffix/middle order (PSM) with the FIM sentinel tokens.
+
+    SFT buckets add "mask_glob" (uint8 files parallel to the token files: 1 = answer token, loss counts) and
+    "aligned": true (windows start where an example starts, at a <|user|> token, so no prompt is cut off).
+    With any masked bucket, batch() returns (tokens, weights); otherwise just tokens, exactly as before.
     """
 
     def __init__(self, spec, seq, seed, total_steps=None):
@@ -355,6 +384,7 @@ class Data:
         self.fim_rate = float(spec.get("fim_rate", 0.0))
         self.fim_buckets = set(spec.get("fim_buckets", []))
         self.buckets = []
+        self.extra = {}  # bucket name -> (mask maps, start positions per map) for SFT buckets
         for name, b in spec["buckets"].items():
             files = sorted(glob.glob(b["glob"], recursive=True))
             if not files:
@@ -362,8 +392,24 @@ class Data:
             maps = [np.memmap(f, dtype=np.uint16, mode="r") for f in files]
             sizes = np.array([len(m) - seq - 1 for m in maps], dtype=np.int64)
             keep = sizes > 0
+            if b.get("mask_glob"):
+                mfiles = sorted(glob.glob(b["mask_glob"], recursive=True))
+                by_name = {os.path.basename(f): f for f in mfiles}
+                masks = [np.memmap(by_name[os.path.basename(f)], dtype=np.uint8, mode="r") for f in files]
+                assert all(len(m) == len(t) for m, t in zip(masks, maps)), f"bucket {name}: mask/token length mismatch"
+                starts = None
+                if b.get("aligned"):
+                    starts = [np.flatnonzero(np.asarray(t) == USER_ID) for t in maps]
+                    starts = [st[st < len(t) - seq - 1] for st, t in zip(starts, maps)]
+                kept = [i for i, k in enumerate(keep) if k]
+                self.extra[name] = ([masks[i] for i in kept], [starts[i] for i in kept] if starts else None)
+                if starts:  # sample files by number of usable example starts
+                    sizes = np.array([len(st) for st in starts], dtype=np.int64)
+                    keep = sizes > 0
             self.buckets.append((name, float(b["weight"]), [m for m, k in zip(maps, keep) if k], sizes[keep]))
-            log(f"data bucket {name}: {len(files)} shards, {sum(len(m) for m in maps) / 1e6:.1f}M tokens, weight {b['weight']}")
+            log(f"data bucket {name}: {len(files)} shards, {sum(len(m) for m in maps) / 1e6:.1f}M tokens, weight {b['weight']}"
+                + (" (masked" + (", example-aligned)" if b.get("aligned") else ")") if b.get("mask_glob") else ""))
+        self.has_mask = bool(self.extra)
         w = np.array([b[1] for b in self.buckets])
         self.weights = w / w.sum()
         self.names = [b[0] for b in self.buckets]
@@ -373,9 +419,13 @@ class Data:
                 ph["_w"] = pw / pw.sum()
                 log(f"data phase until {ph['until']}: " + ", ".join(f"{n} {x:.3f}" for n, x in zip(self.names, ph["_w"])))
         self.val = None
+        self.val_masks = None
         if spec.get("val_glob"):
             vf = sorted(glob.glob(spec["val_glob"], recursive=True))
             self.val = [np.memmap(f, dtype=np.uint16, mode="r") for f in vf]
+            if spec.get("val_mask_glob"):
+                vm = {os.path.basename(f): f for f in glob.glob(spec["val_mask_glob"], recursive=True)}
+                self.val_masks = [np.memmap(vm[os.path.basename(f)], dtype=np.uint8, mode="r") for f in vf]
 
     def windows(self, rng, n, maps, sizes):
         probs = sizes / sizes.sum()
@@ -401,27 +451,59 @@ class Data:
         a, b = sorted(rng.integers(0, len(body) + 1, size=2))
         return np.concatenate([[FIM_PREFIX], body[:a], [FIM_SUFFIX], body[b:], [FIM_MIDDLE], body[a:b]]).astype(np.int32)
 
+    def masked_windows(self, rng, n, name, maps, sizes):
+        masks, starts = self.extra[name]
+        probs = sizes / sizes.sum()
+        which = rng.choice(len(maps), size=n, p=probs)
+        out = np.empty((n, self.seq + 1), np.int32)
+        wts = np.empty((n, self.seq + 1), np.float32)
+        for i, s in enumerate(which):
+            off = starts[s][rng.integers(0, len(starts[s]))] if starts else rng.integers(0, sizes[s])
+            out[i] = maps[s][off: off + self.seq + 1]
+            wts[i] = masks[s][off: off + self.seq + 1]
+        return out, wts
+
     def batch(self, step, n):
         rng = np.random.default_rng([self.seed, step])
         counts = rng.multinomial(n, self.weights_at(step))
-        parts = []
+        parts, wparts = [], []
         for c, b in zip(counts, self.buckets):
             if not c:
                 continue
-            ws = self.windows(rng, c, b[2], b[3])
-            if self.fim_rate and b[0] in self.fim_buckets:
-                for i in np.where(rng.random(c) < self.fim_rate)[0]:
-                    ws[i] = self.fim(rng, ws[i])
+            if b[0] in self.extra:
+                ws, wt = self.masked_windows(rng, c, b[0], b[2], b[3])
+            else:
+                ws = self.windows(rng, c, b[2], b[3])
+                wt = np.ones(ws.shape, np.float32) if self.has_mask else None
+                if self.fim_rate and b[0] in self.fim_buckets:
+                    for i in np.where(rng.random(c) < self.fim_rate)[0]:
+                        ws[i] = self.fim(rng, ws[i])
             parts.append(ws)
+            wparts.append(wt)
         x = np.concatenate(parts)
-        return x[rng.permutation(n)]
+        perm = rng.permutation(n)
+        if not self.has_mask:
+            return x[perm]
+        return x[perm], np.concatenate(wparts)[perm][:, 1:]  # weight for predicting token t+1
 
     def val_batches(self, n, k=4):
         if not self.val:
             return []
         rng = np.random.default_rng([self.seed, 10 ** 9])
         sizes = np.array([len(m) - self.seq - 1 for m in self.val])
-        return [self.windows(rng, n, self.val, sizes) for _ in range(k)]
+        if self.val_masks is None:
+            return [self.windows(rng, n, self.val, sizes) for _ in range(k)]
+        out = []
+        for _ in range(k):
+            which = rng.choice(len(self.val), size=n, p=sizes / sizes.sum())
+            x = np.empty((n, self.seq + 1), np.int32)
+            w = np.empty((n, self.seq + 1), np.float32)
+            for i, s in enumerate(which):
+                off = rng.integers(0, sizes[s])
+                x[i] = self.val[s][off: off + self.seq + 1]
+                w[i] = self.val_masks[s][off: off + self.seq + 1]
+            out.append((x, w[:, 1:]))
+        return out
 
 
 # ---------------------------------------------------------------- checkpoints
@@ -536,6 +618,28 @@ def find_latest_ckpt():
     return best
 
 
+def load_params(src, like_params):
+    """Weights only from a checkpoint dir (or glob), or "hf://<repo>/<run>/latest" (the trainer's HF backup)."""
+    if src.startswith("hf://"):
+        from huggingface_hub import snapshot_download
+        repo, prefix = src[5:].split("/", 2)[:2], src[5:].split("/", 2)[2]
+        repo = "/".join(repo)
+        d = snapshot_download(repo, allow_patterns=[f"{prefix}/params.npz", f"{prefix}/meta.json"], token=KEYS.get("HF_TOKEN"),
+                              local_dir=os.path.join("/kaggle/tmp" if KAGGLE else out_dir(), "init"))
+        path = os.path.join(d, prefix)
+    else:
+        cands = sorted(glob.glob(src, recursive=True))
+        if not cands:
+            raise FileNotFoundError(f"init_from: nothing matches {src}")
+        path = cands[-1]
+    z = np.load(os.path.join(path, "params.npz"))
+    leaves, treedef = jax.tree_util.tree_flatten(like_params)
+    new = [z[f"a{i:05d}"] for i in range(len(leaves))]
+    for a, b in zip(new, leaves):
+        assert a.shape == b.shape, f"init_from shape mismatch {a.shape} vs {b.shape}"
+    return jax.tree_util.tree_unflatten(treedef, new)
+
+
 def load_ckpt(path, like):
     def restore(fname, tree):
         z = np.load(os.path.join(path, fname))
@@ -632,9 +736,27 @@ def train(data=None):
         updates, opt_state = opt.update(g, opt_state, params)
         return optax.apply_updates(params, updates), opt_state, ce / accum, gnorm
 
+    @partial(jax.jit, donate_argnums=(0, 1))
+    def train_step_w(params, opt_state, batches, weights):  # SFT: + weights [accum, micro, seq]
+        def micro_step(carry, bw):
+            g_acc, ce_acc = carry
+            (_, ce), g = jax.value_and_grad(loss_fn, has_aux=True)(params, bw[0], bw[1])
+            return (jax.tree.map(jnp.add, g_acc, g), ce_acc + ce), None
+
+        zeros = jax.tree.map(jnp.zeros_like, params)
+        (g, ce), _ = jax.lax.scan(micro_step, (zeros, jnp.zeros([], jnp.float32)), (batches, weights))
+        g = jax.tree.map(lambda x: x / accum, g)
+        gnorm = optax.global_norm(g)
+        updates, opt_state = opt.update(g, opt_state, params)
+        return optax.apply_updates(params, updates), opt_state, ce / accum, gnorm
+
     @jax.jit
     def eval_ce(params, b):
         return loss_fn(params, b)[1]
+
+    @jax.jit
+    def eval_ce_w(params, b, w):
+        return loss_fn(params, b, w)[1]
 
     params = jax.jit(lambda k: init_params(dims, vocab, k), out_shardings=repl)(jax.random.PRNGKey(cfg("seed", 0)))
     opt_state = jax.jit(opt.init, out_shardings=repl)(params)
@@ -646,6 +768,9 @@ def train(data=None):
         p, o = load_ckpt(path, (params, opt_state))
         params, opt_state = jax.device_put(p, repl), jax.device_put(o, repl)
         log(f"resumed from {path} at step {start}")
+    elif cfg("init_from", None):  # SFT and later stages: weights from another run, fresh optimizer and schedule
+        params = jax.device_put(load_params(cfg("init_from", None), params), repl)
+        log(f"initialised weights from {cfg('init_from', None)}")
     log(f"{n_params / 1e6:.1f}M parameters")
     if start >= total_steps:  # already finished: nothing to train, don't re-save or re-export
         log(f"run already finished at step {start}; skipping")
@@ -667,16 +792,32 @@ def train(data=None):
     last_ckpt, metrics_f = time.time(), open(os.path.join(out_dir(), "metrics.jsonl"), "a")
     session_steps = cfg("max_steps_this_session", None)
     last_rate = None
-    val = [jax.device_put(v, shard) for v in data.val_batches(micro)]
+    masked = getattr(data, "has_mask", False)
+    if masked:
+        val = [(jax.device_put(x, shard), jax.device_put(w, shard)) for x, w in data.val_batches(micro)]
+    else:
+        val = [jax.device_put(v, shard) for v in data.val_batches(micro)]
+    seq_shard = NamedSharding(mesh, P(None, "data", None))
+
+    def next_batch(s):
+        b = data.batch(s, accum * micro)
+        if masked:
+            return b[0].reshape(accum, micro, seq + 1), b[1].reshape(accum, micro, seq)
+        return b.reshape(accum, micro, seq + 1)
+
     step, t_log, tok_log = start, time.time(), 0
-    nxt = data.batch(step, accum * micro).reshape(accum, micro, seq + 1)
+    nxt = next_batch(step)
     stop_reason = "done"
     while step < total_steps:
-        batches = jax.device_put(nxt, NamedSharding(mesh, P(None, "data", None)))
-        params, opt_state, ce, gnorm = train_step(params, opt_state, batches)
+        if masked:
+            params, opt_state, ce, gnorm = train_step_w(params, opt_state, jax.device_put(nxt[0], seq_shard),
+                                                        jax.device_put(nxt[1], seq_shard))
+        else:
+            batches = jax.device_put(nxt, seq_shard)
+            params, opt_state, ce, gnorm = train_step(params, opt_state, batches)
         step += 1
         if step < total_steps:
-            nxt = data.batch(step, accum * micro).reshape(accum, micro, seq + 1)  # overlaps device compute
+            nxt = next_batch(step)  # overlaps device compute
         tok_log += step_tokens
         if step % cfg("log_every", 20) == 0 or step == total_steps:
             ce_v, gn = float(ce), float(gnorm)
@@ -688,7 +829,8 @@ def train(data=None):
                 log("non-finite loss, stopping without saving", row)
                 break
             if val and step % cfg("eval_every", 200) == 0:
-                row["val_loss"] = round(float(np.mean([float(eval_ce(params, v)) for v in val])), 4)
+                row["val_loss"] = round(float(np.mean([float(eval_ce_w(params, *v)) if masked else float(eval_ce(params, v))
+                                                       for v in val])), 4)
             log(json.dumps(row))
             metrics_f.write(json.dumps(row) + "\n")
             metrics_f.flush()
