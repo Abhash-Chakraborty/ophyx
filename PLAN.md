@@ -277,6 +277,11 @@ limits".
   `<|fim_suffix|>`, `<|fim_middle|>`), `<|file_sep|>`, `<|repo|>`, padding.
 - Check: average characters per token on held-out Python should beat GPT-2's and Qwen's
   tokenizers clearly. Every 10% gained here is 10% more code per GPU hour.
+- Measured 10 October (v1, trained on 0.8 GB of the deduplicated mix): 3.52 chars/token on held-out
+  code and 4.38 on English, against GPT-2 at 2.10 / 4.50 and Qwen2.5-Coder at 3.97 / 4.72. We beat
+  GPT-2 on code by 67%. Qwen compresses code 13% better but needs a 151k vocabulary, which would be
+  ~155M embedding parameters in a 350M model; ours costs 34M. Kept at 32k as the better trade at
+  this size. Runs of 3/4/7/8/11/12/15/16 spaces were all learned as single tokens.
 
 ## Data (summary)
 

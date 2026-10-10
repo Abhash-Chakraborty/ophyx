@@ -1,0 +1,114 @@
+{
+ "enabled": false,
+ "script": "train/pretrain.py",
+ "accel": "tpu",
+ "timeout": 32400,
+ "kernels": [
+  "pycoder-train-base350m-a",
+  "pycoder-train-base350m-b"
+ ],
+ "datasets": [
+  "pycoder-keys"
+ ],
+ "kernel_sources": [
+  "pycoder-tokens-v1"
+ ],
+ "config": {
+  "vocab": 32768,
+  "seq": 2048,
+  "eos_id": 0,
+  "optimizer": "adamw",
+  "attention": "xla",
+  "remat": "full",
+  "loss_chunk": 512,
+  "decay_frac": 0.15,
+  "min_lr_frac": 0.05,
+  "budget_s": 30600,
+  "margin_s": 1500,
+  "ckpt_every_s": 3600,
+  "log_every": 50,
+  "eval_every": 500,
+  "export_hf": true,
+  "wandb": "pycoder",
+  "hf_ckpt_repo": "abhash-chakraborty/pycoder-runs",
+  "data": {
+   "buckets": {
+    "stack_edu_a": {
+     "glob": "/kaggle/input/**/tokens/stack_edu_a/train/*.bin",
+     "weight": 0.2
+    },
+    "stack_edu_b": {
+     "glob": "/kaggle/input/**/tokens/stack_edu_b/train/*.bin",
+     "weight": 0.55
+    },
+    "oc_synthetic_qa": {
+     "glob": "/kaggle/input/**/tokens/oc_synthetic_qa/train/*.bin",
+     "weight": 0.1
+    },
+    "oc_synthetic_code_snippet": {
+     "glob": "/kaggle/input/**/tokens/oc_synthetic_code_snippet/train/*.bin",
+     "weight": 0.04
+    },
+    "oc_algorithmic_corpus": {
+     "glob": "/kaggle/input/**/tokens/oc_algorithmic_corpus/train/*.bin",
+     "weight": 0.025
+    },
+    "fineweb_edu": {
+     "glob": "/kaggle/input/**/tokens/fineweb_edu/train/*.bin",
+     "weight": 0.06
+    },
+    "cpython_lib": {
+     "glob": "/kaggle/input/**/tokens/cpython_lib/train/*.bin",
+     "weight": 0.002
+    },
+    "python_docs": {
+     "glob": "/kaggle/input/**/tokens/python_docs/train/*.bin",
+     "weight": 0.002
+    }
+   },
+   "val_glob": "/kaggle/input/**/tokens/stack_edu_a/val/*.bin",
+   "phases": [
+    {
+     "until": 0.85,
+     "weights": {
+      "stack_edu_a": 0.2,
+      "stack_edu_b": 0.55,
+      "oc_synthetic_qa": 0.1,
+      "oc_synthetic_code_snippet": 0.04,
+      "oc_algorithmic_corpus": 0.025,
+      "fineweb_edu": 0.06,
+      "cpython_lib": 0.002,
+      "python_docs": 0.002
+     }
+    },
+    {
+     "until": 1.0,
+     "weights": {
+      "stack_edu_a": 0.45,
+      "stack_edu_b": 0.17,
+      "oc_synthetic_qa": 0.1,
+      "oc_synthetic_code_snippet": 0.09,
+      "oc_algorithmic_corpus": 0.07,
+      "fineweb_edu": 0.03,
+      "cpython_lib": 0.045,
+      "python_docs": 0.045
+     }
+    }
+   ],
+   "fim_rate": 0.5,
+   "fim_buckets": [
+    "stack_edu_a",
+    "stack_edu_b",
+    "oc_synthetic_code_snippet",
+    "cpython_lib"
+   ]
+  },
+  "model": "base",
+  "micro_batch": 8,
+  "batch_tokens": 524288,
+  "total_tokens": 12000000000,
+  "lr": 0.002,
+  "warmup_tokens": 500000000,
+  "run_name": "base350m-v1"
+ }
+}
