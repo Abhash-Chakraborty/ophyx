@@ -286,11 +286,23 @@ def wsd_schedule(peak, warmup, total, decay_frac, min_frac):
 # ---------------------------------------------------------------- data
 
 
-class Data:
-    """Random windows from uint16 token shards, mixed by bucket weight. batch(step) is deterministic."""
+FIM_PREFIX, FIM_MIDDLE, FIM_SUFFIX = 3, 4, 5  # ids fixed by the tokenizer's special-token order
 
-    def __init__(self, spec, seq, seed):
-        self.seq, self.seed = seq, seed
+
+class Data:
+    """Random windows from uint16 token shards, mixed by bucket weight. batch(step) is deterministic.
+
+    spec["phases"] (optional): [{"until": 0.85, "weights": {bucket: w}}, {"until": 1.0, "weights": {...}}]
+    switches the mix by training progress (e.g. tier A heavy during the LR decay). spec["fim_rate"]
+    rearranges that share of windows from buckets listed in spec["fim_buckets"] into
+    prefix/suffix/middle order (PSM) with the FIM sentinel tokens.
+    """
+
+    def __init__(self, spec, seq, seed, total_steps=None):
+        self.seq, self.seed, self.total_steps = seq, seed, total_steps
+        self.phases = spec.get("phases")
+        self.fim_rate = float(spec.get("fim_rate", 0.0))
+        self.fim_buckets = set(spec.get("fim_buckets", []))
         self.buckets = []
         for name, b in spec["buckets"].items():
             files = sorted(glob.glob(b["glob"], recursive=True))
@@ -303,6 +315,12 @@ class Data:
             log(f"data bucket {name}: {len(files)} shards, {sum(len(m) for m in maps) / 1e6:.1f}M tokens, weight {b['weight']}")
         w = np.array([b[1] for b in self.buckets])
         self.weights = w / w.sum()
+        self.names = [b[0] for b in self.buckets]
+        if self.phases:
+            for ph in self.phases:
+                pw = np.array([float(ph["weights"].get(n, 0.0)) for n in self.names])
+                ph["_w"] = pw / pw.sum()
+                log(f"data phase until {ph['until']}: " + ", ".join(f"{n} {x:.3f}" for n, x in zip(self.names, ph["_w"])))
         self.val = None
         if spec.get("val_glob"):
             vf = sorted(glob.glob(spec["val_glob"], recursive=True))
@@ -317,10 +335,33 @@ class Data:
             out[i] = maps[s][off: off + self.seq + 1]
         return out
 
+    def weights_at(self, step):
+        if not self.phases or not self.total_steps:
+            return self.weights
+        frac = step / self.total_steps
+        for ph in self.phases:
+            if frac < ph["until"]:
+                return ph["_w"]
+        return self.phases[-1]["_w"]
+
+    def fim(self, rng, w):
+        """PSM on one window of seq+1 tokens: drop 3 tokens from the end to make room for the sentinels."""
+        body = w[: self.seq + 1 - 3]
+        a, b = sorted(rng.integers(0, len(body) + 1, size=2))
+        return np.concatenate([[FIM_PREFIX], body[:a], [FIM_SUFFIX], body[b:], [FIM_MIDDLE], body[a:b]]).astype(np.int32)
+
     def batch(self, step, n):
         rng = np.random.default_rng([self.seed, step])
-        counts = rng.multinomial(n, self.weights)
-        parts = [self.windows(rng, c, b[2], b[3]) for c, b in zip(counts, self.buckets) if c]
+        counts = rng.multinomial(n, self.weights_at(step))
+        parts = []
+        for c, b in zip(counts, self.buckets):
+            if not c:
+                continue
+            ws = self.windows(rng, c, b[2], b[3])
+            if self.fim_rate and b[0] in self.fim_buckets:
+                for i in np.where(rng.random(c) < self.fim_rate)[0]:
+                    ws[i] = self.fim(rng, ws[i])
+            parts.append(ws)
         x = np.concatenate(parts)
         return x[rng.permutation(n)]
 
@@ -511,7 +552,7 @@ def train(data=None):
     warmup = max(1, cfg("warmup_tokens", 200 * step_tokens) // step_tokens)
     sched = wsd_schedule(cfg("lr", 3e-3), warmup, total_steps, cfg("decay_frac", 0.15), cfg("min_lr_frac", 0.05))
     opt = build_optimizer(sched)
-    data = data or Data(cfg("data", {}), seq, cfg("seed", 0))
+    data = data or Data(cfg("data", {}), seq, cfg("seed", 0), total_steps)
     log(f"model {dims}, vocab {vocab}, seq {seq}, {ndev} devices, micro {micro} x accum {accum} = "
         f"{step_tokens:,} tokens/step, {total_steps} steps, warmup {warmup}")
 
