@@ -189,7 +189,7 @@ def generate_one(s, env, pacers):
             elif e.code < 500:
                 return None, {"error": f"HTTP {e.code}: {e.read()[:200]!r}"}, None
             time.sleep(wait)
-        except Exception as e:  # network hiccup
+        except Exception:  # network hiccup
             time.sleep(min(120, 5 * 2 ** attempt))
     return None, {"error": "gave up"}, None
 
