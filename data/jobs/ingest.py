@@ -725,6 +725,128 @@ def job_opencoder(uploader, pool):
     return totals
 
 
+# ---------------------------------------------------------------- job: github (curated repos)
+
+
+SPDX_CASE = {"mit": "MIT", "apache-2.0": "Apache-2.0", "bsd-2-clause": "BSD-2-Clause", "bsd-3-clause": "BSD-3-Clause",
+             "isc": "ISC", "psf-2.0": "PSF-2.0", "unlicense": "Unlicense", "cc0-1.0": "CC0-1.0", "zlib": "Zlib",
+             "0bsd": "0BSD", "mit-0": "MIT-0"}
+
+
+def repo_quality(root, py_files):
+    """Static repo score in [0, 1]: tests, CI, packaging, ruff error density, type hints, docstrings."""
+    has_tests = any("/tests/" in p or os.path.basename(p).startswith("test_") or p.endswith("_test.py") for p in py_files)
+    has_ci = os.path.isdir(os.path.join(root, ".github", "workflows")) or os.path.exists(os.path.join(root, ".gitlab-ci.yml"))
+    has_pkg = any(os.path.exists(os.path.join(root, f)) for f in ("pyproject.toml", "setup.py", "setup.cfg"))
+    funcs = typed = documented = lines = 0
+    for p in py_files[:400]:
+        try:
+            src = open(p, encoding="utf-8", errors="replace").read()
+            tree = ast.parse(src)
+        except Exception:
+            continue
+        lines += src.count("\n")
+        for n in ast.walk(tree):
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                funcs += 1
+                typed += bool(n.returns or any(a.annotation for a in n.args.args))
+                documented += bool(ast.get_docstring(n))
+    ruff_err = 0
+    if shutil.which("ruff") and py_files:
+        r = subprocess.run(["ruff", "check", "--select", "E9,F63,F7,F82,F401,F841,B", "--exit-zero", "--quiet",
+                            "--output-format", "json", "--no-cache", root], capture_output=True, text=True, timeout=300)
+        try:
+            ruff_err = len(json.loads(r.stdout or "[]"))
+        except json.JSONDecodeError:
+            pass
+    density = ruff_err / max(1, lines) * 100  # issues per 100 lines
+    score = (0.2 * has_tests + 0.1 * has_ci + 0.1 * has_pkg + 0.25 * (typed / max(1, funcs))
+             + 0.2 * (documented / max(1, funcs)) + 0.15 * max(0.0, 1 - density / 5))
+    return round(score, 4), {"tests": has_tests, "ci": has_ci, "pkg": has_pkg, "funcs": funcs,
+                             "typed": round(typed / max(1, funcs), 3), "documented": round(documented / max(1, funcs), 3),
+                             "ruff_per_100_lines": round(density, 3), "lines": lines}
+
+
+def _clone(rec):
+    d = os.path.join(WORK, "repos", rec["full_name"].replace("/", "__"))
+    shutil.rmtree(d, ignore_errors=True)
+    r = subprocess.run(["git", "clone", "--depth", "1", "--filter=blob:limit=1m", "--no-tags", "--single-branch", "--quiet",
+                        f"https://github.com/{rec['full_name']}.git", d], capture_output=True, timeout=180,
+                       env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+    if r.returncode != 0:
+        return rec, None, None
+    sha = subprocess.run(["git", "-C", d, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    return rec, d, sha
+
+
+def job_github(uploader, pool):
+    lists = glob.glob("/kaggle/input/**/repos.jsonl", recursive=True) or [os.path.join(WORK, "repos.jsonl")]
+    repos = [json.loads(l) for l in open(lists[0])]
+    repos = [r for r in repos if r.get("keep")]
+    repos.sort(key=lambda r: -r["stars"])
+    mine = [r for i, r in enumerate(repos) if i % NSHARDS == SHARD]
+    if SMOKE:
+        mine = mine[:6]
+    CH = 3 if SMOKE else 200
+    totals = {}
+    for c0 in range(0, len(mine), CH):
+        name = f"github/s{SHARD}-c{c0 // CH:04d}.parquet"
+        if uploader.exists(f"{PREFIX}/{name}"):
+            continue
+        t = time.time()
+        chunk = mine[c0:c0 + CH]
+        stats, kept, repo_rows = {"repos": len(chunk)}, [], []
+        with cf.ThreadPoolExecutor(8) as ex:
+            cloned = list(ex.map(lambda r: _safe_clone(r), chunk))
+        for rec, d, sha in cloned:
+            if d is None:
+                stats["clone_fail"] = stats.get("clone_fail", 0) + 1
+                continue
+            py = [p for p in glob.glob(os.path.join(d, "**", "*.py"), recursive=True) if os.path.isfile(p)]
+            score, detail = repo_quality(d, py)
+            texts = []
+            for p in py:
+                try:
+                    texts.append((open(p, encoding="utf-8", errors="replace").read(), os.path.relpath(p, d)))
+                except OSError:
+                    pass
+            spdx = SPDX_CASE.get(rec["license"], rec["license"])
+            res = pool.map(_clean_stack_row, [(x, "/" + rel, spdx) for x, rel in texts], chunksize=16)
+            n_ok = 0
+            for (x, rel), (clean, reason, nred) in zip(texts, res):
+                stats[reason] = stats.get(reason, 0) + 1
+                if clean is None:
+                    continue
+                n_ok += 1
+                h = sha1(clean)
+                kept.append({"id": h, "source": "github", "repo": rec["full_name"], "path": rel,
+                             "licence": rec["license"], "kind": "code", "text": clean,
+                             "text_raw": clean if keep_raw_sample(h) else None, "quality": score,
+                             "meta": json.dumps({"stars": rec["stars"], "commit": sha, "repo_quality": detail})})
+            repo_rows.append({"repo": rec["full_name"], "score": score, "files_kept": n_ok, **detail})
+            shutil.rmtree(d, ignore_errors=True)
+        formatted = ruff_format([k["text"] for k in kept])
+        for k, f, good in zip(kept, formatted, pool.map(_parse_ok, formatted, chunksize=32)):
+            if good:
+                k["text"] = f
+        stats["kept"] = len(kept)
+        stats["kept_chars"] = sum(len(k["text"]) for k in kept)
+        stats["repo_scores"] = repo_rows
+        write_part(kept, name, uploader, stats)
+        for k2, v in stats.items():
+            if isinstance(v, (int, float)):
+                totals[k2] = totals.get(k2, 0) + v
+        log(f"{name}: {len(chunk)} repos -> {len(kept)} files ({stats['kept_chars'] / 1e6:.0f}M chars) in {time.time() - t:.0f}s")
+    return totals
+
+
+def _safe_clone(rec):
+    try:
+        return _clone(rec)
+    except Exception:
+        return rec, None, None
+
+
 # ---------------------------------------------------------------- job: synth (verified samples)
 
 
@@ -787,7 +909,7 @@ def main():
     uploader = Uploader()
     with mp.get_context("fork").Pool(os.cpu_count()) as pool:
         totals = {"stack_edu": job_stack_edu, "fineweb": job_fineweb, "opencoder": job_opencoder,
-                  "synth": job_synth}[JOB](uploader, pool)
+                  "synth": job_synth, "github": job_github}[JOB](uploader, pool)
     uploader.flush()
     mins = (time.time() - T0) / 60
     summary = {k: v for k, v in totals.items()}
