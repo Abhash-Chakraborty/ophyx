@@ -767,6 +767,28 @@ def repo_quality(root, py_files):
                              "ruff_per_100_lines": round(density, 3), "lines": lines}
 
 
+CODE_EXT = {".py", ".pyx", ".js", ".ts", ".tsx", ".jsx", ".c", ".h", ".cc", ".cpp", ".hpp", ".go", ".rs", ".java", ".kt",
+            ".rb", ".php", ".cs", ".swift", ".scala", ".m", ".r", ".jl", ".lua", ".sh", ".ipynb", ".vue", ".dart"}
+
+
+def python_share(root):
+    py = other = 0
+    for dirpath, dirnames, files in os.walk(root):
+        dirnames[:] = [x for x in dirnames if x not in (".git", "node_modules", "vendor", "third_party")]
+        for f in files:
+            ext = os.path.splitext(f)[1].lower()
+            if ext in CODE_EXT:
+                try:
+                    n = os.path.getsize(os.path.join(dirpath, f))
+                except OSError:
+                    continue
+                if ext in (".py", ".pyx"):
+                    py += n
+                else:
+                    other += n
+    return py / max(1, py + other)
+
+
 def _clone(rec):
     d = os.path.join(WORK, "repos", rec["full_name"].replace("/", "__"))
     shutil.rmtree(d, ignore_errors=True)
@@ -803,7 +825,13 @@ def job_github(uploader, pool):
                 stats["clone_fail"] = stats.get("clone_fail", 0) + 1
                 continue
             py = [p for p in glob.glob(os.path.join(d, "**", "*.py"), recursive=True) if os.path.isfile(p)]
+            share = python_share(d)
+            if share < 0.6:  # gate 2's language rule, measured from the clone instead of the API
+                stats["low_python_share"] = stats.get("low_python_share", 0) + 1
+                shutil.rmtree(d, ignore_errors=True)
+                continue
             score, detail = repo_quality(d, py)
+            detail["python_share"] = round(share, 3)
             texts = []
             for p in py:
                 try:
