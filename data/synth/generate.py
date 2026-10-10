@@ -191,7 +191,6 @@ def generate_one(s, env, pacers):
             time.sleep(wait)
         except Exception as e:  # network hiccup
             time.sleep(min(120, 5 * 2 ** attempt))
-            err = str(e)
     return None, {"error": "gave up"}, None
 
 

@@ -570,6 +570,7 @@ def job_tokenize():
         tab = pq.read_table(download(p), columns=["id", "text"]).to_pydict()
         docs = [(keep[i], i, x) for i, x in zip(tab["id"], tab["text"]) if i in keep]
         del tab
+        n_docs = len(docs)
         by = encode_docs(tok, docs, eot)
         del docs
         files, counts = [], {}
@@ -587,7 +588,7 @@ def job_tokenize():
         json.dump(counts, open(ml, "w"))
         files.append((ml, marker))
         pending += files
-        log(f"[{k + 1}/{len(mine)}] {p}: {len(docs)} docs -> {sum(counts.values()) / 1e6:.1f}M tokens, {time.time() - t:.0f}s")
+        log(f"[{k + 1}/{len(mine)}] {p}: {n_docs} docs -> {sum(counts.values()) / 1e6:.1f}M tokens, {time.time() - t:.0f}s")
         os.remove(download(p))
         if len(pending) >= 30:
             commit(pending, f"tokens shard {SHARD}")
