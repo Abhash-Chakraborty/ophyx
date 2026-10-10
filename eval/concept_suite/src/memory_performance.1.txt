@@ -1,0 +1,870 @@
+@@@ task drop_buffer_references leaf=0 diff=3 entry=process_all
+@@@ prompt
+Write `process_all(items, make_buffer, consume) -> list` that, for each item, builds a buffer with `make_buffer(item)`, passes it to `consume(buffer)` and collects the results in order. Buffers are large, so a buffer must stop being referenced by your code as soon as it has been consumed: at no moment may two buffers made by this call be alive at the same time, including while `make_buffer` is building the next one, and after the function returns your code must hold no buffer. A loop that just rebinds a local variable keeps the previous buffer alive until the rebinding happens (after `make_buffer` has returned), so drop the reference explicitly. `items` may be any iterable, including a generator; an empty input returns `[]`. If `consume` itself keeps a buffer, that is the caller's choice and the buffer stays alive.
+@@@ reference
+def process_all(items, make_buffer, consume):
+    results = []
+    for item in items:
+        buf = make_buffer(item)
+        results.append(consume(buf))
+        del buf
+    return results
+@@@ tests
+import weakref
+from solution import process_all
+
+
+class Buffer:
+    live = 0
+    peak = 0
+
+    def __init__(self, data):
+        self.data = data
+        Buffer.live += 1
+        Buffer.peak = max(Buffer.peak, Buffer.live)
+
+    def __del__(self):
+        Buffer.live -= 1
+
+
+def reset():
+    Buffer.live = Buffer.peak = 0
+
+
+def test_results_in_order():
+    reset()
+    assert process_all([1, 2, 3], lambda x: Buffer([x] * x), lambda b: len(b.data)) == [1, 2, 3]
+
+
+def test_at_most_one_buffer_alive():
+    reset()
+    process_all(range(6), Buffer, lambda b: b.data * 2)
+    assert Buffer.peak == 1
+
+
+def test_nothing_alive_after_return():
+    reset()
+    refs = []
+
+    def make(x):
+        b = Buffer(x)
+        refs.append(weakref.ref(b))
+        return b
+    process_all(iter("abcd"), make, lambda b: b.data)
+    assert len(refs) == 4 and all(r() is None for r in refs)
+    assert Buffer.live == 0
+
+
+def test_empty_input():
+    reset()
+    assert process_all([], Buffer, len) == []
+    assert Buffer.peak == 0
+
+
+def test_consumer_may_keep_buffers():
+    reset()
+    kept = []
+    process_all(range(3), Buffer, kept.append)
+    assert Buffer.live == 3
+    kept.clear()
+    assert Buffer.live == 0
+@@@ task cycle_free_tree leaf=1 diff=3 entry=TreeNode,cyclic_garbage
+@@@ prompt
+Write a `TreeNode(name)` whose nodes never form reference cycles, so a dropped tree is freed by reference counting alone, even with the cyclic garbage collector disabled. `add_child(child)` appends `child` to the node's `children` list, sets the child's parent and returns the child; a child that already has a live parent raises ValueError. The `parent` property returns the parent node or None, and the node holds its parent only through a `weakref.ref`, so once the parent has been freed `parent` returns None. `path()` returns the names from the root down to this node joined with `"/"`.
+
+Also write `cyclic_garbage(fn) -> int`: run `gc.collect()` first to clear pending garbage, then call `fn()` with automatic collection disabled, then return the number of unreachable objects found by `gc.collect()`. Restore the collector's previous enabled/disabled state afterwards, even if `fn` raises (the exception propagates).
+@@@ reference
+import gc
+import weakref
+
+
+class TreeNode:
+    def __init__(self, name):
+        self.name = name
+        self.children = []
+        self._parent = None
+
+    @property
+    def parent(self):
+        return self._parent() if self._parent is not None else None
+
+    def add_child(self, child):
+        if child.parent is not None:
+            raise ValueError(f"{child.name!r} already has a parent")
+        child._parent = weakref.ref(self)
+        self.children.append(child)
+        return child
+
+    def path(self):
+        parts, node = [], self
+        while node is not None:
+            parts.append(node.name)
+            node = node.parent
+        return "/".join(reversed(parts))
+
+
+def cyclic_garbage(fn):
+    gc.collect()
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        fn()
+        return gc.collect()
+    finally:
+        if was_enabled:
+            gc.enable()
+@@@ tests
+import gc
+import weakref
+import pytest
+from solution import TreeNode, cyclic_garbage
+
+
+def build(n):
+    root = TreeNode("root")
+    refs = [weakref.ref(root)]
+    for i in range(n):
+        child = root.add_child(TreeNode(f"c{i}"))
+        refs.append(weakref.ref(child))
+        refs.append(weakref.ref(child.add_child(TreeNode("leaf"))))
+    return root, refs
+
+
+def test_parent_and_path():
+    root = TreeNode("root")
+    b = root.add_child(TreeNode("a")).add_child(TreeNode("b"))
+    assert b.path() == "root/a/b" and b.parent.parent is root and root.parent is None
+    assert [c.name for c in root.children] == ["a"]
+
+
+def test_second_parent_rejected():
+    a, b, c = TreeNode("a"), TreeNode("b"), TreeNode("c")
+    a.add_child(c)
+    with pytest.raises(ValueError):
+        b.add_child(c)
+
+
+def test_tree_freed_without_collector():
+    gc.disable()
+    try:
+        root, refs = build(20)
+        del root
+        assert all(r() is None for r in refs)
+    finally:
+        gc.enable()
+
+
+def test_parent_none_after_free():
+    root = TreeNode("r")
+    child = root.add_child(TreeNode("c"))
+    del root
+    assert child.parent is None and child.path() == "c"
+
+
+class Strong:
+    def __init__(self):
+        self.other = None
+
+
+def make_cycles(n):
+    for _ in range(n):
+        a, b = Strong(), Strong()
+        a.other, b.other = b, a
+
+
+def test_cyclic_garbage_counts():
+    assert cyclic_garbage(lambda: make_cycles(50)) >= 100
+    assert cyclic_garbage(lambda: build(50)) <= 2
+
+
+def test_restores_collector_state():
+    gc.disable()
+    try:
+        cyclic_garbage(lambda: None)
+        assert not gc.isenabled()
+    finally:
+        gc.enable()
+
+    def boom():
+        raise KeyError("x")
+    with pytest.raises(KeyError):
+        cyclic_garbage(boom)
+    assert gc.isenabled()
+@@@ task weak_value_cache leaf=2 diff=2 entry=ObjectCache
+@@@ prompt
+Write `ObjectCache(loader)` that caches loaded objects in a `weakref.WeakValueDictionary`, so an entry lives only as long as something outside the cache still uses the object; the cache must never keep an object alive by itself. `get(key)` returns the cached object if it is still alive, otherwise calls `loader(key)`, stores the result and returns it. `peek(key)` returns the cached object or None without ever loading. `len(cache)` is the number of live entries and `key in cache` tests for a live entry. The attribute `loads` counts how many times `loader` was called. Loaded objects are ordinary class instances (weak-referenceable).
+@@@ reference
+import weakref
+
+
+class ObjectCache:
+    def __init__(self, loader):
+        self._loader = loader
+        self._items = weakref.WeakValueDictionary()
+        self.loads = 0
+
+    def get(self, key):
+        obj = self._items.get(key)
+        if obj is None:
+            obj = self._loader(key)
+            self.loads += 1
+            self._items[key] = obj
+        return obj
+
+    def peek(self, key):
+        return self._items.get(key)
+
+    def __len__(self):
+        return len(self._items)
+
+    def __contains__(self, key):
+        return key in self._items
+@@@ tests
+import gc
+from solution import ObjectCache
+
+
+class Image:
+    def __init__(self, key):
+        self.key = key
+
+
+def test_same_object_while_in_use():
+    c = ObjectCache(Image)
+    a = c.get("x")
+    b = c.get("x")
+    assert a is b and c.loads == 1 and a.key == "x"
+
+
+def test_reloads_after_last_reference_dropped():
+    c = ObjectCache(Image)
+    a = c.get("x")
+    del a
+    gc.collect()
+    assert "x" not in c and len(c) == 0
+    assert c.get("x").key == "x" and c.loads == 2
+
+
+def test_cache_alone_keeps_nothing_alive():
+    c = ObjectCache(Image)
+    c.get("tmp")
+    gc.collect()
+    assert len(c) == 0 and c.peek("tmp") is None
+
+
+def test_peek_never_loads():
+    c = ObjectCache(Image)
+    assert c.peek("y") is None and c.loads == 0
+    keep = c.get("y")
+    assert c.peek("y") is keep and c.loads == 1
+
+
+def test_mixed_lifetimes():
+    c = ObjectCache(Image)
+    kept = c.get("keep")
+    c.get("drop")
+    gc.collect()
+    assert len(c) == 1 and "keep" in c and "drop" not in c
+    assert c.get("keep") is kept and c.loads == 2
+@@@ task slotted_record_factory leaf=3 diff=3 entry=make_record_class
+@@@ prompt
+Write `make_record_class(name, fields)` that builds and returns a new class named `name` whose instances keep exactly the given field names (a sequence of identifier strings) in `__slots__`, plus `"__weakref__"` so instances can still be weakly referenced, and therefore have no per-instance `__dict__`. The generated `__init__` takes the fields positionally or by keyword, all required: too many positional arguments, an unknown keyword, a field given twice or a missing field raise TypeError. `__repr__` looks like `Point(x=1, y=2)`, `__eq__` compares instances of the same class field by field (returning `NotImplemented` for anything else), and `__iter__` yields the field values in order. Assigning an attribute that is not a field must raise AttributeError. Duplicate field names or names that are not valid identifiers raise ValueError.
+@@@ reference
+import keyword
+
+
+def make_record_class(name, fields):
+    fields = tuple(fields)
+    if len(set(fields)) != len(fields) or not all(f.isidentifier() and not keyword.iskeyword(f) for f in fields):
+        raise ValueError(f"bad field names {fields!r}")
+
+    def __init__(self, *args, **kwargs):
+        if len(args) > len(fields):
+            raise TypeError(f"{name} takes at most {len(fields)} positional arguments")
+        values = dict(zip(fields, args))
+        for k, v in kwargs.items():
+            if k not in fields:
+                raise TypeError(f"unknown field {k!r}")
+            if k in values:
+                raise TypeError(f"field {k!r} given twice")
+            values[k] = v
+        missing = [f for f in fields if f not in values]
+        if missing:
+            raise TypeError(f"missing fields {missing}")
+        for f in fields:
+            setattr(self, f, values[f])
+
+    def __repr__(self):
+        return f"{name}(" + ", ".join(f"{f}={getattr(self, f)!r}" for f in fields) + ")"
+
+    def __eq__(self, other):
+        if type(other) is not type(self):
+            return NotImplemented
+        return tuple(self) == tuple(other)
+
+    def __iter__(self):
+        return (getattr(self, f) for f in fields)
+
+    ns = {"__slots__": fields + ("__weakref__",), "__init__": __init__, "__repr__": __repr__,
+          "__eq__": __eq__, "__iter__": __iter__, "__hash__": None}
+    return type(name, (), ns)
+@@@ tests
+import tracemalloc
+import weakref
+import pytest
+from solution import make_record_class
+
+
+def test_construction_repr_iter():
+    Point = make_record_class("Point", ["x", "y"])
+    p = Point(1, y=2)
+    assert Point.__name__ == "Point" and repr(p) == "Point(x=1, y=2)" and list(p) == [1, 2]
+    assert p.x == 1 and p.y == 2
+
+
+def test_no_instance_dict():
+    Point = make_record_class("Point", ("x", "y"))
+    p = Point(1, 2)
+    assert not hasattr(p, "__dict__")
+    p.x = 10
+    assert p.x == 10
+    with pytest.raises(AttributeError):
+        p.z = 3
+
+
+def test_weakref_still_works():
+    Point = make_record_class("Point", ["x"])
+    p = Point(1)
+    r = weakref.ref(p)
+    assert r() is p
+    del p
+    assert r() is None
+
+
+@pytest.mark.parametrize("args,kwargs", [((1,), {}), ((1, 2, 3), {}), ((1,), {"z": 2}), ((1,), {"x": 2}), ((), {})])
+def test_bad_arguments(args, kwargs):
+    Point = make_record_class("Point", ["x", "y"])
+    with pytest.raises(TypeError):
+        Point(*args, **kwargs)
+
+
+def test_bad_field_names():
+    with pytest.raises(ValueError):
+        make_record_class("Bad", ["a", "a"])
+    with pytest.raises(ValueError):
+        make_record_class("Bad", ["not valid"])
+
+
+def test_equality():
+    P = make_record_class("Point", ["x", "y"])
+    Q = make_record_class("Point", ["x", "y"])
+    assert P(1, 2) == P(1, 2) and P(1, 2) != P(1, 3)
+    assert P(1, 2) != Q(1, 2) and P(1, 2) != (1, 2)
+
+
+def test_uses_less_memory_than_dict_instances():
+    Rec = make_record_class("Rec", ["a", "b", "c", "d"])
+
+    class Plain:
+        def __init__(self, a, b, c, d):
+            self.a, self.b, self.c, self.d = a, b, c, d
+
+    def measure(cls):
+        tracemalloc.start()
+        try:
+            objs = [cls(1, 2, 3, 4) for _ in range(5000)]
+            return tracemalloc.get_traced_memory()[0], objs
+        finally:
+            tracemalloc.stop()
+    slotted, _ = measure(Rec)
+    plain, _ = measure(Plain)
+    assert slotted < plain * 0.9
+@@@ task deep_size_and_peak leaf=4 diff=4 entry=deep_sizeof,peak_memory
+@@@ prompt
+Write two memory measurement helpers.
+
+`deep_sizeof(obj) -> int` returns `sys.getsizeof(obj)` plus, recursively, the sizes of everything it contains: the items of lists, tuples, sets and frozensets, the keys and values of dicts, and for any other object its `__dict__` (if it has one) and the values of the `__slots__` attributes (declared anywhere in its class's MRO) that are currently set. Classes themselves are not followed. Each distinct object (by `id`) is counted once, so shared references are not double-counted and cycles terminate.
+
+`peak_memory(fn, *args, **kwargs) -> tuple[object, int]` calls `fn(*args, **kwargs)` under `tracemalloc` and returns `(result, peak)`, where `peak` is the highest traced memory during the call minus the traced memory at its start (use `tracemalloc.reset_peak()`). If tracemalloc was not tracing before, start it and stop it afterwards; if it was already tracing, leave it running.
+@@@ reference
+import sys
+import tracemalloc
+
+
+def _slot_names(cls):
+    for klass in cls.__mro__:
+        slots = klass.__dict__.get("__slots__", ())
+        if isinstance(slots, str):
+            slots = (slots,)
+        for s in slots:
+            if s not in ("__dict__", "__weakref__"):
+                yield s
+
+
+def deep_sizeof(obj):
+    seen, total, stack = set(), 0, [obj]
+    while stack:
+        o = stack.pop()
+        if id(o) in seen:
+            continue
+        seen.add(id(o))
+        total += sys.getsizeof(o)
+        if isinstance(o, dict):
+            stack.extend(o.keys())
+            stack.extend(o.values())
+        elif isinstance(o, (list, tuple, set, frozenset)):
+            stack.extend(o)
+        elif not isinstance(o, type):
+            d = getattr(o, "__dict__", None)
+            if isinstance(d, dict):
+                stack.append(d)
+            for name in _slot_names(type(o)):
+                try:
+                    stack.append(getattr(o, name))
+                except AttributeError:
+                    pass
+    return total
+
+
+def peak_memory(fn, *args, **kwargs):
+    started = not tracemalloc.is_tracing()
+    if started:
+        tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        base = tracemalloc.get_traced_memory()[0]
+        result = fn(*args, **kwargs)
+        peak = tracemalloc.get_traced_memory()[1] - base
+    finally:
+        if started:
+            tracemalloc.stop()
+    return result, peak
+@@@ tests
+import sys
+import tracemalloc
+from solution import deep_sizeof, peak_memory
+
+
+def test_flat_and_shared():
+    assert deep_sizeof([]) == sys.getsizeof([])
+    x = "a" * 1000
+    lst = [x, x]
+    assert deep_sizeof(lst) == sys.getsizeof(lst) + sys.getsizeof(x)
+
+
+def test_dict_and_nesting():
+    inner = [2.5]
+    d = {"key": inner}
+    expected = sys.getsizeof(d) + sys.getsizeof("key") + sys.getsizeof(inner) + sys.getsizeof(2.5)
+    assert deep_sizeof(d) == expected
+
+
+def test_cycles_terminate():
+    a = []
+    a.append(a)
+    assert deep_sizeof(a) == sys.getsizeof(a)
+    d = {}
+    d["self"] = d
+    assert deep_sizeof(d) == sys.getsizeof(d) + sys.getsizeof("self")
+
+
+class Slotted:
+    __slots__ = ("a", "b")
+
+
+class Base:
+    __slots__ = ("x",)
+
+
+class Child(Base):
+    __slots__ = ("y",)
+
+
+def test_objects_with_dict_and_slots():
+    s = Slotted()
+    s.a = "y" * 800
+    assert deep_sizeof(s) == sys.getsizeof(s) + sys.getsizeof(s.a)
+    c = Child()
+    c.x, c.y = "p" * 300, "q" * 400
+    assert deep_sizeof(c) == sys.getsizeof(c) + sys.getsizeof(c.x) + sys.getsizeof(c.y)
+
+    class Plain:
+        pass
+    p = Plain()
+    p.data = "z" * 5000
+    assert deep_sizeof(p) > sys.getsizeof(p) + 5000
+
+
+def test_peak_memory_basic():
+    result, peak = peak_memory(lambda n: len(bytearray(n)), 3_000_000)
+    assert result == 3_000_000
+    assert 3_000_000 <= peak < 6_000_000
+    assert not tracemalloc.is_tracing()
+
+
+def test_list_peaks_higher_than_generator():
+    _, list_peak = peak_memory(lambda: sum([i * 1000 for i in range(100_000)]))
+    _, gen_peak = peak_memory(lambda: sum(i * 1000 for i in range(100_000)))
+    assert list_peak > 500_000 and list_peak > 10 * gen_peak
+
+
+def test_already_tracing_left_running():
+    tracemalloc.start()
+    try:
+        big = bytearray(2_000_000)
+        _, peak = peak_memory(bytearray, 100_000)
+        assert 100_000 <= peak < 1_000_000
+        assert tracemalloc.is_tracing() and len(big) == 2_000_000
+    finally:
+        tracemalloc.stop()
+@@@ task stream_record_file leaf=5 diff=3 entry=stream_records,longest_record
+@@@ prompt
+A file holds UTF-8 text records separated by the byte `\x1e` (ASCII record separator). Write `stream_records(path, chunk_size=65536)` returning an iterator that yields each record as a `str` while reading the file in binary chunks with `read(chunk_size)`, never loading the whole file. Records, and multi-byte characters, may span chunk boundaries. Consecutive separators produce empty records `""`; a separator at the very end of the file does not produce a trailing empty record; an empty file yields nothing. `chunk_size < 1` raises ValueError immediately when `stream_records` is called, not at the first `next()`, while the file itself is opened only when iteration starts (so a missing file raises FileNotFoundError on the first `next()`). A generator function alone cannot do both; validate in a plain function that returns an inner generator. Also write `longest_record(path) -> int`: the length in characters of the longest record (0 if there are none), computed by streaming.
+@@@ reference
+def stream_records(path, chunk_size=65536):
+    if chunk_size < 1:
+        raise ValueError("chunk_size must be at least 1")
+    return _records(path, chunk_size)
+
+
+def _records(path, chunk_size):
+    buf = b""
+    with open(path, "rb") as f:
+        while chunk := f.read(chunk_size):
+            buf += chunk
+            *done, buf = buf.split(b"\x1e")
+            for rec in done:
+                yield rec.decode("utf-8")
+    if buf:
+        yield buf.decode("utf-8")
+
+
+def longest_record(path):
+    return max((len(r) for r in stream_records(path)), default=0)
+@@@ tests
+import tracemalloc
+import pytest
+from solution import stream_records, longest_record
+
+RECORDS = ["alpha", "", "βeta ünïcode", "😀x" * 3, "last"]
+
+
+@pytest.mark.parametrize("chunk", [1, 2, 3, 7, 65536])
+def test_roundtrip_across_chunk_sizes(tmp_path, chunk):
+    p = tmp_path / "data.bin"
+    p.write_bytes("\x1e".join(RECORDS).encode())
+    assert list(stream_records(p, chunk)) == RECORDS
+
+
+def test_trailing_separator_and_empty_file(tmp_path):
+    p = tmp_path / "a.bin"
+    p.write_bytes(b"a\x1e\x1e")
+    assert list(stream_records(p, 2)) == ["a", ""]
+    e = tmp_path / "e.bin"
+    e.write_bytes(b"")
+    assert list(stream_records(e)) == [] and longest_record(e) == 0
+
+
+def test_validation_is_eager_but_open_is_lazy(tmp_path):
+    with pytest.raises(ValueError):
+        stream_records(tmp_path / "whatever", 0)
+    it = stream_records(tmp_path / "missing.bin")
+    with pytest.raises(FileNotFoundError):
+        next(it)
+
+
+def test_streams_with_bounded_memory(tmp_path):
+    p = tmp_path / "big.bin"
+    rec = ("r" * 99).encode()
+    with open(p, "wb") as f:
+        for _ in range(40):
+            f.write(b"\x1e".join([rec] * 1000) + b"\x1e")
+    tracemalloc.start()
+    try:
+        count = sum(1 for _ in stream_records(p, 4096))
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert count == 40_000
+    assert peak < 1_000_000
+
+
+def test_longest_record(tmp_path):
+    p = tmp_path / "l.bin"
+    p.write_bytes("\x1e".join(["ab", "ééééé", "abc"]).encode())
+    assert longest_record(p) == 5
+@@@ task external_sort_chunks leaf=6 diff=4 entry=chunked,external_sort
+@@@ prompt
+Write `chunked(iterable, size)` returning an iterator of lists of up to `size` consecutive items (the last list may be shorter). `size < 1` raises ValueError as soon as `chunked` is called, and items are pulled from the source only while building each chunk (so taking the first chunk consumes exactly `size` items).
+
+Then write a generator `external_sort(numbers, chunk_size, tmp_dir)` that sorts an iterable of ints too big for memory: read it with `chunked`, sort each chunk and write it to `tmp_dir/chunk-<i>.txt` (i counting from 0, one int per line), then yield the merged result lazily with `heapq.merge`, reading the chunk files line by line. All chunk files exist from the first yielded value until the output is exhausted, and they are all deleted once the last value has been yielded, and also when the consumer closes the generator early. Empty input yields nothing and leaves no files.
+@@@ reference
+import heapq
+import itertools
+import os
+
+
+def chunked(iterable, size):
+    if size < 1:
+        raise ValueError("size must be at least 1")
+    return _chunks(iter(iterable), size)
+
+
+def _chunks(it, size):
+    while chunk := list(itertools.islice(it, size)):
+        yield chunk
+
+
+def _read_ints(path):
+    with open(path) as f:
+        for line in f:
+            yield int(line)
+
+
+def external_sort(numbers, chunk_size, tmp_dir):
+    paths = []
+    try:
+        for i, chunk in enumerate(chunked(numbers, chunk_size)):
+            chunk.sort()
+            path = os.path.join(tmp_dir, f"chunk-{i}.txt")
+            with open(path, "w") as f:
+                f.writelines(f"{n}\n" for n in chunk)
+            paths.append(path)
+        readers = [_read_ints(p) for p in paths]
+        try:
+            yield from heapq.merge(*readers)
+        finally:
+            for r in readers:
+                r.close()
+    finally:
+        for p in paths:
+            os.remove(p)
+@@@ tests
+import random
+import pytest
+from solution import chunked, external_sort
+
+
+def test_chunked_basic():
+    assert list(chunked(range(7), 3)) == [[0, 1, 2], [3, 4, 5], [6]]
+    assert list(chunked([], 2)) == []
+    with pytest.raises(ValueError):
+        chunked([1], 0)
+
+
+def test_chunked_pulls_lazily():
+    pulled = []
+
+    def src():
+        for i in range(100):
+            pulled.append(i)
+            yield i
+    it = chunked(src(), 4)
+    assert pulled == []
+    assert next(it) == [0, 1, 2, 3] and pulled == [0, 1, 2, 3]
+
+
+def test_external_sort_correct(tmp_path):
+    rng = random.Random(7)
+    data = [rng.randint(-500, 500) for _ in range(1000)]
+    assert list(external_sort(iter(data), 64, tmp_path)) == sorted(data)
+
+
+def test_chunk_files_lifetime(tmp_path):
+    data = list(range(250, 0, -1))
+    gen = external_sort(data, 100, tmp_path)
+    assert next(gen) == 1
+    names = sorted(p.name for p in tmp_path.iterdir())
+    assert names == ["chunk-0.txt", "chunk-1.txt", "chunk-2.txt"]
+    assert (tmp_path / "chunk-2.txt").read_text().split() == [str(n) for n in range(1, 51)]
+    rest = list(gen)
+    assert rest == list(range(2, 251)) and list(tmp_path.iterdir()) == []
+
+
+def test_early_close_cleans_up(tmp_path):
+    gen = external_sort([5, 3, 9, 1], 2, tmp_path)
+    next(gen)
+    gen.close()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_empty_input(tmp_path):
+    assert list(external_sort([], 10, tmp_path)) == []
+    assert list(tmp_path.iterdir()) == []
+@@@ task per_instance_lru leaf=7 diff=3 entry=CachedLookup
+@@@ prompt
+Write `CachedLookup(fetch, maxsize=128)` that caches `fetch(key)` results with `functools.lru_cache`. Do not decorate a method with `@lru_cache`: that one cache would be shared by every instance and would keep every instance alive through its keys. Build a per-instance cached function in `__init__` instead, without making it hold a strong reference back to the instance, so a `CachedLookup` can be garbage collected once nobody uses it. Methods: `get(key)` returns the (possibly cached) value; `invalidate()` empties the cache (call `cache_clear()`); `info()` returns the `cache_info()` named tuple (hits, misses, maxsize, currsize). Eviction is least-recently-used with the given `maxsize`.
+@@@ reference
+import functools
+
+
+class CachedLookup:
+    def __init__(self, fetch, maxsize=128):
+        self._cached = functools.lru_cache(maxsize=maxsize)(fetch)
+
+    def get(self, key):
+        return self._cached(key)
+
+    def invalidate(self):
+        self._cached.cache_clear()
+
+    def info(self):
+        return self._cached.cache_info()
+@@@ tests
+import gc
+import weakref
+from solution import CachedLookup
+
+
+def counting():
+    calls = []
+
+    def fetch(key):
+        calls.append(key)
+        return key * 10
+    return fetch, calls
+
+
+def test_caches_and_counts():
+    fetch, calls = counting()
+    c = CachedLookup(fetch)
+    assert [c.get(1), c.get(2), c.get(1), c.get(1)] == [10, 20, 10, 10]
+    assert calls == [1, 2]
+    info = c.info()
+    assert (info.hits, info.misses, info.currsize) == (2, 2, 2)
+
+
+def test_lru_eviction_order():
+    fetch, calls = counting()
+    c = CachedLookup(fetch, maxsize=2)
+    for k in ["a", "b", "a", "c"]:
+        c.get(k)
+    assert calls == ["a", "b", "c"]
+    c.get("a")
+    assert calls == ["a", "b", "c"]
+    c.get("b")
+    assert calls == ["a", "b", "c", "b"] and c.info().maxsize == 2
+
+
+def test_invalidate():
+    fetch, calls = counting()
+    c = CachedLookup(fetch)
+    c.get(3)
+    c.invalidate()
+    assert c.info().currsize == 0
+    c.get(3)
+    assert calls == [3, 3]
+
+
+def test_instances_do_not_share():
+    a = CachedLookup(lambda k: ("a", k))
+    b = CachedLookup(lambda k: ("b", k))
+    assert a.get(1) == ("a", 1) and b.get(1) == ("b", 1)
+    assert a.info().currsize == 1 and b.info().currsize == 1
+
+
+def test_instance_can_be_collected():
+    c = CachedLookup(lambda k: [k])
+    c.get(1)
+    r = weakref.ref(c)
+    del c
+    gc.collect()
+    assert r() is None
+@@@ task hand_memoize leaf=8 diff=3 entry=memoize
+@@@ prompt
+Write a decorator `memoize(fn)` that caches results by hand in a dict, without `functools.lru_cache` or `functools.cache`. The cache key combines the positional arguments with the keyword arguments independent of their order, so `f(a=1, b=2)` and `f(b=2, a=1)` share one entry (positional and keyword spellings of the same argument may be separate entries). Falsy results, including None, are cached like any other; a call that raises is not cached, so the next call tries again. The wrapper exposes its dict as `wrapper.cache`, provides `wrapper.clear()` to empty it, and keeps the wrapped function's `__name__` and `__doc__` via `functools.wraps`. Unhashable arguments raise TypeError. A recursive function that calls itself through its decorated name must benefit from the cache.
+@@@ reference
+import functools
+
+
+def memoize(fn):
+    cache = {}
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        key = (args, frozenset(kwargs.items()))
+        try:
+            return cache[key]
+        except KeyError:
+            pass
+        result = fn(*args, **kwargs)
+        cache[key] = result
+        return result
+
+    wrapper.cache = cache
+    wrapper.clear = cache.clear
+    return wrapper
+@@@ tests
+import pytest
+from solution import memoize
+
+
+def test_caches_calls():
+    calls = []
+
+    @memoize
+    def square(x):
+        calls.append(x)
+        return x * x
+    assert [square(3), square(3), square(4)] == [9, 9, 16]
+    assert calls == [3, 4] and len(square.cache) == 2
+
+
+def test_none_and_falsy_cached():
+    calls = []
+
+    @memoize
+    def nothing(x):
+        calls.append(x)
+        return None if x else 0
+    nothing(1), nothing(1), nothing(0), nothing(0)
+    assert calls == [1, 0]
+
+
+def test_exceptions_not_cached():
+    attempts = []
+
+    @memoize
+    def flaky(x):
+        attempts.append(x)
+        if len(attempts) == 1:
+            raise RuntimeError("first call fails")
+        return x
+    with pytest.raises(RuntimeError):
+        flaky(5)
+    assert flaky(5) == 5 and flaky(5) == 5 and attempts == [5, 5]
+
+
+def test_keyword_order_irrelevant():
+    calls = []
+
+    @memoize
+    def f(a, b):
+        calls.append((a, b))
+        return a - b
+    assert f(a=5, b=2) == 3 and f(b=2, a=5) == 3
+    assert calls == [(5, 2)]
+
+
+def test_recursion_uses_cache():
+    calls = []
+
+    @memoize
+    def fib(n):
+        calls.append(n)
+        return n if n < 2 else fib(n - 1) + fib(n - 2)
+    assert fib(200) == 280571172992510140037611932413038677189525
+    assert len(calls) == 201
+
+
+def test_wraps_clear_and_unhashable():
+    @memoize
+    def ident(x):
+        """Return x."""
+        return x
+    assert ident.__name__ == "ident" and ident.__doc__ == "Return x."
+    ident(1)
+    ident.clear()
+    assert ident.cache == {}
+    with pytest.raises(TypeError):
+        ident([1, 2])

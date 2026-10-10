@@ -1,0 +1,173 @@
+@@@ task typed_cache_registry leaf=7 diff=3 entry=REGISTRY,registered_cache,clear_caches,cache_report,describe
+@@@ prompt
+Build a small registry of `functools.lru_cache` caches so an application can inspect and invalidate them all at once. `REGISTRY` is a module-level dict mapping a function's `__qualname__` to its cached wrapper. `registered_cache(maxsize=128, typed=False)` is a decorator factory that wraps the function with `functools.lru_cache(maxsize=maxsize, typed=typed)`, registers the wrapper and returns it. `clear_caches() -> int` clears every registered cache with `cache_clear()` and returns the total number of entries dropped (the sum of the `currsize` values before clearing). `cache_report() -> dict[str, tuple[int, int, int]]` maps each registered name to `(hits, misses, currsize)`. Finally, define `describe(value) -> str`, returning `f"{type(value).__name__}:{value!r}"`, decorated with `@registered_cache(maxsize=256, typed=True)`. It has to be typed: `1`, `1.0` and `True` are equal and hash the same, so an untyped cache could hand `describe(True)` the cached answer for `describe(1.0)`.
+@@@ reference
+import functools
+
+REGISTRY = {}
+
+
+def registered_cache(maxsize=128, typed=False):
+    def decorator(fn):
+        wrapped = functools.lru_cache(maxsize=maxsize, typed=typed)(fn)
+        REGISTRY[fn.__qualname__] = wrapped
+        return wrapped
+    return decorator
+
+
+def clear_caches() -> int:
+    dropped = 0
+    for wrapped in REGISTRY.values():
+        dropped += wrapped.cache_info().currsize
+        wrapped.cache_clear()
+    return dropped
+
+
+def cache_report() -> dict[str, tuple[int, int, int]]:
+    out = {}
+    for name, wrapped in REGISTRY.items():
+        info = wrapped.cache_info()
+        out[name] = (info.hits, info.misses, info.currsize)
+    return out
+
+
+@registered_cache(maxsize=256, typed=True)
+def describe(value) -> str:
+    return f"{type(value).__name__}:{value!r}"
+@@@ tests
+from solution import REGISTRY, registered_cache, clear_caches, cache_report, describe
+
+
+def test_describe_is_typed():
+    clear_caches()
+    assert describe(1) == "int:1" and describe(1.0) == "float:1.0" and describe(True) == "bool:True"
+    assert describe(1) == "int:1"
+    assert describe.cache_parameters() == {"maxsize": 256, "typed": True}
+    assert REGISTRY["describe"] is describe
+    assert cache_report()["describe"] == (1, 3, 3)
+
+
+def test_registration_and_eviction():
+    calls = []
+
+    @registered_cache(maxsize=2)
+    def square(x):
+        calls.append(x)
+        return x * x
+    name = "test_registration_and_eviction.<locals>.square"
+    assert REGISTRY[name] is square
+    for x in [1, 2, 1, 3, 2]:
+        square(x)
+    assert calls == [1, 2, 3, 2]
+    assert cache_report()[name] == (1, 4, 2)
+
+
+def test_untyped_shares_equal_keys():
+    @registered_cache()
+    def kind(v, w):
+        return type(v).__name__
+    assert kind(1, 0) == "int" and kind(1.0, 0) == "int"
+
+
+def test_clear_caches_counts_entries():
+    clear_caches()
+
+    @registered_cache(maxsize=10)
+    def ident(x):
+        return x
+    for i in range(4):
+        ident(i)
+    describe("a")
+    assert clear_caches() == 5
+    assert all(r[2] == 0 for r in cache_report().values())
+    assert clear_caches() == 0
+
+
+def test_report_covers_all():
+    report = cache_report()
+    assert set(report) == set(REGISTRY) and "describe" in report
+    assert all(isinstance(v, tuple) and len(v) == 3 for v in report.values())
+@@@ task streaming_line_stats leaf=5 diff=3 entry=line_stats,longest_lines
+@@@ prompt
+Process a large text file in a single streaming pass, iterating over the file object line by line and never holding all lines in memory (no `read()`, `readlines()` or `list(f)`). `line_stats(path) -> tuple[int, int, int]` returns `(line_count, total_chars, longest)`, where characters are counted without the line terminator (`"\n"`, read as UTF-8 text); a final line without a newline still counts, and an empty file gives `(0, 0, 0)`. `longest_lines(path, n) -> list[str]` returns the `n` longest lines (terminators stripped), longest first, and among equal lengths the earlier line first; keep only `n` candidates at a time, for example with `heapq.nlargest(n, generator, key=len)`, which is stable in that way. `n <= 0` gives `[]`.
+@@@ reference
+import heapq
+
+
+def _lines(path):
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            yield line.rstrip("\n")
+
+
+def line_stats(path):
+    count = total = longest = 0
+    for line in _lines(path):
+        count += 1
+        total += len(line)
+        longest = max(longest, len(line))
+    return count, total, longest
+
+
+def longest_lines(path, n):
+    if n <= 0:
+        return []
+    return heapq.nlargest(n, _lines(path), key=len)
+@@@ tests
+import tracemalloc
+import pytest
+from solution import line_stats, longest_lines
+
+
+@pytest.fixture
+def big(tmp_path):
+    p = tmp_path / "big.txt"
+    with open(p, "w", encoding="utf-8") as f:
+        for i in range(60_000):
+            f.write(("x" * (i % 97)) + f"{i:06d}\n")
+    return p
+
+
+def measure(fn, *args):
+    tracemalloc.start()
+    try:
+        result = fn(*args)
+        return result, tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+
+def test_small_file(tmp_path):
+    p = tmp_path / "s.txt"
+    p.write_text("héllo\n\nab\nlast", encoding="utf-8")
+    assert line_stats(p) == (4, 11, 5)
+    assert longest_lines(p, 2) == ["héllo", "last"]
+
+
+def test_empty_and_trailing_newline(tmp_path):
+    e = tmp_path / "e.txt"
+    e.write_text("")
+    assert line_stats(e) == (0, 0, 0) and longest_lines(e, 3) == []
+    t = tmp_path / "t.txt"
+    t.write_text("a\nbb\n")
+    assert line_stats(t) == (2, 3, 2) and longest_lines(t, 0) == []
+
+
+def test_ties_keep_file_order(tmp_path):
+    p = tmp_path / "ties.txt"
+    p.write_text("aa\nbb\nc\ndd\neee\n")
+    assert longest_lines(p, 3) == ["eee", "aa", "bb"]
+
+
+def test_stats_bounded_memory(big):
+    (count, total, longest), peak = measure(line_stats, big)
+    assert count == 60_000 and longest == 96 + 6
+    assert total == sum((i % 97) + 6 for i in range(60_000))
+    assert peak < 1_000_000
+
+
+def test_longest_bounded_memory(big):
+    top, peak = measure(longest_lines, big, 3)
+    assert [len(s) for s in top] == [102, 102, 102]
+    assert top[0].endswith("000096") and top[1].endswith("000193")
+    assert peak < 1_000_000

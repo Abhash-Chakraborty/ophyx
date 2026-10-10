@@ -1,0 +1,323 @@
+@@@ task dst_elapsed_time leaf=3 diff=4 entry=local_time_exists,is_ambiguous,elapsed_hours,add_elapsed
+@@@ prompt
+Write DST-aware time arithmetic with `datetime` and `zoneinfo`. Local times are naive ISO strings such as `"2026-03-29T02:30"`, interpreted in an IANA `zone`. `local_time_exists(local, zone) -> bool` is False for wall-clock times skipped by a spring-forward transition (attach the zone, convert to UTC and back, and see whether the wall time survives). `is_ambiguous(local, zone) -> bool` is True for times that occur twice at a fall-back transition: the time exists and its UTC offset differs between `fold=0` and `fold=1`. `elapsed_hours(start_local, end_local, zone) -> float` returns the real elapsed time in hours between two local times, so midnight to midnight across the spring-forward day in Berlin is 23.0. `add_elapsed(local, zone, hours) -> str` adds real elapsed hours (do the arithmetic in UTC) and returns the resulting local time's `isoformat()` with its offset. Both of the last two functions raise `ValueError` for a nonexistent input time and use `fold=0` for ambiguous ones.
+@@@ reference
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+
+def _attach(local, zone, fold=0):
+    naive = datetime.fromisoformat(local)
+    if naive.tzinfo is not None:
+        raise ValueError("expected a naive local time")
+    return naive, naive.replace(tzinfo=ZoneInfo(zone), fold=fold)
+
+
+def local_time_exists(local, zone):
+    naive, aware = _attach(local, zone)
+    back = aware.astimezone(timezone.utc).astimezone(aware.tzinfo)
+    return back.replace(tzinfo=None) == naive
+
+
+def is_ambiguous(local, zone):
+    _, aware = _attach(local, zone)
+    return local_time_exists(local, zone) and aware.utcoffset() != aware.replace(fold=1).utcoffset()
+
+
+def _checked(local, zone):
+    if not local_time_exists(local, zone):
+        raise ValueError(f"{local} does not exist in {zone}")
+    return _attach(local, zone)[1]
+
+
+def elapsed_hours(start_local, end_local, zone):
+    start, end = _checked(start_local, zone), _checked(end_local, zone)
+    return (end.astimezone(timezone.utc) - start.astimezone(timezone.utc)) / timedelta(hours=1)
+
+
+def add_elapsed(local, zone, hours):
+    start = _checked(local, zone)
+    return (start.astimezone(timezone.utc) + timedelta(hours=hours)).astimezone(start.tzinfo).isoformat()
+@@@ tests
+import pytest
+
+zoneinfo = pytest.importorskip("zoneinfo")
+try:
+    zoneinfo.ZoneInfo("Europe/Berlin")
+    zoneinfo.ZoneInfo("America/New_York")
+except zoneinfo.ZoneInfoNotFoundError:
+    pytest.skip("no tzdata", allow_module_level=True)
+
+from solution import local_time_exists, is_ambiguous, elapsed_hours, add_elapsed
+
+BER, NY = "Europe/Berlin", "America/New_York"
+
+
+def test_gap_times_do_not_exist():
+    assert not local_time_exists("2026-03-29T02:30", BER)
+    assert not local_time_exists("2026-03-08T02:15", NY)
+    assert local_time_exists("2026-03-29T03:00", BER) and local_time_exists("2026-03-29T01:59", BER)
+
+
+def test_ambiguous_times():
+    assert is_ambiguous("2026-10-25T02:30", BER) and is_ambiguous("2026-11-01T01:30", NY)
+    assert not is_ambiguous("2026-10-25T03:30", BER)
+    assert not is_ambiguous("2026-03-29T02:30", BER)
+    assert not is_ambiguous("2026-07-01T12:00", "UTC")
+
+
+def test_elapsed_across_transitions():
+    assert elapsed_hours("2026-03-29T00:00", "2026-03-30T00:00", BER) == 23.0
+    assert elapsed_hours("2026-10-24T12:00", "2026-10-25T12:00", BER) == 25.0
+    assert elapsed_hours("2026-03-29T01:30", "2026-03-29T03:30", BER) == 1.0
+    assert elapsed_hours("2026-06-01T08:00", "2026-06-01T06:30", NY) == -1.5
+
+
+def test_add_elapsed():
+    assert add_elapsed("2026-03-29T01:30", BER, 1) == "2026-03-29T03:30:00+02:00"
+    assert add_elapsed("2026-10-25T01:30", BER, 2) == "2026-10-25T02:30:00+01:00"
+    assert add_elapsed("2026-11-01T00:30", NY, 24) == "2026-11-01T23:30:00-05:00"
+
+
+def test_ambiguous_uses_fold_zero():
+    assert add_elapsed("2026-10-25T02:30", BER, 0) == "2026-10-25T02:30:00+02:00"
+    assert elapsed_hours("2026-10-25T02:30", "2026-10-25T03:30", BER) == 2.0
+
+
+def test_nonexistent_inputs_rejected():
+    with pytest.raises(ValueError):
+        elapsed_hours("2026-03-29T02:30", "2026-03-29T05:00", BER)
+    with pytest.raises(ValueError):
+        add_elapsed("2026-03-08T02:30", NY, 1)
+@@@ task sqlite_savepoint_transfers leaf=6 diff=4 entry=open_bank,create_account,transfer,apply_batch,InsufficientFunds
+@@@ prompt
+Write account transfers on `sqlite3` with explicit transactions. `open_bank(path)` connects with `isolation_level=None` (autocommit mode, so you issue `BEGIN`, `COMMIT`, `ROLLBACK` and `SAVEPOINT` yourself) and creates `accounts(id TEXT PRIMARY KEY, balance INTEGER NOT NULL CHECK (balance >= 0))`. `create_account(conn, account_id, balance=0)` inserts an account. `transfer(conn, src, dst, amount)` moves money atomically inside one `BEGIN ... COMMIT`. A non-positive amount raises `ValueError` before touching the database. An unknown account raises `KeyError`, and a balance that would go negative raises `InsufficientFunds` (a `ValueError` subclass) chained from the `IntegrityError` raised by the CHECK constraint. In both cases everything done so far is rolled back, including a debit already applied. `apply_batch(conn, transfers) -> list[bool]` runs a list of `(src, dst, amount)` in one outer transaction, each inside its own `SAVEPOINT`. A failing transfer is rolled back to its savepoint and reported as False, the others as True, and the batch commits once at the end. After any of these calls, `conn.in_transaction` must be False.
+@@@ reference
+import sqlite3
+
+
+class InsufficientFunds(ValueError):
+    pass
+
+
+def open_bank(path):
+    conn = sqlite3.connect(path, isolation_level=None)
+    conn.execute("CREATE TABLE IF NOT EXISTS accounts ("
+                 "id TEXT PRIMARY KEY, balance INTEGER NOT NULL CHECK (balance >= 0))")
+    return conn
+
+
+def create_account(conn, account_id, balance=0):
+    conn.execute("INSERT INTO accounts (id, balance) VALUES (?, ?)", (account_id, balance))
+
+
+def _move(conn, src, dst, amount):
+    try:
+        cur = conn.execute("UPDATE accounts SET balance = balance - ? WHERE id = ?", (amount, src))
+    except sqlite3.IntegrityError as exc:
+        raise InsufficientFunds(f"{src} cannot pay {amount}") from exc
+    if cur.rowcount != 1:
+        raise KeyError(src)
+    if conn.execute("UPDATE accounts SET balance = balance + ? WHERE id = ?", (amount, dst)).rowcount != 1:
+        raise KeyError(dst)
+
+
+def transfer(conn, src, dst, amount):
+    if amount <= 0:
+        raise ValueError("amount must be positive")
+    conn.execute("BEGIN")
+    try:
+        _move(conn, src, dst, amount)
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")
+
+
+def apply_batch(conn, transfers):
+    results = []
+    conn.execute("BEGIN")
+    try:
+        for src, dst, amount in transfers:
+            conn.execute("SAVEPOINT one")
+            try:
+                if amount <= 0:
+                    raise ValueError("amount must be positive")
+                _move(conn, src, dst, amount)
+            except (ValueError, KeyError):
+                conn.execute("ROLLBACK TO one")
+                results.append(False)
+            else:
+                results.append(True)
+            conn.execute("RELEASE one")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")
+    return results
+@@@ tests
+import sqlite3
+import pytest
+from solution import open_bank, create_account, transfer, apply_batch, InsufficientFunds
+
+
+@pytest.fixture
+def bank(tmp_path):
+    conn = open_bank(tmp_path / "bank.db")
+    for acct, bal in (("alice", 100), ("bob", 20), ("carol", 0)):
+        create_account(conn, acct, bal)
+    yield conn, tmp_path / "bank.db"
+    conn.close()
+
+
+def balances(path):
+    other = sqlite3.connect(path)
+    try:
+        return dict(other.execute("SELECT id, balance FROM accounts"))
+    finally:
+        other.close()
+
+
+def test_transfer_commits(bank):
+    conn, path = bank
+    transfer(conn, "alice", "bob", 30)
+    assert not conn.in_transaction
+    assert balances(path) == {"alice": 70, "bob": 50, "carol": 0}
+
+
+def test_insufficient_funds_rolls_back(bank):
+    conn, path = bank
+    with pytest.raises(InsufficientFunds) as ei:
+        transfer(conn, "bob", "alice", 21)
+    assert isinstance(ei.value, ValueError) and isinstance(ei.value.__cause__, sqlite3.IntegrityError)
+    assert not conn.in_transaction and balances(path)["bob"] == 20
+
+
+def test_unknown_destination_undoes_debit(bank):
+    conn, path = bank
+    with pytest.raises(KeyError):
+        transfer(conn, "alice", "mallory", 10)
+    with pytest.raises(KeyError):
+        transfer(conn, "nobody", "alice", 10)
+    assert not conn.in_transaction and balances(path) == {"alice": 100, "bob": 20, "carol": 0}
+
+
+def test_bad_amount(bank):
+    conn, path = bank
+    for amount in (0, -5):
+        with pytest.raises(ValueError):
+            transfer(conn, "alice", "bob", amount)
+    assert not conn.in_transaction and balances(path)["alice"] == 100
+
+
+def test_batch_with_savepoints(bank):
+    conn, path = bank
+    res = apply_batch(conn, [("alice", "bob", 50), ("alice", "bob", 1000), ("bob", "carol", 60),
+                             ("alice", "ghost", 5), ("carol", "alice", 0), ("carol", "alice", 10)])
+    assert res == [True, False, True, False, False, True]
+    assert not conn.in_transaction
+    assert balances(path) == {"alice": 60, "bob": 10, "carol": 50}
+
+
+def test_empty_batch_and_reuse(bank):
+    conn, path = bank
+    assert apply_batch(conn, []) == []
+    transfer(conn, "bob", "carol", 20)
+    assert apply_batch(conn, [("carol", "alice", 20)]) == [True]
+    assert balances(path) == {"alice": 120, "bob": 0, "carol": 0}
+@@@ task csv_dialects_dictwriter leaf=2 diff=3 entry=register_pipe_dialect,write_records,detect_delimiter,convert
+@@@ prompt
+Write CSV helpers built on dialects, `DictWriter` and `Sniffer`. `register_pipe_dialect()` registers a dialect named `"pipes"` with `delimiter="|"`, `quotechar='"'`, `quoting=csv.QUOTE_MINIMAL` and `lineterminator="\n"`, and calling it twice is harmless. `write_records(path, records, *, dialect="excel") -> list[str]` writes a list of dicts with `csv.DictWriter`. The header is the union of all keys in first-seen order, missing values are written as `""` (`restval`), and the file is opened with `newline=""`. It returns the header. `detect_delimiter(path) -> str` sniffs the first 4096 characters with `csv.Sniffer().sniff(sample, delimiters=",;\t|")` and returns the delimiter, raising `ValueError` (chained from `csv.Error`) when sniffing fails. `convert(src, dst, dialect) -> int` reads `src` with its detected delimiter using `csv.DictReader`, writes the rows to `dst` with `write_records` in the given dialect, and returns the number of data rows.
+@@@ reference
+import csv
+
+
+def register_pipe_dialect():
+    csv.register_dialect("pipes", delimiter="|", quotechar='"', quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
+
+
+def write_records(path, records, *, dialect="excel"):
+    fields = {}
+    for rec in records:
+        for key in rec:
+            fields.setdefault(key, None)
+    header = list(fields)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=header, restval="", dialect=dialect)
+        writer.writeheader()
+        writer.writerows(records)
+    return header
+
+
+def detect_delimiter(path):
+    with open(path, newline="", encoding="utf-8") as f:
+        sample = f.read(4096)
+    try:
+        return csv.Sniffer().sniff(sample, delimiters=",;\t|").delimiter
+    except csv.Error as exc:
+        raise ValueError(f"cannot detect delimiter of {path}") from exc
+
+
+def convert(src, dst, dialect):
+    delim = detect_delimiter(src)
+    with open(src, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f, delimiter=delim))
+    write_records(dst, rows, dialect=dialect)
+    return len(rows)
+@@@ tests
+import csv
+import pytest
+from solution import register_pipe_dialect, write_records, detect_delimiter, convert
+
+
+def test_pipe_dialect_registered_idempotently():
+    register_pipe_dialect()
+    register_pipe_dialect()
+    d = csv.get_dialect("pipes")
+    assert d.delimiter == "|" and d.lineterminator == "\n" and d.quoting == csv.QUOTE_MINIMAL
+
+
+def test_write_union_header_and_restval(tmp_path):
+    p = tmp_path / "out.csv"
+    header = write_records(p, [{"a": 1, "b": 2}, {"c": 3, "a": 4}, {}])
+    assert header == ["a", "b", "c"]
+    assert p.read_bytes() == b"a,b,c\r\n1,2,\r\n4,,3\r\n,,\r\n"
+
+
+def test_write_with_pipes_quotes_delimiters(tmp_path):
+    register_pipe_dialect()
+    p = tmp_path / "out.psv"
+    write_records(p, [{"name": "a|b", "note": 'say "hi"'}, {"name": "plain"}], dialect="pipes")
+    assert p.read_text(encoding="utf-8") == 'name|note\n"a|b"|"say ""hi"""\nplain|\n'
+
+
+def test_extra_keys_never_dropped(tmp_path):
+    p = tmp_path / "x.csv"
+    write_records(p, [{"a": 1}, {"b": 2}])
+    with open(p, newline="") as f:
+        assert list(csv.DictReader(f)) == [{"a": "1", "b": ""}, {"a": "", "b": "2"}]
+
+
+@pytest.mark.parametrize("text,delim", [("name;city;age\nAda;London;36\nBob;Paris;41\n", ";"),
+                                        ("a\tb\tc\n1\t2\t3\n4\t5\t6\n", "\t"),
+                                        ('id,note\n1,"a;b"\n2,c\n', ",")])
+def test_detect_delimiter(tmp_path, text, delim):
+    p = tmp_path / "in.txt"
+    p.write_text(text, encoding="utf-8")
+    assert detect_delimiter(p) == delim
+
+
+def test_detect_failure(tmp_path):
+    p = tmp_path / "blob.txt"
+    p.write_text("justoneword", encoding="utf-8")
+    with pytest.raises(ValueError) as ei:
+        detect_delimiter(p)
+    assert isinstance(ei.value.__cause__, csv.Error)
+
+
+def test_convert_semicolon_to_pipes(tmp_path):
+    register_pipe_dialect()
+    src, dst = tmp_path / "in.csv", tmp_path / "out.psv"
+    src.write_text("name;city;age\nAda;London;36\nBob;Paris|Texas;41\n", encoding="utf-8")
+    assert convert(src, dst, "pipes") == 2
+    assert dst.read_text(encoding="utf-8") == 'name|city|age\nAda|London|36\nBob|"Paris|Texas"|41\n'

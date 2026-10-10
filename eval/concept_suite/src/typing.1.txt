@@ -1,0 +1,1114 @@
+@@@ task annotated_durations leaf=0 diff=2 entry=UNITS,parse_duration,format_duration
+@@@ prompt
+Write a fully annotated duration module. Define the module-level annotated variable `UNITS: dict[str, int] = {"d": 86400, "h": 3600, "m": 60, "s": 1}`. Write `parse_duration(text: str) -> int`, which parses strings such as `"1h30m"`, `"45s"` or `"2d4h"` into seconds: one or more groups of a non-negative integer followed by a unit, units in the order d, h, m, s, each at most once, no whitespace or other characters; anything else (including `""`) raises ValueError. Write `format_duration(seconds: int, *, compact: bool = False) -> str` that turns seconds back into units from largest to smallest, omitting zero units: compact form joins the groups directly (`"1h30m"`), the default form separates them with single spaces (`"1h 30m"`); 0 gives `"0s"`, negative input raises ValueError. The annotations must be exactly as given, because the tests read them with `typing.get_type_hints`.
+@@@ reference
+import re
+
+UNITS: dict[str, int] = {"d": 86400, "h": 3600, "m": 60, "s": 1}
+_RE = re.compile(r"(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?")
+
+
+def parse_duration(text: str) -> int:
+    m = _RE.fullmatch(text)
+    if not m or not any(m.groups()):
+        raise ValueError(f"bad duration {text!r}")
+    return sum(int(g) * UNITS[u] for g, u in zip(m.groups(), "dhms") if g is not None)
+
+
+def format_duration(seconds: int, *, compact: bool = False) -> str:
+    if seconds < 0:
+        raise ValueError("negative duration")
+    parts: list[str] = []
+    for unit, size in UNITS.items():
+        n, seconds = divmod(seconds, size)
+        if n:
+            parts.append(f"{n}{unit}")
+    if not parts:
+        return "0s"
+    return ("" if compact else " ").join(parts)
+@@@ tests
+import typing
+import pytest
+import solution
+from solution import UNITS, parse_duration, format_duration
+
+
+def test_annotations():
+    assert typing.get_type_hints(parse_duration) == {"text": str, "return": int}
+    assert typing.get_type_hints(format_duration) == {"seconds": int, "compact": bool, "return": str}
+    assert typing.get_type_hints(solution)["UNITS"] == dict[str, int]
+    assert UNITS == {"d": 86400, "h": 3600, "m": 60, "s": 1}
+
+
+@pytest.mark.parametrize("text,secs", [("1h30m", 5400), ("45s", 45), ("2d4h", 187200), ("0s", 0), ("90m", 5400)])
+def test_parse(text, secs):
+    assert parse_duration(text) == secs
+
+
+@pytest.mark.parametrize("bad", ["", "1x", "30m1h", "1h 30m", "h", "1h1h", "-5s"])
+def test_parse_rejects(bad):
+    with pytest.raises(ValueError):
+        parse_duration(bad)
+
+
+def test_format():
+    assert format_duration(5400) == "1h 30m" and format_duration(5400, compact=True) == "1h30m"
+    assert format_duration(0) == "0s" and format_duration(86401, compact=True) == "1d1s"
+    with pytest.raises(ValueError):
+        format_duration(-1)
+
+
+def test_compact_is_keyword_only():
+    with pytest.raises(TypeError):
+        format_duration(60, True)
+
+
+def test_roundtrip():
+    for s in (1, 59, 61, 3600, 93784):
+        assert parse_duration(format_duration(s, compact=True)) == s
+@@@ task optional_union_port leaf=1 diff=2 entry=coerce_port,first_admin
+@@@ prompt
+Write two functions whose signatures use `|` unions. `coerce_port(value: int | str | None, default: int = 8080) -> int`: None gives `default`; an int is used as is, but a bool (which is a subclass of int) raises TypeError; a str is stripped and must then consist of ASCII digits only (otherwise ValueError) and is converted; any other type raises TypeError. The resulting port (including the default) must be in 1..65535, else ValueError. `first_admin(users: list[dict[str, object]]) -> str | None` returns the `"name"` of the first user whose `"role"` is `"admin"`, or None when there is none (users may lack either key). Narrow types with `isinstance` checks in the right order.
+@@@ reference
+def coerce_port(value: int | str | None, default: int = 8080) -> int:
+    if value is None:
+        port = default
+    elif isinstance(value, bool):
+        raise TypeError("bool is not a port")
+    elif isinstance(value, int):
+        port = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not (text.isascii() and text.isdigit()):
+            raise ValueError(f"not a port: {value!r}")
+        port = int(text)
+    else:
+        raise TypeError(f"unsupported type {type(value).__name__}")
+    if not 1 <= port <= 65535:
+        raise ValueError(f"port out of range: {port}")
+    return port
+
+
+def first_admin(users: list[dict[str, object]]) -> str | None:
+    for u in users:
+        if u.get("role") == "admin":
+            name = u.get("name")
+            return name if isinstance(name, str) else None
+    return None
+@@@ tests
+import typing
+import pytest
+from solution import coerce_port, first_admin
+
+
+def test_hints_are_unions():
+    hints = typing.get_type_hints(coerce_port)
+    assert set(typing.get_args(hints["value"])) == {int, str, type(None)}
+    assert hints["default"] is int and hints["return"] is int
+    assert set(typing.get_args(typing.get_type_hints(first_admin)["return"])) == {str, type(None)}
+
+
+def test_coerce_values():
+    assert coerce_port(None) == 8080 and coerce_port(None, 9000) == 9000
+    assert coerce_port(443) == 443 and coerce_port("  80 ") == 80
+
+
+@pytest.mark.parametrize("bad", ["8o", "", "-1", "１２", "0", "65536", 0, 70000])
+def test_coerce_value_errors(bad):
+    with pytest.raises(ValueError):
+        coerce_port(bad)
+
+
+@pytest.mark.parametrize("bad", [True, False, 3.5, b"80", [80]])
+def test_coerce_type_errors(bad):
+    with pytest.raises(TypeError):
+        coerce_port(bad)
+
+
+def test_default_also_checked():
+    with pytest.raises(ValueError):
+        coerce_port(None, 0)
+
+
+def test_first_admin():
+    users = [{"name": "ann"}, {"name": "bob", "role": "user"}, {"name": "cy", "role": "admin"},
+             {"name": "di", "role": "admin"}]
+    assert first_admin(users) == "cy"
+    assert first_admin([{"role": "user"}]) is None and first_admin([]) is None
+@@@ task generic_ring_buffer leaf=2 diff=3 entry=T,RingBuffer,first_or
+@@@ prompt
+Write a generic container with `typing.TypeVar` and `typing.Generic`. Define `T = TypeVar("T")` and `class RingBuffer(Generic[T])`: `RingBuffer(capacity: int)` (capacity below 1 raises ValueError); `push(item: T) -> T | None` adds an item and, if the buffer was full, evicts and returns the oldest item (otherwise returns None); `__iter__` yields items from oldest to newest; `__len__`; `latest() -> T` returns the newest item (IndexError when empty). Because it is generic, `RingBuffer[int]` must be a valid parametrised alias and `RingBuffer[int](3)` must create an instance. Also write `first_or(items: Iterable[T], default: T) -> T` returning the first item or `default` when the iterable is empty.
+@@@ reference
+from collections import deque
+from collections.abc import Iterable, Iterator
+from typing import Generic, TypeVar
+
+T = TypeVar("T")
+
+
+class RingBuffer(Generic[T]):
+    def __init__(self, capacity: int) -> None:
+        if capacity < 1:
+            raise ValueError("capacity must be at least 1")
+        self._items: deque[T] = deque()
+        self.capacity = capacity
+
+    def push(self, item: T) -> T | None:
+        evicted = self._items.popleft() if len(self._items) == self.capacity else None
+        self._items.append(item)
+        return evicted
+
+    def __iter__(self) -> Iterator[T]:
+        return iter(list(self._items))
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def latest(self) -> T:
+        if not self._items:
+            raise IndexError("empty buffer")
+        return self._items[-1]
+
+
+def first_or(items: Iterable[T], default: T) -> T:
+    for item in items:
+        return item
+    return default
+@@@ tests
+import typing
+import pytest
+import solution
+from solution import RingBuffer, first_or
+
+
+def test_is_generic():
+    assert isinstance(solution.T, typing.TypeVar)
+    assert RingBuffer.__parameters__ == (solution.T,)
+    alias = RingBuffer[int]
+    assert typing.get_origin(alias) is RingBuffer and typing.get_args(alias) == (int,)
+    buf = RingBuffer[int](3)
+    assert isinstance(buf, RingBuffer) and buf.__orig_class__ == RingBuffer[int]
+
+
+def test_push_and_evict():
+    buf = RingBuffer(2)
+    assert buf.push("a") is None and buf.push("b") is None
+    assert buf.push("c") == "a" and list(buf) == ["b", "c"] and len(buf) == 2
+    assert buf.latest() == "c"
+
+
+def test_latest_empty_and_capacity():
+    with pytest.raises(IndexError):
+        RingBuffer(1).latest()
+    with pytest.raises(ValueError):
+        RingBuffer(0)
+    one = RingBuffer(1)
+    one.push(1)
+    assert one.push(2) == 1 and list(one) == [2]
+
+
+def test_iteration_snapshot():
+    buf = RingBuffer(3)
+    for i in range(5):
+        buf.push(i)
+    assert list(buf) == [2, 3, 4] and list(buf) == [2, 3, 4]
+
+
+def test_first_or():
+    assert first_or(iter([5, 6]), 0) == 5 and first_or([], "x") == "x"
+    hints = typing.get_type_hints(first_or)
+    assert hints["return"] is solution.T and hints["default"] is solution.T
+@@@ task pep695_generics leaf=3 diff=3 entry=Matrix,transpose,Grouped,group_by,clamp min_python=3.12
+@@@ prompt
+Use the PEP 695 type parameter syntax (Python 3.12+), not `TypeVar` objects. Define the alias `type Matrix[T] = list[list[T]]`. Write `transpose[T](m: Matrix[T]) -> Matrix[T]` (an empty matrix gives `[]`; rows of different lengths raise ValueError). Write `class Grouped[K, V]` with `add(key: K, value: V) -> None`, `get(key: K) -> list[V]` (a copy of the values in insertion order, `[]` for an unknown key) and `keys() -> list[K]` (keys in first-insertion order). Write `group_by[K, V](items: Iterable[V], key: Callable[[V], K]) -> Grouped[K, V]`. Write `clamp[N: (int, float)](value: N, low: N, high: N) -> N`, whose type parameter is constrained to int or float, returning value limited to the range and raising ValueError when `low > high`.
+@@@ reference
+from collections.abc import Callable, Iterable
+
+type Matrix[T] = list[list[T]]
+
+
+def transpose[T](m: Matrix[T]) -> Matrix[T]:
+    if not m:
+        return []
+    width = len(m[0])
+    if any(len(row) != width for row in m):
+        raise ValueError("ragged matrix")
+    return [[row[i] for row in m] for i in range(width)]
+
+
+class Grouped[K, V]:
+    def __init__(self) -> None:
+        self._groups: dict[K, list[V]] = {}
+
+    def add(self, key: K, value: V) -> None:
+        self._groups.setdefault(key, []).append(value)
+
+    def get(self, key: K) -> list[V]:
+        return list(self._groups.get(key, []))
+
+    def keys(self) -> list[K]:
+        return list(self._groups)
+
+
+def group_by[K, V](items: Iterable[V], key: Callable[[V], K]) -> Grouped[K, V]:
+    g: Grouped[K, V] = Grouped()
+    for item in items:
+        g.add(key(item), item)
+    return g
+
+
+def clamp[N: (int, float)](value: N, low: N, high: N) -> N:
+    if low > high:
+        raise ValueError("low > high")
+    return max(low, min(value, high))
+@@@ tests
+import typing
+import pytest
+from solution import Matrix, transpose, Grouped, group_by, clamp
+
+
+def names(obj):
+    return tuple(p.__name__ for p in obj.__type_params__)
+
+
+def test_type_alias():
+    assert isinstance(Matrix, typing.TypeAliasType) and Matrix.__name__ == "Matrix"
+    assert names(Matrix) == ("T",)
+    assert typing.get_origin(Matrix.__value__) is list
+
+
+def test_function_and_class_params():
+    assert names(transpose) == ("T",) and names(group_by) == ("K", "V")
+    assert names(Grouped) == ("K", "V")
+    assert typing.get_origin(Grouped[str, int]) is Grouped
+
+
+def test_constrained_param():
+    (n,) = clamp.__type_params__
+    assert n.__name__ == "N" and n.__constraints__ == (int, float)
+    assert clamp(15, 0, 10) == 10 and clamp(-1.5, -1.0, 1.0) == -1.0 and clamp(3, 1, 5) == 3
+    with pytest.raises(ValueError):
+        clamp(1, 5, 0)
+
+
+def test_transpose():
+    assert transpose([[1, 2, 3], [4, 5, 6]]) == [[1, 4], [2, 5], [3, 6]]
+    assert transpose([]) == []
+    with pytest.raises(ValueError):
+        transpose([[1, 2], [3]])
+
+
+def test_group_by():
+    g = group_by(["apple", "avocado", "banana", "blueberry", "cherry"], lambda s: s[0])
+    assert g.keys() == ["a", "b", "c"] and g.get("b") == ["banana", "blueberry"]
+    assert g.get("z") == []
+    g.get("a").append("x")
+    assert g.get("a") == ["apple", "avocado"]
+@@@ task runtime_protocols leaf=4 diff=3 entry=Readable,Closeable,drain
+@@@ prompt
+Define two structural interfaces with `typing.Protocol`, both decorated with `@runtime_checkable` so `isinstance` works: `Readable` with `read(self, size: int = -1) -> bytes` and `Closeable` with `close(self) -> None`. Classes satisfy them without inheriting. Then write `drain(source, chunk_size: int = 4096) -> bytes`: a `bytes`, `bytearray` or `memoryview` is returned as `bytes`; otherwise a `Readable` is read by calling `read(chunk_size)` repeatedly until it returns `b""`; otherwise any other iterable is treated as an iterable of byte chunks and joined; anything else raises TypeError. Check `Readable` before the general iterable case (file objects are iterable too). Afterwards, if the source is `Closeable`, call its `close()`, also when reading raised (the exception propagates).
+@@@ reference
+from collections.abc import Iterable
+from typing import Protocol, runtime_checkable
+
+
+@runtime_checkable
+class Readable(Protocol):
+    def read(self, size: int = -1) -> bytes: ...
+
+
+@runtime_checkable
+class Closeable(Protocol):
+    def close(self) -> None: ...
+
+
+def drain(source, chunk_size: int = 4096) -> bytes:
+    if isinstance(source, (bytes, bytearray, memoryview)):
+        return bytes(source)
+    try:
+        if isinstance(source, Readable):
+            parts = []
+            while chunk := source.read(chunk_size):
+                parts.append(chunk)
+            return b"".join(parts)
+        if isinstance(source, Iterable):
+            return b"".join(bytes(c) for c in source)
+        raise TypeError(f"cannot drain {type(source).__name__}")
+    finally:
+        if isinstance(source, Closeable):
+            source.close()
+@@@ tests
+import io
+import typing
+import pytest
+from solution import Readable, Closeable, drain
+
+
+class OnlyRead:
+    def __init__(self, data):
+        self.data, self.sizes = data, []
+
+    def read(self, size=-1):
+        self.sizes.append(size)
+        chunk, self.data = self.data[:size], self.data[size:]
+        return chunk
+
+
+class Failing:
+    def __init__(self):
+        self.closed = False
+
+    def read(self, size=-1):
+        raise OSError("disk gone")
+
+    def close(self):
+        self.closed = True
+
+
+def test_are_runtime_protocols():
+    assert issubclass(Readable, typing.Protocol) and issubclass(Closeable, typing.Protocol)
+    assert isinstance(io.BytesIO(), Readable) and isinstance(io.BytesIO(), Closeable)
+    assert isinstance(OnlyRead(b""), Readable) and not isinstance(OnlyRead(b""), Closeable)
+    assert not isinstance(b"x", Readable) and not isinstance(42, Closeable)
+    with pytest.raises(TypeError):
+        Readable()
+
+
+def test_drain_readable_in_chunks():
+    r = OnlyRead(b"abcdefgh")
+    assert drain(r, 3) == b"abcdefgh" and r.sizes == [3, 3, 3, 3]
+
+
+def test_drain_file_object_is_closed():
+    f = io.BytesIO(b"line1\nline2\n")
+    assert drain(f, 4) == b"line1\nline2\n" and f.closed
+
+
+def test_bytes_and_iterables():
+    assert drain(bytearray(b"xy")) == b"xy" and drain(memoryview(b"z")) == b"z"
+    assert drain([b"a", bytearray(b"b"), b"c"]) == b"abc"
+    assert drain(iter([b"1", b"2"])) == b"12"
+
+
+def test_type_error():
+    with pytest.raises(TypeError):
+        drain(42)
+
+
+def test_closed_on_error():
+    f = Failing()
+    with pytest.raises(OSError):
+        drain(f)
+    assert f.closed
+@@@ task typed_dict_validation leaf=5 diff=3 entry=Address,UserRecord,validate_user
+@@@ prompt
+Define `TypedDict`s for user records: `Address` with `street: str`, `city: str` and an optional `postcode: NotRequired[str]`; and `UserRecord` with `id: int`, `name: str`, and optional `email: NotRequired[str]` and `address: NotRequired[Address]`. Then write `validate_user(data: object) -> UserRecord` that checks untrusted data against these definitions at runtime and returns a new dict (not the input object). A top-level value that is not a dict raises TypeError. Every other problem raises ValueError whose message contains the dotted path of the offending key (e.g. `"address.city"`): unknown keys, missing required keys, values of the wrong type (a bool is not accepted as an int), and an `address` that is not a dict. Driving the checks from the TypedDict metadata (`__required_keys__`, `typing.get_type_hints`) is encouraged.
+@@@ reference
+import typing
+from typing import NotRequired, TypedDict
+
+
+class Address(TypedDict):
+    street: str
+    city: str
+    postcode: NotRequired[str]
+
+
+class UserRecord(TypedDict):
+    id: int
+    name: str
+    email: NotRequired[str]
+    address: NotRequired[Address]
+
+
+def _check(data, td, path):
+    hints = typing.get_type_hints(td)
+    for k in data:
+        if k not in hints:
+            raise ValueError(f"unknown key {path}{k}")
+    for k in sorted(td.__required_keys__):
+        if k not in data:
+            raise ValueError(f"missing key {path}{k}")
+    out = {}
+    for k, v in data.items():
+        t = hints[k]
+        if typing.is_typeddict(t):
+            if not isinstance(v, dict):
+                raise ValueError(f"{path}{k} must be a dict")
+            out[k] = _check(v, t, f"{path}{k}.")
+        elif not isinstance(v, t) or (t is int and isinstance(v, bool)):
+            raise ValueError(f"{path}{k} must be {t.__name__}")
+        else:
+            out[k] = v
+    return out
+
+
+def validate_user(data: object) -> UserRecord:
+    if not isinstance(data, dict):
+        raise TypeError("user record must be a dict")
+    return typing.cast(UserRecord, _check(data, UserRecord, ""))
+@@@ tests
+import typing
+import pytest
+from solution import Address, UserRecord, validate_user
+
+GOOD = {"id": 7, "name": "Ada", "email": "ada@example.org",
+        "address": {"street": "1 Loop Rd", "city": "Cambridge", "postcode": "CB1"}}
+
+
+def test_typed_dict_metadata():
+    assert typing.is_typeddict(UserRecord) and typing.is_typeddict(Address)
+    assert UserRecord.__required_keys__ == frozenset({"id", "name"})
+    assert UserRecord.__optional_keys__ == frozenset({"email", "address"})
+    assert Address.__required_keys__ == frozenset({"street", "city"})
+    assert typing.get_type_hints(UserRecord)["address"] is Address
+
+
+def test_valid_records():
+    out = validate_user(GOOD)
+    assert out == GOOD and out is not GOOD
+    assert validate_user({"id": 1, "name": "x"}) == {"id": 1, "name": "x"}
+
+
+@pytest.mark.parametrize("data,path", [
+    ({"name": "x"}, "id"),
+    ({"id": 1, "name": "x", "admin": True}, "admin"),
+    ({"id": "1", "name": "x"}, "id"),
+    ({"id": True, "name": "x"}, "id"),
+    ({"id": 1, "name": "x", "address": {"street": "s"}}, "address.city"),
+    ({"id": 1, "name": "x", "address": {"street": "s", "city": 5}}, "address.city"),
+    ({"id": 1, "name": "x", "address": {"street": "s", "city": "c", "zip": "1"}}, "address.zip"),
+    ({"id": 1, "name": "x", "address": "Main St"}, "address"),
+])
+def test_invalid_records(data, path):
+    with pytest.raises(ValueError, match=path.replace(".", r"\.")):
+        validate_user(data)
+
+
+def test_not_a_dict():
+    with pytest.raises(TypeError):
+        validate_user([("id", 1)])
+
+
+def test_typed_dicts_are_plain_dicts():
+    rec = UserRecord(id=1, name="n")
+    assert type(rec) is dict and validate_user(rec) == rec
+@@@ task literal_final_levels leaf=6 diff=3 entry=LogLevel,DEFAULT_LEVEL,Severity,parse_level,to_severity,at_least
+@@@ prompt
+Model log levels with `Literal`, `Final` and an enum. Define `LogLevel = Literal["debug", "info", "warning", "error"]`, the constant `DEFAULT_LEVEL: Final[LogLevel] = "info"`, and `class Severity(IntEnum)` with `DEBUG = 10`, `INFO = 20`, `WARNING = 30`, `ERROR = 40`. Write `parse_level(text: str) -> LogLevel`, case-insensitive and ignoring surrounding whitespace, accepting `"warn"` as an alias for `"warning"`; anything else raises ValueError whose message lists the allowed values (take them from `typing.get_args(LogLevel)` rather than repeating them). Write `to_severity(level: LogLevel | Severity | int) -> Severity`: a Severity is returned as is, a level string maps to the member of the same name, an int maps by value (unknown values raise ValueError), a bool raises TypeError. Write `at_least(level: LogLevel, threshold: LogLevel = DEFAULT_LEVEL) -> bool`, True when `level` is at least as severe as `threshold`.
+@@@ reference
+import typing
+from enum import IntEnum
+from typing import Final, Literal
+
+LogLevel = Literal["debug", "info", "warning", "error"]
+DEFAULT_LEVEL: Final[LogLevel] = "info"
+
+
+class Severity(IntEnum):
+    DEBUG = 10
+    INFO = 20
+    WARNING = 30
+    ERROR = 40
+
+
+def parse_level(text: str) -> LogLevel:
+    t = text.strip().lower()
+    if t == "warn":
+        t = "warning"
+    allowed = typing.get_args(LogLevel)
+    if t not in allowed:
+        raise ValueError(f"unknown level {text!r}; expected one of {', '.join(allowed)}")
+    return typing.cast(LogLevel, t)
+
+
+def to_severity(level: LogLevel | Severity | int) -> Severity:
+    if isinstance(level, Severity):
+        return level
+    if isinstance(level, bool):
+        raise TypeError("bool is not a level")
+    if isinstance(level, str):
+        return Severity[parse_level(level).upper()]
+    if isinstance(level, int):
+        return Severity(level)
+    raise TypeError(f"unsupported level {level!r}")
+
+
+def at_least(level: LogLevel, threshold: LogLevel = DEFAULT_LEVEL) -> bool:
+    return to_severity(level) >= to_severity(threshold)
+@@@ tests
+import typing
+import pytest
+import solution
+from solution import LogLevel, DEFAULT_LEVEL, Severity, parse_level, to_severity, at_least
+
+
+def test_type_metadata():
+    assert typing.get_origin(LogLevel) is typing.Literal
+    assert typing.get_args(LogLevel) == ("debug", "info", "warning", "error")
+    final = typing.get_type_hints(solution)["DEFAULT_LEVEL"]
+    assert typing.get_origin(final) is typing.Final and DEFAULT_LEVEL == "info"
+
+
+def test_severity_is_int_enum():
+    assert Severity.ERROR > 30 and Severity.INFO == 20 and isinstance(Severity.DEBUG, int)
+    assert [m.name for m in Severity] == ["DEBUG", "INFO", "WARNING", "ERROR"]
+
+
+def test_parse_level():
+    assert parse_level("  INFO ") == "info" and parse_level("Warn") == "warning"
+    with pytest.raises(ValueError) as e:
+        parse_level("fatal")
+    assert all(lvl in str(e.value) for lvl in ("debug", "info", "warning", "error"))
+
+
+def test_to_severity():
+    assert to_severity("warning") is Severity.WARNING and to_severity(20) is Severity.INFO
+    assert to_severity(Severity.ERROR) is Severity.ERROR and to_severity("DEBUG") is Severity.DEBUG
+    with pytest.raises(ValueError):
+        to_severity(25)
+    with pytest.raises(TypeError):
+        to_severity(True)
+
+
+def test_at_least():
+    assert at_least("error") and at_least("info") and not at_least("debug")
+    assert not at_least("info", "warning") and at_least("warning", "warning")
+@@@ task paramspec_decorators leaf=7 diff=4 entry=P,R,timed,inject
+@@@ prompt
+Write signature-preserving decorators typed with `ParamSpec`. Define `P = ParamSpec("P")` and `R = TypeVar("R")`. `timed(clock: Callable[[], float], sink: Callable[[str, float], None]) -> Callable[[Callable[P, R]], Callable[P, R]]` returns a decorator whose wrapper (annotated `(*args: P.args, **kwargs: P.kwargs) -> R`) calls the function, then calls `sink(fn.__qualname__, elapsed)` with the elapsed `clock()` time, also when the call raised (the exception propagates); use `functools.wraps` so name, docstring and `inspect.signature` match the original. `inject(value: T) -> Callable[[Callable[Concatenate[T, P], R]], Callable[P, R]]` (with `T = TypeVar("T")`) returns a decorator that supplies `value` as the first argument: the wrapper takes the remaining parameters and calls `fn(value, *args, **kwargs)`. It keeps the name and docstring, and sets the wrapper's `__signature__` to the original signature without its first parameter, so `inspect.signature` reports what callers actually pass.
+@@@ reference
+import functools
+import inspect
+from collections.abc import Callable
+from typing import Concatenate, ParamSpec, TypeVar
+
+P = ParamSpec("P")
+R = TypeVar("R")
+T = TypeVar("T")
+
+
+def timed(clock: Callable[[], float], sink: Callable[[str, float], None]) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    def decorator(fn: Callable[P, R]) -> Callable[P, R]:
+        @functools.wraps(fn)
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            start = clock()
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                sink(fn.__qualname__, clock() - start)
+        return wrapper
+    return decorator
+
+
+def inject(value: T) -> Callable[[Callable[Concatenate[T, P], R]], Callable[P, R]]:
+    def decorator(fn: Callable[Concatenate[T, P], R]) -> Callable[P, R]:
+        @functools.wraps(fn)
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            return fn(value, *args, **kwargs)
+        sig = inspect.signature(fn)
+        wrapper.__signature__ = sig.replace(parameters=list(sig.parameters.values())[1:])
+        return wrapper
+    return decorator
+@@@ tests
+import collections.abc
+import inspect
+import typing
+import pytest
+import solution
+from solution import timed, inject
+
+
+class Clock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        self.now += 1.0
+        return self.now
+
+
+def test_typevars():
+    assert isinstance(solution.P, typing.ParamSpec) and isinstance(solution.R, typing.TypeVar)
+    ret = typing.get_type_hints(timed)["return"]
+    assert typing.get_origin(ret) is collections.abc.Callable
+
+
+def test_timed_reports():
+    log = []
+
+    @timed(Clock(), lambda name, secs: log.append((name, secs)))
+    def add(a: int, b: int = 2) -> int:
+        """Add."""
+        return a + b
+    assert add(1) == 3 and add(1, b=5) == 6
+    assert log == [("test_timed_reports.<locals>.add", 1.0)] * 2
+    assert add.__name__ == "add" and add.__doc__ == "Add."
+    assert str(inspect.signature(add)) == "(a: int, b: int = 2) -> int"
+
+
+def test_timed_reports_on_error():
+    log = []
+
+    @timed(Clock(), lambda name, secs: log.append(name))
+    def boom():
+        raise RuntimeError("x")
+    with pytest.raises(RuntimeError):
+        boom()
+    assert log == ["test_timed_reports_on_error.<locals>.boom"]
+
+
+def test_inject_first_argument():
+    @inject({"user": "ann"})
+    def greet(ctx: dict, greeting: str, *, punct: str = "!") -> str:
+        """Greet."""
+        return f"{greeting}, {ctx['user']}{punct}"
+    assert greet("hi") == "hi, ann!" and greet("yo", punct="?") == "yo, ann?"
+    assert greet.__name__ == "greet" and greet.__doc__ == "Greet."
+
+
+def test_inject_signature():
+    @inject(10)
+    def scale(factor: int, x: float, y: float = 0.0) -> tuple:
+        return (factor * x, factor * y)
+    assert str(inspect.signature(scale)) == "(x: float, y: float = 0.0) -> tuple"
+    assert scale(1.5, y=2) == (15.0, 20)
+@@@ task overloaded_parsers leaf=8 diff=3 entry=parse_number,first min_python=3.11
+@@@ prompt
+Use `typing.overload` to give each function precise signatures for type checkers, followed by one implementation. `parse_number(text: str, *, strict: bool = False)` has two overloads: `(text: str, *, strict: Literal[True]) -> int` and `(text: str, *, strict: Literal[False] = ...) -> int | None`. It parses a decimal integer the way `int(text)` does (surrounding whitespace, a sign and underscores between digits allowed); on failure it returns None, or raises ValueError when `strict` is True. A non-str argument raises TypeError in both modes. `first(items, default=<missing>)` has the overloads `(items: Iterable[T]) -> T` and `(items: Iterable[T], default: D) -> T | D` (with `T` and `D` TypeVars): it returns the first item, else `default` if one was given (None is a valid default), else raises ValueError. The overloads must be registered, i.e. visible to `typing.get_overloads`.
+@@@ reference
+from collections.abc import Iterable
+from typing import Literal, TypeVar, overload
+
+T = TypeVar("T")
+D = TypeVar("D")
+_MISSING = object()
+
+
+@overload
+def parse_number(text: str, *, strict: Literal[True]) -> int: ...
+@overload
+def parse_number(text: str, *, strict: Literal[False] = ...) -> int | None: ...
+def parse_number(text, *, strict=False):
+    if not isinstance(text, str):
+        raise TypeError("text must be a str")
+    try:
+        return int(text)
+    except ValueError:
+        if strict:
+            raise
+        return None
+
+
+@overload
+def first(items: Iterable[T]) -> T: ...
+@overload
+def first(items: Iterable[T], default: D) -> T | D: ...
+def first(items, default=_MISSING):
+    for item in items:
+        return item
+    if default is _MISSING:
+        raise ValueError("empty iterable and no default")
+    return default
+@@@ tests
+import typing
+import pytest
+from solution import parse_number, first
+
+
+def test_overloads_registered():
+    ovs = typing.get_overloads(parse_number)
+    assert len(ovs) == 2
+    h0, h1 = (typing.get_type_hints(o) for o in ovs)
+    assert h0["strict"] == typing.Literal[True] and h0["return"] is int
+    assert set(typing.get_args(h1["return"])) == {int, type(None)}
+    assert len(typing.get_overloads(first)) == 2
+
+
+def test_parse_lenient():
+    assert parse_number(" -42 ") == -42 and parse_number("1_000") == 1000
+    assert parse_number("4.2") is None and parse_number("") is None and parse_number("1__0") is None
+
+
+def test_parse_strict():
+    assert parse_number("+7", strict=True) == 7
+    with pytest.raises(ValueError):
+        parse_number("seven", strict=True)
+
+
+def test_parse_type_error():
+    for strict in (True, False):
+        with pytest.raises(TypeError):
+            parse_number(42, strict=strict)
+
+
+def test_first():
+    assert first([3, 4]) == 3 and first(iter("xy")) == "x"
+    assert first([], None) is None and first([], default=0) == 0
+    with pytest.raises(ValueError):
+        first([])
+    assert first(x for x in [None, 1]) is None
+@@@ task newtype_money leaf=9 diff=2 entry=UserId,OrderId,Cents,to_cents,format_cents,line_total
+@@@ prompt
+Use `typing.NewType` for domain types that are plain ints at runtime but distinct for a type checker: `UserId = NewType("UserId", int)`, `OrderId = NewType("OrderId", int)` and `Cents = NewType("Cents", int)`. Write `to_cents(amount: str) -> Cents` parsing a decimal money string with an optional leading `-` and at most two decimal places (`"12.34"` -> 1234, `"12"` -> 1200, `"12.3"` -> 1230, `"-0.50"` -> -50) exactly, without going through float; empty strings, more than two decimals or any other format raise ValueError. Write `format_cents(c: Cents) -> str` (1234 -> `"12.34"`, -50 -> `"-0.50"`, 5 -> `"0.05"`), and `line_total(price: Cents, qty: int) -> Cents` (a negative qty raises ValueError).
+@@@ reference
+import re
+from typing import NewType
+
+UserId = NewType("UserId", int)
+OrderId = NewType("OrderId", int)
+Cents = NewType("Cents", int)
+
+_MONEY = re.compile(r"(-?)(\d+)(?:\.(\d{1,2}))?")
+
+
+def to_cents(amount: str) -> Cents:
+    m = _MONEY.fullmatch(amount)
+    if not m:
+        raise ValueError(f"bad amount {amount!r}")
+    sign, whole, frac = m.groups()
+    value = int(whole) * 100 + int((frac or "0").ljust(2, "0"))
+    return Cents(-value if sign else value)
+
+
+def format_cents(c: Cents) -> str:
+    sign = "-" if c < 0 else ""
+    whole, frac = divmod(abs(c), 100)
+    return f"{sign}{whole}.{frac:02d}"
+
+
+def line_total(price: Cents, qty: int) -> Cents:
+    if qty < 0:
+        raise ValueError("negative quantity")
+    return Cents(price * qty)
+@@@ tests
+import typing
+import pytest
+from solution import UserId, OrderId, Cents, to_cents, format_cents, line_total
+
+
+def test_newtypes_are_ints_at_runtime():
+    assert isinstance(UserId, typing.NewType) and UserId.__supertype__ is int
+    assert UserId.__name__ == "UserId" and OrderId.__name__ == "OrderId"
+    assert type(UserId(5)) is int and UserId(5) == 5 and UserId is not OrderId
+
+
+def test_hints_use_cents():
+    hints = typing.get_type_hints(to_cents)
+    assert hints["return"] is Cents and hints["amount"] is str
+    assert typing.get_type_hints(line_total)["price"] is Cents
+
+
+@pytest.mark.parametrize("text,cents", [("12.34", 1234), ("12", 1200), ("12.3", 1230), ("-0.50", -50),
+                                         ("0.07", 7), ("19.99", 1999)])
+def test_to_cents(text, cents):
+    assert to_cents(text) == cents and type(to_cents(text)) is int
+
+
+@pytest.mark.parametrize("bad", ["", "1.234", "1,00", "abc", "1.", ".5", "+1", "1e3"])
+def test_to_cents_rejects(bad):
+    with pytest.raises(ValueError):
+        to_cents(bad)
+
+
+def test_format_and_total():
+    assert format_cents(Cents(1234)) == "12.34" and format_cents(Cents(-50)) == "-0.50"
+    assert format_cents(Cents(5)) == "0.05"
+    assert line_total(to_cents("0.10"), 3) == 30
+    with pytest.raises(ValueError):
+        line_total(Cents(1), -1)
+@@@ task self_fluent_query leaf=10 diff=3 entry=Query,PagedQuery
+@@@ prompt
+Write an immutable fluent query builder whose chaining methods are annotated with `typing.Self`, so subclasses keep their own type through a chain. `Query(table: str)` has `where(condition: str) -> Self` (conditions are ANDed in order), `order_by(column: str, *, desc: bool = False) -> Self` (one ordering; a later call replaces it), `limit(n: int) -> Self` (n < 0 raises ValueError) and `build() -> str`, e.g. `"SELECT * FROM users WHERE age > 18 AND active ORDER BY name DESC LIMIT 10"` (clauses omitted when unset). Every chaining method returns a modified copy of `self` (use `copy.copy` and copy any lists), leaving the original untouched, so the returned object is of the same class and keeps any extra attributes a subclass set. `PagedQuery(Query)` adds `page(number: int, size: int) -> Self` that sets `LIMIT size OFFSET (number - 1) * size` (number below 1 or size below 1 raise ValueError); `build()` then ends with `"LIMIT <size> OFFSET <offset>"`.
+@@@ reference
+import copy
+from typing import Self
+
+
+class Query:
+    def __init__(self, table: str) -> None:
+        self.table = table
+        self._where: list[str] = []
+        self._order: str | None = None
+        self._limit: int | None = None
+        self._offset: int | None = None
+
+    def _copy(self) -> Self:
+        new = copy.copy(self)
+        new._where = list(self._where)
+        return new
+
+    def where(self, condition: str) -> Self:
+        new = self._copy()
+        new._where.append(condition)
+        return new
+
+    def order_by(self, column: str, *, desc: bool = False) -> Self:
+        new = self._copy()
+        new._order = f"{column} DESC" if desc else column
+        return new
+
+    def limit(self, n: int) -> Self:
+        if n < 0:
+            raise ValueError("negative limit")
+        new = self._copy()
+        new._limit = n
+        return new
+
+    def build(self) -> str:
+        sql = f"SELECT * FROM {self.table}"
+        if self._where:
+            sql += " WHERE " + " AND ".join(self._where)
+        if self._order:
+            sql += f" ORDER BY {self._order}"
+        if self._limit is not None:
+            sql += f" LIMIT {self._limit}"
+        if self._offset is not None:
+            sql += f" OFFSET {self._offset}"
+        return sql
+
+
+class PagedQuery(Query):
+    def page(self, number: int, size: int) -> Self:
+        if number < 1 or size < 1:
+            raise ValueError("page number and size must be at least 1")
+        new = self.limit(size)
+        new._offset = (number - 1) * size
+        return new
+@@@ tests
+import typing
+import pytest
+from solution import Query, PagedQuery
+
+
+def test_annotated_with_self():
+    for meth in (Query.where, Query.order_by, Query.limit, PagedQuery.page):
+        assert typing.get_type_hints(meth)["return"] is typing.Self
+    assert typing.get_type_hints(Query.build)["return"] is str
+
+
+def test_build():
+    q = Query("users").where("age > 18").where("active").order_by("name", desc=True).limit(10)
+    assert q.build() == "SELECT * FROM users WHERE age > 18 AND active ORDER BY name DESC LIMIT 10"
+    assert Query("t").build() == "SELECT * FROM t"
+    assert Query("t").order_by("a").order_by("b").build() == "SELECT * FROM t ORDER BY b"
+
+
+def test_immutable():
+    base = Query("users").where("active")
+    a = base.where("age > 18")
+    b = base.limit(5)
+    assert base.build() == "SELECT * FROM users WHERE active"
+    assert a.build() == "SELECT * FROM users WHERE active AND age > 18"
+    assert b.build() == "SELECT * FROM users WHERE active LIMIT 5"
+
+
+def test_subclass_type_survives_chain():
+    q = PagedQuery("posts").where("published").order_by("id").page(3, 20)
+    assert type(q) is PagedQuery
+    assert q.build() == "SELECT * FROM posts WHERE published ORDER BY id LIMIT 20 OFFSET 40"
+    assert type(PagedQuery("p").limit(1)) is PagedQuery
+
+
+def test_extra_attributes_kept():
+    class Tagged(PagedQuery):
+        def __init__(self, table, tag):
+            super().__init__(table)
+            self.tag = tag
+    q = Tagged("x", "audit").where("a").page(1, 5)
+    assert type(q) is Tagged and q.tag == "audit" and q.build().endswith("LIMIT 5 OFFSET 0")
+
+
+def test_validation():
+    with pytest.raises(ValueError):
+        Query("t").limit(-1)
+    with pytest.raises(ValueError):
+        PagedQuery("t").page(0, 10)
+    with pytest.raises(ValueError):
+        PagedQuery("t").page(1, 0)
+@@@ task abc_collection_params leaf=11 diff=3 entry=invert,windows,running_mean
+@@@ prompt
+Annotate parameters with the abstract types from `collections.abc` and accept anything that implements them, not just built-in types. `invert(mapping: Mapping[K, V]) -> dict[V, list[K]]` maps each value to the list of keys that had it, in the mapping's iteration order; it must work for any `collections.abc.Mapping` (e.g. a custom class implementing only `__getitem__`, `__iter__` and `__len__`). `windows(seq: Sequence[T], size: int) -> list[Sequence[T]]` returns the consecutive slices `seq[i:i + size]`, so the slices have the type the sequence's slicing gives (strings give strings, ranges give ranges); a sequence shorter than `size` gives `[]`, `size < 1` raises ValueError, and anything that is not a `Sequence` (sets, dicts, generators) raises TypeError. `running_mean(values: Iterable[float]) -> Iterator[float]` lazily yields the mean of the values seen so far, in a single pass (it must work on one-shot iterators). Use `K`, `V`, `T` TypeVars.
+@@@ reference
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from typing import TypeVar
+
+K = TypeVar("K")
+V = TypeVar("V")
+T = TypeVar("T")
+
+
+def invert(mapping: Mapping[K, V]) -> dict[V, list[K]]:
+    out: dict[V, list[K]] = {}
+    for k, v in mapping.items():
+        out.setdefault(v, []).append(k)
+    return out
+
+
+def windows(seq: Sequence[T], size: int) -> list[Sequence[T]]:
+    if not isinstance(seq, Sequence):
+        raise TypeError(f"expected a Sequence, got {type(seq).__name__}")
+    if size < 1:
+        raise ValueError("size must be at least 1")
+    return [seq[i:i + size] for i in range(len(seq) - size + 1)]
+
+
+def running_mean(values: Iterable[float]) -> Iterator[float]:
+    total, n = 0.0, 0
+    for v in values:
+        total += v
+        n += 1
+        yield total / n
+@@@ tests
+import collections.abc
+import typing
+import pytest
+from solution import invert, windows, running_mean
+
+
+class Frozen(collections.abc.Mapping):
+    def __init__(self, pairs):
+        self._d = dict(pairs)
+
+    def __getitem__(self, k):
+        return self._d[k]
+
+    def __iter__(self):
+        return iter(self._d)
+
+    def __len__(self):
+        return len(self._d)
+
+
+class Seq(collections.abc.Sequence):
+    def __init__(self, items):
+        self._items = list(items)
+
+    def __getitem__(self, i):
+        return self._items[i]
+
+    def __len__(self):
+        return len(self._items)
+
+
+def test_hints_use_abcs():
+    assert typing.get_origin(typing.get_type_hints(invert)["mapping"]) is collections.abc.Mapping
+    assert typing.get_origin(typing.get_type_hints(windows)["seq"]) is collections.abc.Sequence
+    assert typing.get_origin(typing.get_type_hints(running_mean)["values"]) is collections.abc.Iterable
+
+
+def test_invert_any_mapping():
+    assert invert({"a": 1, "b": 2, "c": 1}) == {1: ["a", "c"], 2: ["b"]}
+    assert invert(Frozen([("x", "v"), ("y", "v")])) == {"v": ["x", "y"]}
+    assert invert({}) == {}
+
+
+def test_windows_keep_slice_type():
+    assert windows("abcd", 2) == ["ab", "bc", "cd"]
+    assert windows(range(5), 3) == [range(0, 3), range(1, 4), range(2, 5)]
+    assert windows((1, 2, 3), 3) == [(1, 2, 3)] and windows([1], 2) == []
+    assert windows(Seq([1, 2, 3]), 2) == [[1, 2], [2, 3]]
+
+
+@pytest.mark.parametrize("bad", [{1, 2, 3}, {"a": 1}, (x for x in [1, 2])])
+def test_windows_rejects_non_sequences(bad):
+    with pytest.raises(TypeError):
+        windows(bad, 1)
+
+
+def test_windows_size():
+    with pytest.raises(ValueError):
+        windows([1, 2], 0)
+
+
+def test_running_mean_single_pass():
+    it = running_mean(iter([2, 4, 9]))
+    assert next(it) == 2.0 and list(it) == [3.0, 5.0]
+    assert list(running_mean([])) == []
+@@@ task isinstance_narrowing leaf=12 diff=3 entry=Scalar,flatten_config,get_int
+@@@ prompt
+Write type-safe code that narrows `object` values with `isinstance` (the kind of code mypy accepts without casts). Define `Scalar = str | int | float | bool | None`. `flatten_config(cfg: Mapping[str, object], prefix: str = "") -> dict[str, Scalar]` flattens nested configuration: nested Mappings contribute dotted keys (`{"db": {"host": "h"}}` -> `{"db.host": "h"}`), lists and tuples contribute their indexes (`"servers.0.port"`), scalars are kept unchanged (a bool stays a bool), empty containers contribute nothing, and `prefix` (when non-empty) is prepended as `prefix + "."`. A non-str key or any other value type (sets, bytes, arbitrary objects) raises TypeError mentioning the dotted path. `get_int(flat: Mapping[str, Scalar], key: str, default: int) -> int`: a missing key or None gives `default`; a bool raises TypeError (check it before int, since bool is an int subclass); an int is returned; a float with an integral value converts, other floats raise ValueError; a str is stripped and parsed with `int()` (failure raises ValueError).
+@@@ reference
+from collections.abc import Mapping
+
+Scalar = str | int | float | bool | None
+
+
+def flatten_config(cfg: Mapping[str, object], prefix: str = "") -> dict[str, Scalar]:
+    out: dict[str, Scalar] = {}
+
+    def walk(value: object, path: str) -> None:
+        if isinstance(value, Mapping):
+            for k, v in value.items():
+                if not isinstance(k, str):
+                    raise TypeError(f"non-str key {k!r} under {path or '<root>'}")
+                walk(v, f"{path}.{k}" if path else k)
+        elif isinstance(value, (list, tuple)):
+            for i, v in enumerate(value):
+                walk(v, f"{path}.{i}" if path else str(i))
+        elif value is None or isinstance(value, (str, int, float, bool)):
+            out[path] = value
+        else:
+            raise TypeError(f"unsupported value of type {type(value).__name__} at {path}")
+
+    walk(cfg, prefix)
+    return out
+
+
+def get_int(flat: Mapping[str, Scalar], key: str, default: int) -> int:
+    value = flat.get(key)
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        raise TypeError(f"{key} is a bool")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not value.is_integer():
+            raise ValueError(f"{key} is not integral: {value}")
+        return int(value)
+    return int(value.strip())
+@@@ tests
+import pytest
+from solution import Scalar, flatten_config, get_int
+
+
+def test_scalar_alias():
+    assert isinstance(True, Scalar.__args__) or bool in Scalar.__args__
+    assert set(Scalar.__args__) == {str, int, float, bool, type(None)}
+
+
+def test_flatten_nested():
+    cfg = {"db": {"host": "h", "port": 5432, "opts": {}}, "debug": False,
+           "servers": [{"name": "a"}, ("x", None)], "ratio": 0.5}
+    assert flatten_config(cfg) == {"db.host": "h", "db.port": 5432, "debug": False,
+                                   "servers.0.name": "a", "servers.1.0": "x", "servers.1.1": None,
+                                   "ratio": 0.5}
+    assert flatten_config(cfg)["debug"] is False
+
+
+def test_prefix():
+    assert flatten_config({"a": {"b": 1}}, prefix="app") == {"app.a.b": 1}
+
+
+@pytest.mark.parametrize("cfg,path", [({"a": {"b": {1, 2}}}, "a.b"), ({"a": [b"x"]}, "a.0"),
+                                       ({"a": {3: "x"}}, "a"), ({"o": object()}, "o")])
+def test_flatten_rejects(cfg, path):
+    with pytest.raises(TypeError, match=path):
+        flatten_config(cfg)
+
+
+def test_get_int():
+    flat = {"n": 3, "f": 4.0, "s": " 12 ", "none": None}
+    assert get_int(flat, "n", 0) == 3 and get_int(flat, "f", 0) == 4 and get_int(flat, "s", 0) == 12
+    assert get_int(flat, "none", 7) == 7 and get_int(flat, "missing", 9) == 9
+    assert type(get_int(flat, "f", 0)) is int
+
+
+def test_get_int_errors():
+    with pytest.raises(TypeError):
+        get_int({"b": True}, "b", 0)
+    with pytest.raises(ValueError):
+        get_int({"f": 2.5}, "f", 0)
+    with pytest.raises(ValueError):
+        get_int({"s": "ten"}, "s", 0)

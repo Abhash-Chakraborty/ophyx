@@ -1,0 +1,743 @@
+@@@ task profile_call_counts leaf=9 diff=3 entry=profile_call,report
+@@@ prompt
+Write `profile_call(fn, *args, **kwargs) -> tuple[object, dict[str, tuple[int, int]]]` that runs the call under a `cProfile.Profile`, builds a `pstats.Stats` from the profiler, and returns the call's result together with a dict mapping each profiled function's name (the third element of a pstats key, such as `"fib"` or `"<built-in method builtins.len>"`) to `(total_calls, primitive_calls)`, summing entries that share a name. Primitive calls are the calls not induced by recursion, so a recursive function called once from outside has 1 primitive call. The profiler must be disabled even if `fn` raises (the exception propagates), so that another profiler can be enabled afterwards. Also write `report(fn, *args, limit=5) -> str` that profiles the call the same way and returns the text pstats prints for it, sorted by cumulative time and limited to `limit` rows, printed into an `io.StringIO` instead of stdout.
+@@@ reference
+import cProfile
+import io
+import pstats
+
+
+def _run(fn, args, kwargs):
+    prof = cProfile.Profile()
+    prof.enable()
+    try:
+        result = fn(*args, **kwargs)
+    finally:
+        prof.disable()
+    return result, prof
+
+
+def profile_call(fn, *args, **kwargs):
+    result, prof = _run(fn, args, kwargs)
+    counts = {}
+    for (_, _, name), (cc, nc, *_rest) in pstats.Stats(prof).stats.items():
+        total, prim = counts.get(name, (0, 0))
+        counts[name] = (total + nc, prim + cc)
+    return result, counts
+
+
+def report(fn, *args, limit=5):
+    _, prof = _run(fn, args, {})
+    out = io.StringIO()
+    pstats.Stats(prof, stream=out).sort_stats("cumulative").print_stats(limit)
+    return out.getvalue()
+@@@ tests
+import cProfile
+import pytest
+from solution import profile_call, report
+
+
+def fib(n):
+    return n if n < 2 else fib(n - 1) + fib(n - 2)
+
+
+def helper(x):
+    return x + 1
+
+
+def loop(n):
+    return sum(helper(i) for i in range(n)) + len([1, 2])
+
+
+def test_recursive_counts():
+    result, counts = profile_call(fib, 12)
+    assert result == 144
+    assert counts["fib"] == (465, 1)
+
+
+def test_plain_counts_and_builtins():
+    result, counts = profile_call(loop, 10)
+    assert result == 57
+    assert counts["helper"] == (10, 10) and counts["loop"] == (1, 1)
+    assert any("len" in name and v[0] >= 1 for name, v in counts.items())
+
+
+def test_kwargs_forwarded():
+    def f(a, *, b):
+        return a * b
+    assert profile_call(f, 3, b=4)[0] == 12
+
+
+def test_profiler_disabled_after_exception():
+    def bad():
+        raise ValueError("boom")
+    with pytest.raises(ValueError):
+        profile_call(bad)
+    assert profile_call(fib, 5)[1]["fib"] == (15, 1)
+    p = cProfile.Profile()
+    p.enable()
+    p.disable()
+
+
+def test_report_text():
+    text = report(fib, 10)
+    assert "function calls" in text and "fib" in text
+    assert "cumulative" in text
+@@@ task timeit_and_stopwatch leaf=10 diff=3 entry=time_per_call,Stopwatch
+@@@ prompt
+Write `time_per_call(fn, number=1000, repeat=5, timer=time.perf_counter) -> float` using `timeit.Timer(fn, timer=timer)`: run `repeat` rounds of `number` calls each and return the best (minimum) round time divided by `number`, since the minimum is the measurement least disturbed by other activity. `number` or `repeat` below 1 raises ValueError. Keep timeit's default of switching the garbage collector off while timing.
+
+Also write a `Stopwatch(clock=time.perf_counter)` context manager. Each `with` block reads `clock()` on entry and on exit, appends the duration to the list `laps` and adds it to `elapsed` (so re-using the stopwatch accumulates). `__enter__` returns the stopwatch. The duration is recorded even if the block raises, and the exception propagates. Entering a stopwatch that is already running raises RuntimeError. `reset()` empties `laps` and sets `elapsed` to 0.0.
+@@@ reference
+import time
+import timeit
+
+
+def time_per_call(fn, number=1000, repeat=5, timer=time.perf_counter):
+    if number < 1 or repeat < 1:
+        raise ValueError("number and repeat must be at least 1")
+    return min(timeit.Timer(fn, timer=timer).repeat(repeat=repeat, number=number)) / number
+
+
+class Stopwatch:
+    def __init__(self, clock=time.perf_counter):
+        self._clock = clock
+        self._start = None
+        self.laps = []
+        self.elapsed = 0.0
+
+    def __enter__(self):
+        if self._start is not None:
+            raise RuntimeError("stopwatch already running")
+        self._start = self._clock()
+        return self
+
+    def __exit__(self, *exc):
+        lap = self._clock() - self._start
+        self._start = None
+        self.laps.append(lap)
+        self.elapsed += lap
+        return False
+
+    def reset(self):
+        self.laps = []
+        self.elapsed = 0.0
+@@@ tests
+import gc
+import inspect
+import time
+import pytest
+from solution import time_per_call, Stopwatch
+
+
+class FakeTime:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+
+def test_best_round_per_call():
+    clock = FakeTime()
+    costs = [0.5, 0.2, 0.3]
+    calls = [0]
+
+    def fn():
+        clock.now += costs[calls[0] // 10]
+        calls[0] += 1
+    assert time_per_call(fn, number=10, repeat=3, timer=clock) == pytest.approx(0.2)
+    assert calls[0] == 30
+
+
+def test_defaults_and_validation():
+    sig = inspect.signature(time_per_call)
+    assert sig.parameters["timer"].default is time.perf_counter
+    assert sig.parameters["number"].default == 1000 and sig.parameters["repeat"].default == 5
+    with pytest.raises(ValueError):
+        time_per_call(lambda: None, number=0)
+    with pytest.raises(ValueError):
+        time_per_call(lambda: None, repeat=0)
+
+
+def test_gc_disabled_while_timing():
+    seen = []
+    time_per_call(lambda: seen.append(gc.isenabled()), number=3, repeat=2)
+    assert seen == [False] * 6 and gc.isenabled()
+
+
+def test_stopwatch_accumulates():
+    clock = FakeTime()
+    sw = Stopwatch(clock)
+    with sw as same:
+        clock.now += 1.5
+    assert same is sw
+    with sw:
+        clock.now += 0.5
+    assert sw.laps == [1.5, 0.5] and sw.elapsed == 2.0
+
+
+def test_stopwatch_records_on_error():
+    clock = FakeTime()
+    sw = Stopwatch(clock)
+    with pytest.raises(KeyError):
+        with sw:
+            clock.now += 2.0
+            raise KeyError("x")
+    assert sw.laps == [2.0]
+
+
+def test_reentry_and_reset():
+    clock = FakeTime()
+    sw = Stopwatch(clock)
+    with sw:
+        with pytest.raises(RuntimeError):
+            sw.__enter__()
+        clock.now += 1.0
+    sw.reset()
+    assert sw.laps == [] and sw.elapsed == 0.0
+    with sw:
+        clock.now += 0.25
+    assert sw.elapsed == 0.25
+@@@ task linear_time_lookups leaf=11 diff=2 entry=dedupe,missing,first_repeat
+@@@ prompt
+Choose data structures so that these functions run in roughly linear time. The tests count `__eq__` calls on the items, so scanning a list for membership inside a loop (quadratic) fails; use sets or dicts, whose lookups compare only items with equal hashes. All items are hashable and every argument may be a one-shot iterator. `dedupe(items) -> list` keeps the first occurrence of each item, in original order. `missing(expected, present) -> list` returns the items of `expected`, in order and with duplicates kept, that do not occur anywhere in `present`. `first_repeat(items)` returns the first item that equals an earlier item, or None if all are distinct.
+@@@ reference
+def dedupe(items):
+    return list(dict.fromkeys(items))
+
+
+def missing(expected, present):
+    have = set(present)
+    return [x for x in expected if x not in have]
+
+
+def first_repeat(items):
+    seen = set()
+    for x in items:
+        if x in seen:
+            return x
+        seen.add(x)
+    return None
+@@@ tests
+from solution import dedupe, missing, first_repeat
+
+
+class Key:
+    eq_calls = 0
+
+    def __init__(self, v):
+        self.v = v
+
+    def __hash__(self):
+        return hash(self.v)
+
+    def __eq__(self, other):
+        Key.eq_calls += 1
+        return isinstance(other, Key) and self.v == other.v
+
+    def __repr__(self):
+        return f"Key({self.v})"
+
+
+def keys(values):
+    return [Key(v) for v in values]
+
+
+def test_dedupe_order():
+    assert [k.v for k in dedupe(keys([3, 1, 3, 2, 1]))] == [3, 1, 2]
+    assert dedupe(iter("banana")) == ["b", "a", "n"]
+
+
+def test_missing_and_first_repeat():
+    assert missing(iter([1, 2, 2, 5, 3]), (x for x in [3, 1])) == [2, 2, 5]
+    assert first_repeat(iter("abcbda")) == "b" and first_repeat([1, 2, 3]) is None
+
+
+def test_dedupe_linear():
+    Key.eq_calls = 0
+    out = dedupe(keys(list(range(2000)) * 2))
+    assert len(out) == 2000 and Key.eq_calls <= 6000
+
+
+def test_missing_linear():
+    Key.eq_calls = 0
+    out = missing(keys(range(2000)), keys(range(0, 2000, 2)))
+    assert [k.v for k in out] == list(range(1, 2000, 2)) and Key.eq_calls <= 6000
+
+
+def test_first_repeat_linear():
+    Key.eq_calls = 0
+    assert first_repeat(keys(list(range(2000)) + [1999])).v == 1999
+    assert Key.eq_calls <= 6000
+@@@ task join_not_concat leaf=12 diff=2 entry=render_rows,wrap_tag,TextBuffer
+@@@ prompt
+Build strings without repeated `+` / `+=` concatenation of the pieces (which can copy the growing string on every step and turn linear work quadratic); collect the parts and use `str.join` or `io.StringIO`. The tests pass `str` subclasses whose `+` operators raise, so any concatenation involving a piece fails. Write `render_rows(rows, sep=",") -> str`: each row is an iterable of strings joined with `sep`, and every row is followed by `"\n"` (no rows gives `""`). Write `wrap_tag(tag, parts) -> str` returning `"<tag>"`, all the parts, then `"</tag>"`, e.g. `wrap_tag("b", ["x", "y"]) == "<b>xy</b>"` (`tag` is a plain str). And write `TextBuffer` with `write(s) -> int` (appends `s`, returns `len(s)`), `getvalue() -> str` (everything written so far; may be called repeatedly, with more writes in between) and `__len__` giving the total number of characters written, kept as a running count rather than recomputed.
+@@@ reference
+import io
+
+
+def render_rows(rows, sep=","):
+    return "".join(sep.join(row) + "\n" for row in rows)
+
+
+def wrap_tag(tag, parts):
+    return f"<{tag}>" + "".join(parts) + f"</{tag}>"
+
+
+class TextBuffer:
+    def __init__(self):
+        self._io = io.StringIO()
+        self._len = 0
+
+    def write(self, s):
+        self._io.write(s)
+        self._len += len(s)
+        return len(s)
+
+    def getvalue(self):
+        return self._io.getvalue()
+
+    def __len__(self):
+        return self._len
+@@@ tests
+import pytest
+from solution import render_rows, wrap_tag, TextBuffer
+
+
+class Piece(str):
+    def __add__(self, other):
+        raise AssertionError("concatenated a piece with +")
+
+    def __radd__(self, other):
+        raise AssertionError("concatenated a piece with +")
+
+
+def P(*xs):
+    return [Piece(x) for x in xs]
+
+
+def test_piece_guard_works():
+    with pytest.raises(AssertionError):
+        "" + Piece("a")
+    with pytest.raises(AssertionError):
+        s = "x"
+        s += Piece("a")
+
+
+def test_render_rows():
+    assert render_rows([P("a", "b"), P("c")]) == "a,b\nc\n"
+    assert render_rows([P("1", "2")], sep=Piece("|")) == "1|2\n"
+    assert render_rows([]) == "" and render_rows([[]]) == "\n"
+
+
+def test_render_many_rows():
+    rows = (P(str(i), "x") for i in range(20_000))
+    out = render_rows(rows)
+    assert out.count("\n") == 20_000 and out.startswith("0,x\n1,x\n")
+
+
+def test_wrap_tag():
+    assert wrap_tag("b", P("x", "y")) == "<b>xy</b>"
+    assert wrap_tag("p", []) == "<p></p>"
+    assert wrap_tag("i", iter(P("a"))) == "<i>a</i>"
+
+
+def test_text_buffer():
+    buf = TextBuffer()
+    assert buf.write(Piece("hello")) == 5 and buf.write(Piece(" ")) == 1
+    assert buf.getvalue() == "hello " and len(buf) == 6
+    buf.write(Piece("world"))
+    assert buf.getvalue() == "hello world" and len(buf) == 11
+
+
+def test_text_buffer_empty_and_many():
+    buf = TextBuffer()
+    assert buf.getvalue() == "" and len(buf) == 0
+    for p in P(*("ab" for _ in range(5000))):
+        buf.write(p)
+    assert len(buf) == 10_000 and buf.getvalue() == "ab" * 5000
+@@@ task compact_int_series leaf=13 diff=3 entry=IntSeries
+@@@ prompt
+Write `IntSeries(values=())`, a compact sequence of signed 64-bit integers stored in an `array.array` with typecode `'q'`, exposed as the attribute `data`, instead of a list of int objects that each cost a full Python object. Support `append(x)`, `extend(iterable)`, `len()`, iteration, indexing (an int index returns an int, negative indexes allowed; a slice returns a new `IntSeries`), `total()` (the sum), the property `nbytes` (payload size: itemsize times length), `to_bytes()` returning the values as little-endian 8-byte integers regardless of the machine's byte order, and the classmethod `from_bytes(data)` that reverses it (a length not divisible by 8 raises ValueError). Values outside the int64 range raise OverflowError and non-integers such as floats or strings raise TypeError; `array` does this for you.
+@@@ reference
+import array
+import sys
+
+
+class IntSeries:
+    def __init__(self, values=()):
+        self.data = array.array("q", values)
+
+    def append(self, x):
+        self.data.append(x)
+
+    def extend(self, iterable):
+        self.data.extend(iterable)
+
+    def __len__(self):
+        return len(self.data)
+
+    def __iter__(self):
+        return iter(self.data)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return IntSeries(self.data[index])
+        return self.data[index]
+
+    def total(self):
+        return sum(self.data)
+
+    @property
+    def nbytes(self):
+        return self.data.itemsize * len(self.data)
+
+    def to_bytes(self):
+        a = array.array("q", self.data)
+        if sys.byteorder == "big":
+            a.byteswap()
+        return a.tobytes()
+
+    @classmethod
+    def from_bytes(cls, data):
+        if len(data) % 8:
+            raise ValueError("length must be a multiple of 8")
+        a = array.array("q")
+        a.frombytes(data)
+        if sys.byteorder == "big":
+            a.byteswap()
+        return cls(a)
+@@@ tests
+import array
+import struct
+import sys
+import pytest
+from solution import IntSeries
+
+
+def test_storage_is_array():
+    s = IntSeries([1, 2, 3])
+    assert isinstance(s.data, array.array) and s.data.typecode == "q"
+    assert len(s) == 3 and list(s) == [1, 2, 3] and s.nbytes == 24
+
+
+def test_index_slice_total():
+    s = IntSeries(range(10))
+    assert s[-1] == 9 and type(s[0]) is int
+    part = s[2:5]
+    assert isinstance(part, IntSeries) and list(part) == [2, 3, 4]
+    s.extend(x for x in [100, 200])
+    s.append(-5)
+    assert s.total() == 45 + 300 - 5 and len(s) == 13
+
+
+def test_range_and_type_errors():
+    s = IntSeries()
+    s.append(2**63 - 1)
+    s.append(-(2**63))
+    with pytest.raises(OverflowError):
+        s.append(2**63)
+    with pytest.raises(TypeError):
+        s.append(1.5)
+    with pytest.raises(TypeError):
+        s.append("1")
+
+
+def test_little_endian_bytes():
+    s = IntSeries([1, -2, 2**40])
+    assert s.to_bytes() == struct.pack("<3q", 1, -2, 2**40)
+    back = IntSeries.from_bytes(s.to_bytes())
+    assert list(back) == [1, -2, 2**40]
+    with pytest.raises(ValueError):
+        IntSeries.from_bytes(b"123")
+
+
+def test_more_compact_than_list():
+    values = list(range(10**6, 10**6 + 10_000))
+    s = IntSeries(values)
+    list_cost = sys.getsizeof(values) + sum(sys.getsizeof(v) for v in values)
+    assert sys.getsizeof(s.data) < list_cost / 3
+@@@ task mmap_search_patch leaf=14 diff=3 entry=find_all,count_lines,patch
+@@@ prompt
+Use memory-mapped files (`import mmap`, then `mmap.mmap(...)`) to work on files without reading them into memory. `find_all(path, needle: bytes) -> list[int]` returns the offsets of every occurrence, overlapping ones included (so `b"aa"` occurs in `b"aaa"` at 0 and 1), using the map's `find` method; an empty needle raises ValueError. `count_lines(path) -> int` counts the `b"\n"` bytes, plus one if the file is non-empty and does not end with a newline. `patch(path, offset, data: bytes) -> None` overwrites bytes in place through a writable map and never changes the file size; a negative offset or a range extending past the end of the file raises ValueError. Mapping an empty file fails, so handle empty files explicitly: no matches, zero lines, and any non-empty patch is out of range.
+@@@ reference
+import mmap
+import os
+
+
+def _open_map(f):
+    return mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+
+
+def find_all(path, needle):
+    if not needle:
+        raise ValueError("empty needle")
+    if os.path.getsize(path) == 0:
+        return []
+    with open(path, "rb") as f, _open_map(f) as m:
+        out, i = [], m.find(needle)
+        while i != -1:
+            out.append(i)
+            i = m.find(needle, i + 1)
+        return out
+
+
+def count_lines(path):
+    size = os.path.getsize(path)
+    if size == 0:
+        return 0
+    with open(path, "rb") as f, _open_map(f) as m:
+        n, i = 0, m.find(b"\n")
+        while i != -1:
+            n += 1
+            i = m.find(b"\n", i + 1)
+        return n + (m[size - 1:size] != b"\n")
+
+
+def patch(path, offset, data):
+    size = os.path.getsize(path)
+    if offset < 0 or offset + len(data) > size:
+        raise ValueError("patch outside the file")
+    if not data:
+        return
+    with open(path, "r+b") as f, mmap.mmap(f.fileno(), 0) as m:
+        m[offset:offset + len(data)] = data
+        m.flush()
+@@@ tests
+import mmap
+import pytest
+from solution import find_all, count_lines, patch
+
+
+def write(tmp_path, data, name="f.bin"):
+    p = tmp_path / name
+    p.write_bytes(data)
+    return p
+
+
+def test_find_all_overlapping(tmp_path):
+    p = write(tmp_path, b"aaa-xaa")
+    assert find_all(p, b"aa") == [0, 1, 5]
+    assert find_all(p, b"zz") == []
+    with pytest.raises(ValueError):
+        find_all(p, b"")
+
+
+def test_large_file(tmp_path):
+    data = bytearray(3_000_000)
+    for off in (10, 1_234_567, 2_999_990):
+        data[off:off + 6] = b"needle"
+    p = write(tmp_path, bytes(data))
+    assert find_all(p, b"needle") == [10, 1_234_567, 2_999_990]
+
+
+@pytest.mark.parametrize("data,lines", [(b"", 0), (b"a", 1), (b"a\n", 1), (b"a\nb", 2), (b"\n\n", 2), (b"x\ny\nz\n", 3)])
+def test_count_lines(tmp_path, data, lines):
+    assert count_lines(write(tmp_path, data)) == lines
+
+
+def test_patch_in_place(tmp_path):
+    p = write(tmp_path, b"hello world")
+    patch(p, 6, b"WORLD")
+    assert p.read_bytes() == b"hello WORLD"
+    patch(p, 0, b"")
+    assert p.read_bytes() == b"hello WORLD"
+    for off, data in [(-1, b"x"), (7, b"12345"), (11, b"!")]:
+        with pytest.raises(ValueError):
+            patch(p, off, data)
+    assert p.read_bytes() == b"hello WORLD"
+
+
+def test_empty_file(tmp_path):
+    p = write(tmp_path, b"")
+    assert find_all(p, b"a") == []
+    with pytest.raises(ValueError):
+        patch(p, 0, b"x")
+
+
+def test_uses_mmap(tmp_path, monkeypatch):
+    real = mmap.mmap
+    used = []
+
+    class Spy(real):
+        def __new__(cls, *args, **kwargs):
+            used.append(args)
+            return super().__new__(cls, *args, **kwargs)
+    monkeypatch.setattr(mmap, "mmap", Spy)
+    p = write(tmp_path, b"abcabc")
+    assert find_all(p, b"bc") == [1, 4]
+    assert used
+@@@ task identity_vs_equality leaf=15 diff=3 entry=identity_comparisons,intern_keys
+@@@ prompt
+Identity of equal ints, strings and other literals depends on CPython details (the small-int cache, interning, constant folding), so `x is 1000` may be True in one place and False in another. Write `identity_comparisons(source: str) -> list[tuple[int, str]]` which parses Python source with `ast` and reports every `is` / `is not` comparison in which an operand is a literal: an int, float, complex, str or bytes constant (a unary `-` or `+` applied to a numeric constant counts too) or a tuple, list, dict or set display. Comparisons with None, True, False and `...` are correct and not reported. Return `(lineno, op)` pairs, op being `"is"` or `"is not"`, one per offending operator (a chained comparison may contain several), sorted. Also write `intern_keys(records: list[dict]) -> list[dict]` returning new dicts whose str keys are replaced by `sys.intern(key)`, so equal keys built at runtime in different records become one shared object; values and non-str keys are kept unchanged, and the input dicts are not modified.
+@@@ reference
+import ast
+import sys
+
+
+def _is_literal(node):
+    if isinstance(node, ast.Constant):
+        return not (node.value is None or node.value is Ellipsis or isinstance(node.value, bool))
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        v = node.operand
+        return isinstance(v, ast.Constant) and isinstance(v.value, (int, float, complex)) \
+            and not isinstance(v.value, bool)
+    return isinstance(node, (ast.Tuple, ast.List, ast.Dict, ast.Set))
+
+
+def identity_comparisons(source):
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Compare):
+            operands = [node.left, *node.comparators]
+            for i, op in enumerate(node.ops):
+                if isinstance(op, (ast.Is, ast.IsNot)) and (_is_literal(operands[i]) or _is_literal(operands[i + 1])):
+                    found.append((node.lineno, "is" if isinstance(op, ast.Is) else "is not"))
+    return sorted(found)
+
+
+def intern_keys(records):
+    return [{(sys.intern(k) if isinstance(k, str) else k): v for k, v in r.items()} for r in records]
+@@@ tests
+import pytest
+from solution import identity_comparisons, intern_keys
+
+pytestmark = pytest.mark.filterwarnings("ignore::SyntaxWarning")
+
+SRC = '''
+if x is None or y is not True:
+    pass
+if count is 1000:
+    pass
+if name is not "admin":
+    pass
+ok = a is b
+neg = n is -1
+pair = p is (1, 2)
+dots = d is ...
+data = b"x" is not z
+'''
+
+
+def test_reports_literals():
+    assert identity_comparisons(SRC) == [(4, "is"), (6, "is not"), (9, "is"), (10, "is"), (12, "is not")]
+
+
+def test_singletons_not_reported():
+    assert identity_comparisons("a is None\nb is not False\nc is ...\nd is e\n") == []
+
+
+def test_chained_and_displays():
+    assert identity_comparisons("a is 1 is b\n") == [(1, "is"), (1, "is")]
+    assert identity_comparisons("x is []\ny is {}\nz is {1}\nw is 1.5\nv is 2j\n") == \
+        [(1, "is"), (2, "is"), (3, "is"), (4, "is"), (5, "is")]
+    assert identity_comparisons("x == 1000\ny != 'a'\n") == []
+
+
+def test_runtime_strings_equal_not_identical():
+    k1 = "".join(["user", "_id"])
+    k2 = "".join(["user", "_id"])
+    assert k1 == k2 and k1 is not k2
+    out = intern_keys([{k1: 1}, {k2: 2}])
+    a, b = next(iter(out[0])), next(iter(out[1]))
+    assert a == "user_id" and a is b
+
+
+def test_intern_keeps_values_and_inputs():
+    val = [1, 2]
+    rec = {"".join(["a", "b"]): val, 7: "seven"}
+    out = intern_keys([rec])
+    assert out[0] == rec and out[0] is not rec
+    assert out[0]["ab"] is val and out[0][7] == "seven"
+    assert intern_keys([]) == []
+@@@ task lazy_document_properties leaf=16 diff=2 entry=Document
+@@@ prompt
+Write `Document(text)` with lazily computed, cached attributes using `functools.cached_property`: `words` (the list `re.findall(r"[a-z']+", text.lower())`), `word_count` (the number of words) and `frequencies` (a `collections.Counter` of the words). Nothing is computed in `__init__`, and each value is computed at most once until it is invalidated. To make this observable, every computation of one of the three appends its name to the instance's list `computed` (which starts empty). `text` is a property; assigning a new text must invalidate all three cached values so they recompute on next access. `invalidate()` drops the cached values explicitly and must not fail when some were never computed.
+@@@ reference
+import collections
+import functools
+import re
+
+
+class Document:
+    _CACHED = ("words", "word_count", "frequencies")
+
+    def __init__(self, text):
+        self._text = text
+        self.computed = []
+
+    @property
+    def text(self):
+        return self._text
+
+    @text.setter
+    def text(self, value):
+        self._text = value
+        self.invalidate()
+
+    def invalidate(self):
+        for name in self._CACHED:
+            self.__dict__.pop(name, None)
+
+    @functools.cached_property
+    def words(self):
+        self.computed.append("words")
+        return re.findall(r"[a-z']+", self._text.lower())
+
+    @functools.cached_property
+    def word_count(self):
+        self.computed.append("word_count")
+        return len(self.words)
+
+    @functools.cached_property
+    def frequencies(self):
+        self.computed.append("frequencies")
+        return collections.Counter(self.words)
+@@@ tests
+import collections
+import functools
+from solution import Document
+
+
+def test_nothing_computed_eagerly():
+    d = Document("a b c")
+    assert d.computed == []
+
+
+def test_values():
+    d = Document("The cat and the hat. Don't!")
+    assert d.words == ["the", "cat", "and", "the", "hat", "don't"]
+    assert d.word_count == 6 and d.frequencies["the"] == 2
+
+
+def test_computed_once():
+    d = Document("x y x")
+    for _ in range(3):
+        d.word_count
+        d.frequencies
+        d.words
+    assert collections.Counter(d.computed) == {"words": 1, "word_count": 1, "frequencies": 1}
+
+
+def test_uses_cached_property():
+    assert isinstance(Document.__dict__["words"], functools.cached_property)
+    d = Document("q")
+    d.words
+    assert d.__dict__["words"] == ["q"]
+
+
+def test_setting_text_invalidates():
+    d = Document("one two")
+    assert d.word_count == 2
+    d.text = "one two three"
+    assert d.word_count == 3 and d.frequencies["three"] == 1
+    assert d.computed.count("words") == 2
+
+
+def test_invalidate_partial():
+    d = Document("a")
+    d.invalidate()
+    d.words
+    d.invalidate()
+    assert d.words == ["a"] and d.computed == ["words", "words"]

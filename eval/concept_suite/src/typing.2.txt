@@ -1,0 +1,258 @@
+@@@ task bounded_typevar_protocol leaf=2 diff=3 entry=SupportsLessThan,CT,top_k,insert_sorted
+@@@ prompt
+Write generic functions over a bounded type variable. Define a protocol `SupportsLessThan(Protocol)` with a single method `__lt__(self, other: Any, /) -> bool`, and `CT = TypeVar("CT", bound=SupportsLessThan)`. `top_k(items: Iterable[CT], k: int) -> list[CT]` returns the `k` largest items, largest first, using only `<` comparisons; equal items keep their original relative order (a stable `sorted(..., reverse=True)` gives exactly that); `k <= 0` gives `[]`. `insert_sorted(seq: list[CT], item: CT) -> int` inserts `item` into the already sorted list in place, after any equal items, and returns the index where it went (`bisect.insort_right`/`bisect_right` compare with `<` only). Both must work for any class that defines only `__lt__`, without `__gt__`, `__le__` or `__eq__` overrides.
+@@@ reference
+import bisect
+from collections.abc import Iterable
+from typing import Any, Protocol, TypeVar
+
+
+class SupportsLessThan(Protocol):
+    def __lt__(self, other: Any, /) -> bool: ...
+
+
+CT = TypeVar("CT", bound=SupportsLessThan)
+
+
+def top_k(items: Iterable[CT], k: int) -> list[CT]:
+    if k <= 0:
+        return []
+    return sorted(items, reverse=True)[:k]
+
+
+def insert_sorted(seq: list[CT], item: CT) -> int:
+    i = bisect.bisect_right(seq, item)
+    seq.insert(i, item)
+    return i
+@@@ tests
+import typing
+from solution import SupportsLessThan, CT, top_k, insert_sorted
+
+
+class Version:
+    def __init__(self, n, tag=""):
+        self.n, self.tag = n, tag
+
+    def __lt__(self, other):
+        return self.n < other.n
+
+    def __repr__(self):
+        return f"V{self.n}{self.tag}"
+
+
+def test_bound_typevar():
+    assert isinstance(CT, typing.TypeVar) and CT.__bound__ is SupportsLessThan
+    assert issubclass(SupportsLessThan, typing.Protocol)
+    assert typing.get_type_hints(top_k)["return"] == list[CT]
+
+
+def test_top_k_numbers_and_strings():
+    assert top_k([5, 1, 9, 3, 7], 3) == [9, 7, 5]
+    assert top_k("hello", 2) == ["o", "l"] and top_k([1, 2], 5) == [2, 1]
+    assert top_k([3, 1], 0) == [] and top_k([], 3) == []
+
+
+def test_top_k_only_lt_and_stable():
+    vs = [Version(2, "a"), Version(5), Version(2, "b"), Version(1)]
+    out = top_k(iter(vs), 3)
+    assert [repr(v) for v in out] == ["V5", "V2a", "V2b"]
+
+
+def test_insert_sorted():
+    xs = [1, 3, 5]
+    assert insert_sorted(xs, 4) == 2 and xs == [1, 3, 4, 5]
+    assert insert_sorted(xs, 0) == 0 and insert_sorted(xs, 9) == 5
+
+
+def test_insert_after_equals_with_lt_only():
+    vs = [Version(1), Version(2, "a"), Version(3)]
+    assert insert_sorted(vs, Version(2, "b")) == 2
+    assert [repr(v) for v in vs] == ["V1", "V2a", "V2b", "V3"]
+    empty = []
+    assert insert_sorted(empty, Version(7)) == 0 and len(empty) == 1
+@@@ task typed_retry_decorator leaf=7 diff=3 entry=P,R,retry
+@@@ prompt
+Write a typed decorator factory `retry(times: int, *, on: tuple[type[BaseException], ...] = (Exception,), sleep: Callable[[float], None] = time.sleep, delay: float = 0.0) -> Callable[[Callable[P, R]], Callable[P, R]]`, with `P = ParamSpec("P")` and `R = TypeVar("R")`. The returned decorator wraps a function so that a call raising one of the exception types in `on` is retried, up to `times` attempts in total, calling `sleep(delay)` between attempts (not after the last); exceptions not in `on` propagate immediately, and after the last failed attempt the last exception propagates. `times < 1` raises ValueError when `retry` is called. The wrapper is annotated `(*args: P.args, **kwargs: P.kwargs) -> R`, uses `functools.wraps`, and must work on methods too (self simply flows through `P`).
+@@@ reference
+import functools
+import time
+from collections.abc import Callable
+from typing import ParamSpec, TypeVar
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+
+def retry(times: int, *, on: tuple[type[BaseException], ...] = (Exception,),
+          sleep: Callable[[float], None] = time.sleep, delay: float = 0.0) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    if times < 1:
+        raise ValueError("times must be at least 1")
+
+    def decorator(fn: Callable[P, R]) -> Callable[P, R]:
+        @functools.wraps(fn)
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            for attempt in range(1, times + 1):
+                try:
+                    return fn(*args, **kwargs)
+                except on:
+                    if attempt == times:
+                        raise
+                    sleep(delay)
+            raise AssertionError("unreachable")
+        return wrapper
+    return decorator
+@@@ tests
+import inspect
+import typing
+import pytest
+import solution
+from solution import retry
+
+
+def flaky(fail_times, exc=ConnectionError):
+    calls = []
+
+    def fn(x, *, scale=1):
+        calls.append(x)
+        if len(calls) <= fail_times:
+            raise exc("nope")
+        return x * scale
+    return fn, calls
+
+
+def test_typing_objects():
+    assert isinstance(solution.P, typing.ParamSpec) and isinstance(solution.R, typing.TypeVar)
+    hints = typing.get_type_hints(retry)
+    assert hints["times"] is int and typing.get_origin(hints["return"]) is not None
+
+
+def test_retries_until_success():
+    slept = []
+    fn, calls = flaky(2)
+    wrapped = retry(3, on=(ConnectionError,), sleep=slept.append, delay=0.5)(fn)
+    assert wrapped(4, scale=2) == 8 and calls == [4, 4, 4] and slept == [0.5, 0.5]
+    assert wrapped.__name__ == "fn" and str(inspect.signature(wrapped)) == "(x, *, scale=1)"
+
+
+def test_gives_up_with_last_exception():
+    slept = []
+    fn, calls = flaky(10)
+    wrapped = retry(3, sleep=slept.append)(fn)
+    with pytest.raises(ConnectionError):
+        wrapped(1)
+    assert len(calls) == 3 and slept == [0.0, 0.0]
+
+
+def test_other_exceptions_propagate_immediately():
+    fn, calls = flaky(1, exc=KeyError)
+    wrapped = retry(5, on=(ConnectionError, TimeoutError), sleep=lambda s: None)(fn)
+    with pytest.raises(KeyError):
+        wrapped(1)
+    assert calls == [1]
+
+
+def test_validation_and_methods():
+    with pytest.raises(ValueError):
+        retry(0)
+
+    class Client:
+        def __init__(self):
+            self.attempts = 0
+
+        @retry(2, sleep=lambda s: None)
+        def get(self, path):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise OSError("blip")
+            return f"GET {path}"
+    c = Client()
+    assert c.get("/x") == "GET /x" and c.attempts == 2
+@@@ task overloaded_getitem leaf=8 diff=3 entry=Event,Timeline min_python=3.11
+@@@ prompt
+Write `Event(at: int, name: str)` (a frozen dataclass) and `Timeline`, an immutable sequence of events kept sorted by `at` (ties keep insertion order), subclassing `collections.abc.Sequence[Event]`. `Timeline(events: Iterable[Event] = ())`. Its `__getitem__` is declared with two `typing.overload`s, `(self, index: int) -> Event` and `(self, index: slice) -> "Timeline"`, followed by the implementation: an int index returns the event (negative indexes allowed, IndexError out of range), a slice returns a new `Timeline`. Implement `__len__`, `__repr__` as `Timeline([Event(at=1, name='a'), ...])`, and `between(start: int, end: int) -> "Timeline"` returning the events with `start <= at < end` using `bisect` on the sorted times. Thanks to the Sequence ABC, `in`, `index`, `count`, iteration and `reversed` must work without further code.
+@@@ reference
+import bisect
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
+from typing import overload
+
+
+@dataclass(frozen=True)
+class Event:
+    at: int
+    name: str
+
+
+class Timeline(Sequence[Event]):
+    def __init__(self, events: Iterable[Event] = ()) -> None:
+        self._events = sorted(events, key=lambda e: e.at)
+        self._times = [e.at for e in self._events]
+
+    @overload
+    def __getitem__(self, index: int) -> Event: ...
+    @overload
+    def __getitem__(self, index: slice) -> "Timeline": ...
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return Timeline(self._events[index])
+        return self._events[index]
+
+    def __len__(self) -> int:
+        return len(self._events)
+
+    def __repr__(self) -> str:
+        return f"Timeline({self._events!r})"
+
+    def between(self, start: int, end: int) -> "Timeline":
+        lo = bisect.bisect_left(self._times, start)
+        hi = bisect.bisect_left(self._times, end)
+        return Timeline(self._events[lo:hi])
+@@@ tests
+import collections.abc
+import typing
+import pytest
+from solution import Event, Timeline
+
+E = [Event(5, "e"), Event(1, "a"), Event(3, "c"), Event(3, "d"), Event(9, "z")]
+
+
+def test_overloads_registered():
+    ovs = typing.get_overloads(Timeline.__getitem__)
+    assert len(ovs) == 2
+    rets = [typing.get_type_hints(o, localns={"Timeline": Timeline})["return"] for o in ovs]
+    assert rets == [Event, Timeline]
+
+
+def test_sorted_and_indexing():
+    t = Timeline(E)
+    assert isinstance(t, collections.abc.Sequence) and len(t) == 5
+    assert [e.name for e in t] == ["a", "c", "d", "e", "z"]
+    assert t[0] == Event(1, "a") and t[-1].name == "z"
+    with pytest.raises(IndexError):
+        t[5]
+
+
+def test_slices_are_timelines():
+    t = Timeline(E)
+    s = t[1:3]
+    assert isinstance(s, Timeline) and list(s) == [Event(3, "c"), Event(3, "d")]
+    assert repr(Timeline([Event(1, "a")])) == "Timeline([Event(at=1, name='a')])"
+
+
+def test_sequence_mixins():
+    t = Timeline(E)
+    assert Event(3, "d") in t and Event(4, "x") not in t
+    assert t.index(Event(5, "e")) == 3 and t.count(Event(3, "c")) == 1
+    assert [e.at for e in reversed(t)] == [9, 5, 3, 3, 1]
+
+
+def test_between():
+    t = Timeline(E)
+    assert [e.name for e in t.between(3, 9)] == ["c", "d", "e"]
+    assert list(t.between(10, 20)) == [] and len(t.between(0, 100)) == 5
+    assert isinstance(t.between(1, 2), Timeline)
+
+
+def test_event_frozen():
+    with pytest.raises(Exception):
+        Event(1, "a").at = 2

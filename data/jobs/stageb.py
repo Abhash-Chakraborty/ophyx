@@ -180,6 +180,10 @@ def bench_items():
         ("livecodebench", lambda: hf_records("livecodebench/code_generation_lite", lambda f: f.endswith(".jsonl")),
          ["question_content", "starter_code"], "question_id"),
         ("apps_test", lambda: hf_records("codeparrot/apps", lambda f: "test" in f), ["question", "solutions"], "problem_id"),
+        # our private concept suite (eval/concept_suite), uploaded to the private data repo
+        ("concept_suite", lambda: [json.loads(l) for l in open(hf_hub_download(REPO, "eval/concept_suite/tasks.jsonl",
+                                   repo_type="dataset", token=KEYS["HF_TOKEN"], local_dir=os.path.join(WORK, "bench", "concept")))],
+         ["prompt", "reference"], "task_id"),
     ]
     report = {}
     if SMOKE:

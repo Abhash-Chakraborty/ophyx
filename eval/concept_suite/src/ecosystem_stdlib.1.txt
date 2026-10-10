@@ -1,0 +1,1378 @@
+@@@ task pathlib_index_relocate leaf=0 diff=2 entry=index_tree,relocate
+@@@ prompt
+Write two `pathlib` helpers. `index_tree(root) -> dict[str, list[str]]` walks every file under `root` (a `Path` or str) recursively and groups them by lower-cased suffix (`Path.suffix`, so `archive.tar.gz` is `.gz` and `README` is `""`). Values are the files' paths relative to `root` in POSIX form (`a/b.txt`), sorted. Directories are not listed, and any file whose relative path has a component starting with `.` (hidden files, or anything inside a hidden directory) is skipped. `relocate(path, old_root, new_root, new_suffix=None) -> Path` is a pure path computation that never touches the file system: it maps `path`, which must lie inside `old_root`, to the same relative location under `new_root`, replacing the suffix when `new_suffix` is given (`""` removes it). A path not inside `old_root` raises `ValueError`. Containment means real path components, so `/data/input2/x` is not inside `/data/in`.
+@@@ reference
+from pathlib import Path
+
+
+def index_tree(root):
+    root = Path(root)
+    out = {}
+    for p in root.rglob("*"):
+        rel = p.relative_to(root)
+        if any(part.startswith(".") for part in rel.parts) or not p.is_file():
+            continue
+        out.setdefault(p.suffix.lower(), []).append(rel.as_posix())
+    for names in out.values():
+        names.sort()
+    return out
+
+
+def relocate(path, old_root, new_root, new_suffix=None):
+    rel = Path(path).relative_to(old_root)
+    target = Path(new_root) / rel
+    if new_suffix is not None:
+        target = target.with_suffix(new_suffix)
+    return target
+@@@ tests
+from pathlib import Path
+import pytest
+from solution import index_tree, relocate
+
+
+def make(root, *names):
+    for n in names:
+        p = root / n
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("x")
+
+
+def test_groups_by_lowercase_suffix(tmp_path):
+    make(tmp_path, "a.py", "pkg/b.PY", "pkg/sub/c.txt", "README", "data/archive.tar.gz")
+    assert index_tree(tmp_path) == {".py": ["a.py", "pkg/b.PY"], ".txt": ["pkg/sub/c.txt"], "": ["README"],
+                                    ".gz": ["data/archive.tar.gz"]}
+
+
+def test_skips_hidden_and_directories(tmp_path):
+    make(tmp_path, ".env", ".git/config", "src/.cache/x.py", "src/ok.py")
+    (tmp_path / "emptydir.d").mkdir()
+    assert index_tree(tmp_path) == {".py": ["src/ok.py"]}
+
+
+def test_sorted_and_accepts_str(tmp_path):
+    make(tmp_path, "z.md", "b/a.md", "a.md")
+    assert index_tree(str(tmp_path)) == {".md": ["a.md", "b/a.md", "z.md"]}
+
+
+def test_relocate_is_pure(tmp_path):
+    src = tmp_path / "in"
+    out = relocate(src / "x" / "y.md", src, tmp_path / "out", ".html")
+    assert out == tmp_path / "out" / "x" / "y.html"
+    assert not (tmp_path / "out").exists() and not src.exists()
+
+
+def test_relocate_suffix_handling():
+    assert relocate("/data/in/a/b.txt", "/data/in", "/backup") == Path("/backup/a/b.txt")
+    assert relocate("/data/in/a/b.tar.gz", "/data/in", "/x", "") == Path("/x/a/b.tar")
+
+
+def test_relocate_outside_root():
+    with pytest.raises(ValueError):
+        relocate("/data/other/a.txt", "/data/in", "/x")
+    with pytest.raises(ValueError):
+        relocate("/data/input2/a.txt", "/data/in", "/x")
+@@@ task json_tagged_encoder leaf=1 diff=3 entry=ExtendedEncoder,decode_hook,dumps,loads
+@@@ prompt
+Extend `json` to round-trip types it does not support natively. Write `ExtendedEncoder(json.JSONEncoder)` whose `default` encodes a `datetime.datetime` as `{"__type__": "datetime", "value": dt.isoformat()}`, a `datetime.date` as `{"__type__": "date", "value": ...}`, a `decimal.Decimal` as `{"__type__": "decimal", "value": str(d)}`, a `set` or `frozenset` as `{"__type__": "set", "value": <sorted list>}`, and a dataclass instance as a plain object of its fields (no tag, so it decodes as a dict). Anything else must raise `TypeError` as the base class does. Write `decode_hook(obj)` for `object_hook`: a dict whose keys are exactly `__type__` and `value` with a known tag becomes the original type (sets decode as `set`); every other dict is returned unchanged. Finally `dumps(obj, **kwargs)` and `loads(text)` wrap `json.dumps`/`json.loads` with these.
+@@@ reference
+import dataclasses
+import datetime
+import decimal
+import json
+
+
+class ExtendedEncoder(json.JSONEncoder):
+    def default(self, o):
+        if isinstance(o, datetime.datetime):
+            return {"__type__": "datetime", "value": o.isoformat()}
+        if isinstance(o, datetime.date):
+            return {"__type__": "date", "value": o.isoformat()}
+        if isinstance(o, decimal.Decimal):
+            return {"__type__": "decimal", "value": str(o)}
+        if isinstance(o, (set, frozenset)):
+            return {"__type__": "set", "value": sorted(o)}
+        if dataclasses.is_dataclass(o) and not isinstance(o, type):
+            return {f.name: getattr(o, f.name) for f in dataclasses.fields(o)}
+        return super().default(o)
+
+
+_DECODERS = {
+    "datetime": datetime.datetime.fromisoformat,
+    "date": datetime.date.fromisoformat,
+    "decimal": decimal.Decimal,
+    "set": set,
+}
+
+
+def decode_hook(obj):
+    if set(obj) == {"__type__", "value"} and obj["__type__"] in _DECODERS:
+        return _DECODERS[obj["__type__"]](obj["value"])
+    return obj
+
+
+def dumps(obj, **kwargs):
+    return json.dumps(obj, cls=ExtendedEncoder, **kwargs)
+
+
+def loads(text):
+    return json.loads(text, object_hook=decode_hook)
+@@@ tests
+import dataclasses
+import datetime as dt
+import json
+from decimal import Decimal
+import pytest
+from solution import ExtendedEncoder, decode_hook, dumps, loads
+
+
+def test_round_trip_nested():
+    obj = {"when": dt.datetime(2026, 5, 1, 12, 30, tzinfo=dt.timezone(dt.timedelta(hours=2))),
+           "day": dt.date(2026, 1, 31), "price": Decimal("19.990"), "tags": {"b", "a"},
+           "items": [{"qty": Decimal("0.1")}, 3, "x"]}
+    back = loads(dumps(obj))
+    assert back == obj
+    assert type(back["when"]) is dt.datetime and back["when"].utcoffset() == dt.timedelta(hours=2)
+    assert type(back["day"]) is dt.date and str(back["price"]) == "19.990" and back["tags"] == {"a", "b"}
+
+
+def test_wire_format():
+    raw = json.loads(dumps({"d": dt.date(2026, 2, 3), "s": frozenset([3, 1, 2])}))
+    assert raw == {"d": {"__type__": "date", "value": "2026-02-03"}, "s": {"__type__": "set", "value": [1, 2, 3]}}
+    assert json.loads(dumps(dt.datetime(2026, 1, 1, 8))) == {"__type__": "datetime", "value": "2026-01-01T08:00:00"}
+
+
+def test_decimal_stays_exact():
+    assert loads(dumps(Decimal("0.1"))) + loads(dumps(Decimal("0.2"))) == Decimal("0.3")
+
+
+@dataclasses.dataclass
+class Point:
+    x: int
+    label: str
+    when: dt.date
+
+
+def test_dataclass_as_plain_object():
+    assert loads(dumps(Point(1, "p", dt.date(2026, 3, 4)))) == {"x": 1, "label": "p", "when": dt.date(2026, 3, 4)}
+
+
+def test_unknown_types_raise_type_error():
+    with pytest.raises(TypeError):
+        dumps(object())
+    with pytest.raises(TypeError):
+        json.dumps(1 + 2j, cls=ExtendedEncoder)
+
+
+def test_hook_leaves_other_dicts_alone():
+    assert decode_hook({"__type__": "unknown", "value": 1}) == {"__type__": "unknown", "value": 1}
+    assert decode_hook({"__type__": "date", "value": "2026-01-01", "extra": 1})["extra"] == 1
+    assert loads('{"a": {"b": [1, 2]}}') == {"a": {"b": [1, 2]}}
+
+
+def test_kwargs_forwarded():
+    assert dumps({"b": 1, "a": Decimal("2")}, sort_keys=True) == '{"a": {"__type__": "decimal", "value": "2"}, "b": 1}'
+@@@ task csv_normalize_columns leaf=2 diff=2 entry=normalize_csv
+@@@ prompt
+Write `normalize_csv(src, dst, columns) -> int` with the `csv` module. `src` is a CSV file with a header row, possibly starting with a UTF-8 byte-order mark (read it with `utf-8-sig`). Header names are normalised by stripping whitespace and lower-casing. Write `dst` (UTF-8, no BOM) with a header of exactly `columns` (already lower-case) in that order, then one row per input row holding those columns' values. A column missing from the input, or a short row, gives `""`, and input columns not listed are dropped. Skip rows whose selected values are all empty or whitespace. Return the number of data rows written. Values containing commas, double quotes or embedded newlines must survive unchanged, so open both files with `newline=""` and never split lines yourself. An empty `src` produces just the header and returns 0.
+@@@ reference
+import csv
+
+
+def normalize_csv(src, dst, columns):
+    with open(src, newline="", encoding="utf-8-sig") as fin, \
+            open(dst, "w", newline="", encoding="utf-8") as fout:
+        reader = csv.reader(fin)
+        header = [h.strip().lower() for h in next(reader, [])]
+        writer = csv.writer(fout)
+        writer.writerow(columns)
+        written = 0
+        for row in reader:
+            rec = dict(zip(header, row))
+            out = [rec.get(c, "") for c in columns]
+            if not any(v.strip() for v in out):
+                continue
+            writer.writerow(out)
+            written += 1
+    return written
+@@@ tests
+import csv
+from solution import normalize_csv
+
+
+def read(path):
+    with open(path, newline="", encoding="utf-8") as f:
+        return list(csv.reader(f))
+
+
+def test_reorders_drops_and_fills(tmp_path):
+    src, dst = tmp_path / "in.csv", tmp_path / "out.csv"
+    src.write_text(" Name ,AGE,City,extra\nAda,36,London,x\nBob,,Paris,y\n", encoding="utf-8")
+    assert normalize_csv(src, dst, ["city", "name", "email"]) == 2
+    assert read(dst) == [["city", "name", "email"], ["London", "Ada", ""], ["Paris", "Bob", ""]]
+
+
+def test_quoted_fields_survive(tmp_path):
+    src, dst = tmp_path / "in.csv", tmp_path / "out.csv"
+    with open(src, "w", newline="", encoding="utf-8") as f:
+        csv.writer(f).writerows([["id", "note"], ["1", 'says "hi", then\nleaves'], ["2", "a,b,c"]])
+    assert normalize_csv(src, dst, ["note", "id"]) == 2
+    assert read(dst)[1:] == [['says "hi", then\nleaves', "1"], ["a,b,c", "2"]]
+
+
+def test_bom_header(tmp_path):
+    src, dst = tmp_path / "in.csv", tmp_path / "out.csv"
+    src.write_bytes("﻿Sku,Qty\nA1,3\n".encode("utf-8"))
+    normalize_csv(src, dst, ["sku", "qty"])
+    assert read(dst) == [["sku", "qty"], ["A1", "3"]]
+    assert not dst.read_bytes().startswith(b"\xef\xbb\xbf")
+
+
+def test_skips_blank_selected_rows_and_short_rows(tmp_path):
+    src, dst = tmp_path / "in.csv", tmp_path / "out.csv"
+    src.write_text("a,b,c\n1,2,3\n , ,9\n\n4\n", encoding="utf-8")
+    assert normalize_csv(src, dst, ["a", "b"]) == 2
+    assert read(dst) == [["a", "b"], ["1", "2"], ["4", ""]]
+
+
+def test_unicode_values(tmp_path):
+    src, dst = tmp_path / "in.csv", tmp_path / "out.csv"
+    src.write_text("name\nZoë\n東京\n", encoding="utf-8")
+    assert normalize_csv(src, dst, ["name"]) == 2
+    assert read(dst)[1:] == [["Zoë"], ["東京"]]
+
+
+def test_empty_source(tmp_path):
+    src, dst = tmp_path / "in.csv", tmp_path / "out.csv"
+    src.write_text("")
+    assert normalize_csv(src, dst, ["x", "y"]) == 0
+    assert read(dst) == [["x", "y"]]
+@@@ task zoneinfo_daily_series leaf=3 diff=3 entry=to_zone,daily_series min_python=3.11
+@@@ prompt
+Write two timezone helpers with `datetime` and `zoneinfo`. `to_zone(timestamp: str, zone: str) -> str` parses an ISO 8601 timestamp that must carry an offset (`Z` or `+02:00`; a naive timestamp raises `ValueError`) and returns the same instant in the IANA `zone` as `isoformat()`. `daily_series(start_local: str, zone: str, count: int) -> list[str]` takes a naive local wall-clock time such as `"2026-03-28T09:00"` (an offset raises `ValueError`) and returns `count` occurrences, one per day at the same local wall-clock time in `zone`, each converted to UTC and formatted with `isoformat()` (so they end in `+00:00`). Across a daylight-saving change the UTC time shifts and the local time stays put. Do not add 24 hours in UTC. Ambiguous local times use the earlier offset (`fold=0`).
+@@@ reference
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+
+def to_zone(timestamp, zone):
+    dt = datetime.fromisoformat(timestamp)
+    if dt.tzinfo is None:
+        raise ValueError("timestamp has no UTC offset")
+    return dt.astimezone(ZoneInfo(zone)).isoformat()
+
+
+def daily_series(start_local, zone, count):
+    tz = ZoneInfo(zone)
+    start = datetime.fromisoformat(start_local)
+    if start.tzinfo is not None:
+        raise ValueError("expected a naive local time")
+    return [(start + timedelta(days=i)).replace(tzinfo=tz).astimezone(timezone.utc).isoformat()
+            for i in range(count)]
+@@@ tests
+import pytest
+
+zoneinfo = pytest.importorskip("zoneinfo")
+try:
+    zoneinfo.ZoneInfo("Europe/Berlin")
+    zoneinfo.ZoneInfo("America/New_York")
+except zoneinfo.ZoneInfoNotFoundError:
+    pytest.skip("no tzdata", allow_module_level=True)
+
+from solution import to_zone, daily_series
+
+
+def test_to_zone():
+    assert to_zone("2026-07-01T12:00:00Z", "Europe/Berlin") == "2026-07-01T14:00:00+02:00"
+    assert to_zone("2026-01-15T12:00:00+00:00", "Europe/Berlin") == "2026-01-15T13:00:00+01:00"
+    assert to_zone("2026-01-15T09:30:00+01:00", "America/New_York") == "2026-01-15T03:30:00-05:00"
+
+
+def test_to_zone_rejects_naive():
+    with pytest.raises(ValueError):
+        to_zone("2026-07-01T12:00:00", "UTC")
+
+
+def test_berlin_spring_forward():
+    assert daily_series("2026-03-28T09:00", "Europe/Berlin", 3) == [
+        "2026-03-28T08:00:00+00:00", "2026-03-29T07:00:00+00:00", "2026-03-30T07:00:00+00:00"]
+
+
+def test_new_york_spring_forward():
+    assert daily_series("2026-03-07T09:00", "America/New_York", 2) == [
+        "2026-03-07T14:00:00+00:00", "2026-03-08T13:00:00+00:00"]
+
+
+def test_ambiguous_uses_earlier_offset():
+    assert daily_series("2026-10-24T02:30", "Europe/Berlin", 2) == [
+        "2026-10-24T00:30:00+00:00", "2026-10-25T00:30:00+00:00"]
+
+
+def test_utc_and_errors():
+    assert daily_series("2026-01-01T00:00", "UTC", 2) == ["2026-01-01T00:00:00+00:00", "2026-01-02T00:00:00+00:00"]
+    assert daily_series("2026-01-01T00:00", "UTC", 0) == []
+    with pytest.raises(ValueError):
+        daily_series("2026-01-01T00:00+01:00", "UTC", 1)
+@@@ task regex_named_groups leaf=4 diff=3 entry=LOG_RE,parse_log_line,redact_emails
+@@@ prompt
+Write a regex-based access-log parser using named groups. `LOG_RE` is a compiled pattern (use `re.VERBOSE` for readability) whose named groups are exactly `ip`, `user`, `time`, `method`, `path`, `status` and `size`, matching a whole line like `203.0.113.9 - alice [10/Oct/2026:13:55:36 +0000] "GET /api/items?id=3 HTTP/1.1" 200 512`: an IPv4 address, ` - `, a user (non-space, `-` for anonymous), a bracketed time, a quoted request of upper-case method, path and `HTTP/<d>.<d>`, a 3-digit status and a size (digits, or `-`). `parse_log_line(line) -> dict | None` returns the group dict with `user` and `size` as None when they are `-`, `status` and `size` as ints, or None when the line (ignoring surrounding whitespace) does not match completely. `redact_emails(text) -> str` keeps the first character of every e-mail's local part, replaces the rest of the local part with `***` and keeps the domain (`alice.smith@example.com` becomes `a***@example.com`). Use `re.sub` with a function or group references. Domains are dot-separated labels of letters, digits and hyphens, so a trailing sentence period is not part of the address.
+@@@ reference
+import re
+
+LOG_RE = re.compile(r"""
+    (?P<ip>\d{1,3}(?:\.\d{1,3}){3}) \s+ - \s+ (?P<user>\S+) \s+
+    \[(?P<time>[^\]]+)\] \s+
+    "(?P<method>[A-Z]+) \s+ (?P<path>\S+) \s+ HTTP/\d\.\d" \s+
+    (?P<status>\d{3}) \s+ (?P<size>\d+|-)
+""", re.VERBOSE)
+
+_EMAIL = re.compile(r"(?P<first>[A-Za-z0-9])[A-Za-z0-9._%+-]*@(?P<domain>[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)")
+
+
+def parse_log_line(line):
+    m = LOG_RE.fullmatch(line.strip())
+    if not m:
+        return None
+    d = m.groupdict()
+    d["user"] = None if d["user"] == "-" else d["user"]
+    d["status"] = int(d["status"])
+    d["size"] = None if d["size"] == "-" else int(d["size"])
+    return d
+
+
+def redact_emails(text):
+    return _EMAIL.sub(lambda m: f"{m['first']}***@{m['domain']}", text)
+@@@ tests
+import re
+import pytest
+from solution import LOG_RE, parse_log_line, redact_emails
+
+LINE = '203.0.113.9 - alice [10/Oct/2026:13:55:36 +0000] "GET /api/items?id=3 HTTP/1.1" 200 512'
+
+
+def test_named_groups():
+    assert isinstance(LOG_RE, re.Pattern)
+    assert set(LOG_RE.groupindex) == {"ip", "user", "time", "method", "path", "status", "size"}
+    assert LOG_RE.fullmatch(LINE)["path"] == "/api/items?id=3"
+
+
+def test_parse_full_line():
+    assert parse_log_line(LINE + "\n") == {"ip": "203.0.113.9", "user": "alice", "time": "10/Oct/2026:13:55:36 +0000",
+                                           "method": "GET", "path": "/api/items?id=3", "status": 200, "size": 512}
+
+
+def test_dashes_become_none():
+    d = parse_log_line('10.0.0.1 - - [x] "HEAD / HTTP/1.0" 304 -')
+    assert d["user"] is None and d["size"] is None and d["status"] == 304 and d["method"] == "HEAD"
+
+
+@pytest.mark.parametrize("bad", [
+    '203.0.113.9 - alice [t] "GET /x HTTP/1.1" 20 5',
+    '203.0.113.9 - alice [t] GET /x HTTP/1.1 200 5',
+    '203.0.113.9 - alice [t] "get /x HTTP/1.1" 200 5',
+    '203.0.113.9 - alice [t] "GET /x HTTP/1.1" 200 5 trailing',
+    'host - alice [t] "GET /x HTTP/1.1" 200 5',
+    "",
+])
+def test_rejects_malformed(bad):
+    assert parse_log_line(bad) is None
+
+
+def test_redact_emails():
+    assert redact_emails("Contact alice.smith@example.com or b@x.org.") == "Contact a***@example.com or b***@x.org."
+    assert redact_emails("ops+alerts@mail.example.co.uk") == "o***@mail.example.co.uk"
+
+
+def test_redact_leaves_non_emails():
+    assert redact_emails("no address @ here, user@localhost, 3 @ 4") == "no address @ here, user@localhost, 3 @ 4"
+@@@ task subprocess_run_python leaf=5 diff=3 entry=run_python,check_python,CommandFailed
+@@@ prompt
+Write safe wrappers around `subprocess` that run Python snippets. `run_python(code, *, args=(), stdin_text="", timeout=5.0) -> tuple[int, str, str]` runs `[sys.executable, "-c", code, *args]` as an argument list (never `shell=True`, so arguments such as `"$HOME; rm x"` arrive literally in `sys.argv`), feeds `stdin_text` on stdin, captures stdout and stderr as text and returns `(returncode, stdout, stderr)`. If the child runs longer than `timeout` seconds it must be killed and `TimeoutError` raised, chained from the `subprocess.TimeoutExpired`. `check_python(code, **kwargs) -> str` calls `run_python` and returns stdout, or raises `CommandFailed` when the exit code is non-zero. `CommandFailed(Exception)` has `returncode` and `stderr` attributes and its message includes both.
+@@@ reference
+import subprocess
+import sys
+
+
+class CommandFailed(Exception):
+    def __init__(self, returncode, stderr):
+        super().__init__(f"exit status {returncode}: {stderr.strip()}")
+        self.returncode = returncode
+        self.stderr = stderr
+
+
+def run_python(code, *, args=(), stdin_text="", timeout=5.0):
+    try:
+        p = subprocess.run([sys.executable, "-c", code, *args], input=stdin_text, capture_output=True,
+                           text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError(f"timed out after {timeout}s") from exc
+    return p.returncode, p.stdout, p.stderr
+
+
+def check_python(code, **kwargs):
+    rc, out, err = run_python(code, **kwargs)
+    if rc != 0:
+        raise CommandFailed(rc, err)
+    return out
+@@@ tests
+import subprocess
+import sys
+import time
+import pytest
+from solution import run_python, check_python, CommandFailed
+
+
+def test_stdout_and_returncode():
+    assert run_python("print('hi')") == (0, "hi\n", "")
+
+
+def test_args_are_literal():
+    rc, out, _ = run_python("import sys; print(sys.argv[1:])", args=["$HOME", "a b", "x; rm y", "*"])
+    assert rc == 0 and out == "['$HOME', 'a b', 'x; rm y', '*']\n"
+
+
+def test_stdin():
+    assert run_python("import sys; print(sys.stdin.read().upper(), end='')", stdin_text="abc\n")[1] == "ABC\n"
+
+
+def test_failure_and_check():
+    rc, out, err = run_python("import sys; sys.stderr.write('boom'); sys.exit(3)")
+    assert (rc, out, err) == (3, "", "boom")
+    with pytest.raises(CommandFailed) as ei:
+        check_python("import sys; sys.stderr.write('bad input'); sys.exit(4)")
+    assert ei.value.returncode == 4 and ei.value.stderr == "bad input"
+    assert "4" in str(ei.value) and "bad input" in str(ei.value)
+    assert check_python("print(6 * 7)") == "42\n"
+
+
+def test_timeout_kills_child():
+    t = time.monotonic()
+    with pytest.raises(TimeoutError) as ei:
+        run_python("while True: pass", timeout=0.3)
+    assert time.monotonic() - t < 3
+    assert isinstance(ei.value.__cause__, subprocess.TimeoutExpired)
+
+
+def test_no_shell(monkeypatch):
+    seen = []
+    real = subprocess.Popen
+
+    class Spy(real):
+        def __init__(self, cmd, *a, **kw):
+            seen.append((cmd, kw.get("shell", False)))
+            super().__init__(cmd, *a, **kw)
+    monkeypatch.setattr(subprocess, "Popen", Spy)
+    run_python("pass")
+    assert seen and isinstance(seen[0][0], list) and seen[0][0][0] == sys.executable and seen[0][1] is False
+@@@ task sqlite_parameterised_users leaf=6 diff=3 entry=open_db,add_user,bulk_add,find_users,DuplicateEmail
+@@@ prompt
+Write a small `sqlite3` data layer that only ever uses parameterised queries. `open_db(path) -> sqlite3.Connection` connects and creates (if missing) a table `users(id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE)`. `add_user(conn, name, email) -> int` inserts one row in a committed transaction and returns its id. `bulk_add(conn, users) -> int` inserts an iterable of `(name, email)` pairs with `executemany` in a single transaction and returns how many were added. If any email is a duplicate, nothing from that call is kept (roll back). A duplicate email raises `DuplicateEmail` (a `ValueError` subclass) chained from the `sqlite3.IntegrityError`, in both functions. `find_users(conn, name_prefix) -> list[tuple]` returns `(id, name, email)` rows whose name starts with `name_prefix`, ordered by name then id. Matching uses `LIKE` with an `ESCAPE` clause, so `%`, `_` and `\` in the prefix match literally. LIKE's ASCII case-insensitivity is fine. Values must never be formatted into SQL text, so a name like `x'); DROP TABLE users;--` is stored as is.
+@@@ reference
+import sqlite3
+
+
+class DuplicateEmail(ValueError):
+    pass
+
+
+def open_db(path):
+    conn = sqlite3.connect(path)
+    with conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS users ("
+                     "id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE)")
+    return conn
+
+
+def add_user(conn, name, email):
+    try:
+        with conn:
+            cur = conn.execute("INSERT INTO users (name, email) VALUES (?, ?)", (name, email))
+    except sqlite3.IntegrityError as exc:
+        raise DuplicateEmail(email) from exc
+    return cur.lastrowid
+
+
+def bulk_add(conn, users):
+    users = list(users)
+    try:
+        with conn:
+            conn.executemany("INSERT INTO users (name, email) VALUES (?, ?)", users)
+    except sqlite3.IntegrityError as exc:
+        raise DuplicateEmail(str(exc)) from exc
+    return len(users)
+
+
+def find_users(conn, name_prefix):
+    escaped = name_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    cur = conn.execute("SELECT id, name, email FROM users WHERE name LIKE ? ESCAPE '\\' ORDER BY name, id",
+                       (escaped + "%",))
+    return cur.fetchall()
+@@@ tests
+import sqlite3
+import pytest
+from solution import open_db, add_user, bulk_add, find_users, DuplicateEmail
+
+
+@pytest.fixture
+def conn(tmp_path):
+    c = open_db(tmp_path / "users.db")
+    yield c
+    c.close()
+
+
+def count(c):
+    return c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+
+
+def test_add_and_persist(tmp_path):
+    c = open_db(tmp_path / "a.db")
+    uid = add_user(c, "Ada", "ada@example.com")
+    c.close()
+    c2 = open_db(tmp_path / "a.db")
+    assert c2.execute("SELECT id, name, email FROM users").fetchall() == [(uid, "Ada", "ada@example.com")]
+    c2.close()
+
+
+def test_injection_stored_literally(conn):
+    evil = "x'); DROP TABLE users;--"
+    add_user(conn, evil, "e@x.org")
+    add_user(conn, "O'Brien", "ob@x.org")
+    assert {r[1] for r in find_users(conn, "")} == {evil, "O'Brien"}
+    assert find_users(conn, "O'")[0][1] == "O'Brien"
+
+
+def test_duplicate_email(conn):
+    add_user(conn, "a", "same@x.org")
+    with pytest.raises(DuplicateEmail) as ei:
+        add_user(conn, "b", "same@x.org")
+    assert isinstance(ei.value, ValueError) and isinstance(ei.value.__cause__, sqlite3.IntegrityError)
+    assert count(conn) == 1
+
+
+def test_bulk_add_is_all_or_nothing(conn):
+    assert bulk_add(conn, [("a", "a@x"), ("b", "b@x")]) == 2
+    with pytest.raises(DuplicateEmail):
+        bulk_add(conn, [("c", "c@x"), ("d", "d@x"), ("dup", "a@x")])
+    assert count(conn) == 2
+    assert bulk_add(conn, iter([("c", "c@x")])) == 1 and count(conn) == 3
+
+
+def test_prefix_wildcards_are_literal(conn):
+    bulk_add(conn, [("100% real", "1@x"), ("100 fake", "2@x"), ("a_b", "3@x"), ("axb", "4@x"),
+                    ("back\\slash", "5@x"), ("backXslash", "6@x")])
+    assert [r[1] for r in find_users(conn, "100%")] == ["100% real"]
+    assert [r[1] for r in find_users(conn, "a_")] == ["a_b"]
+    assert [r[1] for r in find_users(conn, "back\\")] == ["back\\slash"]
+
+
+def test_order_by_name_then_id(conn):
+    ids = [add_user(conn, n, f"{i}@x") for i, n in enumerate(["bob", "al", "bob", "alice"])]
+    assert find_users(conn, "") == [(ids[1], "al", "1@x"), (ids[3], "alice", "3@x"),
+                                    (ids[0], "bob", "0@x"), (ids[2], "bob", "2@x")]
+    assert [r[1] for r in find_users(conn, "AL")] == ["al", "alice"]
+@@@ task argparse_resize_cli leaf=7 diff=3 entry=build_parser,parse_args
+@@@ prompt
+Write the argument parser for an image-resizing CLI with `argparse`. `build_parser() -> argparse.ArgumentParser` has `prog="resize"` and these arguments. `inputs`: one or more positional file names. `-w/--width`: required positive int; a custom `type` callable raises `argparse.ArgumentTypeError("width must be positive")` for zero or negatives. `--format`: one of `png`, `jpeg`, `webp`, default `png`. `--quality`: int, default 85; a custom type rejects values outside 1..100 with the message `quality must be between 1 and 100`. `-v/--verbose`: a counter, default 0. Finally, a mutually exclusive pair: `--overwrite` (store_true) or `--suffix SUFFIX` (default `-resized`). `parse_args(argv) -> argparse.Namespace` parses the given list (never `sys.argv`). Invalid input must make argparse exit with status 2 and print the error to stderr, as it does by default.
+@@@ reference
+import argparse
+
+
+def _int(text):
+    try:
+        return int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid integer: {text!r}") from None
+
+
+def _width(text):
+    v = _int(text)
+    if v <= 0:
+        raise argparse.ArgumentTypeError("width must be positive")
+    return v
+
+
+def _quality(text):
+    v = _int(text)
+    if not 1 <= v <= 100:
+        raise argparse.ArgumentTypeError("quality must be between 1 and 100")
+    return v
+
+
+def build_parser():
+    p = argparse.ArgumentParser(prog="resize", description="Resize images.")
+    p.add_argument("inputs", nargs="+", help="image files")
+    p.add_argument("-w", "--width", type=_width, required=True)
+    p.add_argument("--format", choices=["png", "jpeg", "webp"], default="png")
+    p.add_argument("--quality", type=_quality, default=85)
+    p.add_argument("-v", "--verbose", action="count", default=0)
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--overwrite", action="store_true")
+    g.add_argument("--suffix", default="-resized")
+    return p
+
+
+def parse_args(argv):
+    return build_parser().parse_args(argv)
+@@@ tests
+import argparse
+import sys
+import pytest
+from solution import build_parser, parse_args
+
+
+def test_defaults():
+    ns = parse_args(["a.png", "-w", "640"])
+    assert vars(ns) == {"inputs": ["a.png"], "width": 640, "format": "png", "quality": 85, "verbose": 0,
+                        "overwrite": False, "suffix": "-resized"}
+
+
+def test_full_options():
+    ns = parse_args(["--width=100", "a.jpg", "b.jpg", "--format", "webp", "--quality", "100", "-vvv", "--overwrite"])
+    assert ns.inputs == ["a.jpg", "b.jpg"] and ns.width == 100 and ns.format == "webp"
+    assert ns.quality == 100 and ns.verbose == 3 and ns.overwrite is True
+
+
+def errors(argv, capsys):
+    with pytest.raises(SystemExit) as ei:
+        parse_args(argv)
+    assert ei.value.code == 2
+    return capsys.readouterr().err
+
+
+def test_custom_type_messages(capsys):
+    assert "quality must be between 1 and 100" in errors(["a", "-w", "5", "--quality", "0"], capsys)
+    assert "quality must be between 1 and 100" in errors(["a", "-w", "5", "--quality", "101"], capsys)
+    assert "width must be positive" in errors(["a", "-w", "0"], capsys)
+    assert "usage: resize" in errors(["a", "-w", "ten"], capsys)
+
+
+def test_required_and_choices(capsys):
+    errors(["a.png"], capsys)
+    errors(["-w", "10"], capsys)
+    assert "invalid choice" in errors(["a", "-w", "1", "--format", "gif"], capsys)
+
+
+def test_mutually_exclusive(capsys):
+    assert "not allowed with" in errors(["a", "-w", "1", "--overwrite", "--suffix=-x"], capsys)
+    assert parse_args(["a", "-w", "1", "--suffix=-small"]).suffix == "-small"
+
+
+def test_ignores_sys_argv_and_help(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["prog", "--bogus"])
+    assert parse_args(["x", "-w", "2"]).width == 2
+    assert isinstance(build_parser(), argparse.ArgumentParser)
+    with pytest.raises(SystemExit) as ei:
+        parse_args(["--help"])
+    assert ei.value.code == 0 and "usage: resize" in capsys.readouterr().out
+@@@ task shutil_snapshots leaf=8 diff=3 entry=snapshot,prune
+@@@ prompt
+Write directory snapshots with `shutil` and `tempfile`. `snapshot(src, dest_root, *, ignore=("*.tmp", "__pycache__")) -> Path` copies the tree at `src` to `dest_root/snap-<n>`, where `n` is one more than the highest existing `snap-<number>` directory (1 if none), and returns that path. `dest_root` is created if needed. Files and directories matching the glob patterns in `ignore` are skipped (`shutil.ignore_patterns`). The copy must be atomic: build it in a staging directory made with `tempfile.mkdtemp(dir=dest_root)` and rename it into place only after the copy succeeded. On any error, remove the staging directory and re-raise, so a failed snapshot leaves nothing behind in `dest_root`. `prune(dest_root, keep) -> list[Path]` deletes (`shutil.rmtree`) all but the `keep` highest-numbered snapshots and returns the removed paths in ascending snapshot order. Entries whose names are not `snap-<number>` are left alone. A negative `keep` raises `ValueError`.
+@@@ reference
+import re
+import shutil
+import tempfile
+from pathlib import Path
+
+_SNAP = re.compile(r"snap-(\d+)")
+
+
+def _snapshots(dest_root):
+    found = []
+    for p in Path(dest_root).iterdir():
+        m = _SNAP.fullmatch(p.name)
+        if m and p.is_dir():
+            found.append((int(m.group(1)), p))
+    return sorted(found)
+
+
+def snapshot(src, dest_root, *, ignore=("*.tmp", "__pycache__")):
+    dest_root = Path(dest_root)
+    dest_root.mkdir(parents=True, exist_ok=True)
+    existing = _snapshots(dest_root)
+    target = dest_root / f"snap-{existing[-1][0] + 1 if existing else 1}"
+    staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=dest_root))
+    try:
+        shutil.copytree(src, staging, ignore=shutil.ignore_patterns(*ignore), dirs_exist_ok=True)
+        staging.rename(target)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return target
+
+
+def prune(dest_root, keep):
+    if keep < 0:
+        raise ValueError("keep must be >= 0")
+    snaps = _snapshots(dest_root)
+    doomed = [p for _, p in snaps[:max(len(snaps) - keep, 0)]]
+    for p in doomed:
+        shutil.rmtree(p)
+    return doomed
+@@@ tests
+import os
+import shutil
+import pytest
+from solution import snapshot, prune
+
+
+def make_src(root):
+    (root / "pkg" / "__pycache__").mkdir(parents=True)
+    (root / "pkg" / "a.py").write_text("A")
+    (root / "pkg" / "__pycache__" / "a.pyc").write_text("C")
+    (root / "notes.txt").write_text("N")
+    (root / "scratch.tmp").write_text("T")
+    return root
+
+
+def listing(root):
+    return sorted(str(p.relative_to(root)) for p in root.rglob("*"))
+
+
+def test_copy_with_ignores(tmp_path):
+    src = make_src(tmp_path / "src")
+    snap = snapshot(src, tmp_path / "backups")
+    assert snap == tmp_path / "backups" / "snap-1"
+    assert listing(snap) == ["notes.txt", "pkg", os.path.join("pkg", "a.py")]
+    assert (snap / "pkg" / "a.py").read_text() == "A"
+
+
+def test_numbering_uses_highest(tmp_path):
+    src = make_src(tmp_path / "src")
+    dest = tmp_path / "b"
+    names = [snapshot(src, dest).name for _ in range(3)]
+    assert names == ["snap-1", "snap-2", "snap-3"]
+    shutil.rmtree(dest / "snap-1")
+    (dest / "snap-old").mkdir()
+    assert snapshot(src, dest).name == "snap-4"
+
+
+def test_custom_ignore(tmp_path):
+    src = make_src(tmp_path / "src")
+    snap = snapshot(src, tmp_path / "b", ignore=("*.txt",))
+    assert "notes.txt" not in listing(snap) and "scratch.tmp" in listing(snap)
+
+
+def test_missing_source_leaves_nothing(tmp_path):
+    dest = tmp_path / "b"
+    with pytest.raises(FileNotFoundError):
+        snapshot(tmp_path / "nope", dest)
+    assert list(dest.iterdir()) == []
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0, reason="root can read anything")
+def test_partial_failure_cleans_staging(tmp_path):
+    src = make_src(tmp_path / "src")
+    secret = src / "pkg" / "secret.py"
+    secret.write_text("S")
+    secret.chmod(0)
+    try:
+        with pytest.raises((shutil.Error, OSError)):
+            snapshot(src, tmp_path / "b")
+    finally:
+        secret.chmod(0o600)
+    assert list((tmp_path / "b").iterdir()) == []
+
+
+def test_prune(tmp_path):
+    src = make_src(tmp_path / "src")
+    dest = tmp_path / "b"
+    for _ in range(11):
+        snapshot(src, dest)
+    (dest / "keepme").mkdir()
+    removed = prune(dest, 2)
+    assert [p.name for p in removed] == [f"snap-{i}" for i in range(1, 10)]
+    assert sorted(p.name for p in dest.iterdir()) == ["keepme", "snap-10", "snap-11"]
+    assert prune(dest, 5) == []
+    with pytest.raises(ValueError):
+        prune(dest, -1)
+@@@ task hashlib_passwords_tokens leaf=9 diff=3 entry=hash_password,verify_password,new_token,file_sha256
+@@@ prompt
+Write password and token helpers with `hashlib`, `hmac` and `secrets`. `hash_password(password, *, salt=None, iterations=100_000) -> str` derives a key with `hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)`. When no salt is given it uses 16 bytes from `secrets.token_bytes`. It returns `"pbkdf2_sha256$<iterations>$<salt hex>$<key hex>"`. `verify_password(password, stored) -> bool` recomputes the key from the stored parameters and compares it in constant time (`hmac.compare_digest`). A malformed `stored` string (wrong field count, unknown algorithm, bad hex, non-numeric or non-positive iterations) returns False instead of raising. `new_token(nbytes=32) -> str` returns a URL-safe random token (`secrets.token_urlsafe`). `file_sha256(path, chunk_size=65536) -> str` returns the hex SHA-256 of a file, reading it in `chunk_size` blocks rather than all at once.
+@@@ reference
+import hashlib
+import hmac
+import secrets
+
+
+def hash_password(password, *, salt=None, iterations=100_000):
+    if salt is None:
+        salt = secrets.token_bytes(16)
+    key = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    return f"pbkdf2_sha256${iterations}${salt.hex()}${key.hex()}"
+
+
+def verify_password(password, stored):
+    try:
+        algo, iterations, salt_hex, key_hex = stored.split("$")
+        if algo != "pbkdf2_sha256" or int(iterations) < 1:
+            return False
+        key = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), int(iterations))
+        expected = bytes.fromhex(key_hex)
+    except ValueError:
+        return False
+    return hmac.compare_digest(key, expected)
+
+
+def new_token(nbytes=32):
+    return secrets.token_urlsafe(nbytes)
+
+
+def file_sha256(path, chunk_size=65536):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(chunk_size), b""):
+            h.update(block)
+    return h.hexdigest()
+@@@ tests
+import builtins
+import hashlib
+import hmac
+import re
+import secrets
+import pytest
+from solution import hash_password, verify_password, new_token, file_sha256
+
+
+def test_known_vector_format():
+    # RFC 7914 test vector: PBKDF2-HMAC-SHA256("password", "salt", 1)
+    assert hash_password("password", salt=b"salt", iterations=1) == (
+        "pbkdf2_sha256$1$73616c74$120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b")
+
+
+def test_random_salt_and_verify():
+    a, b = hash_password("hunter2", iterations=1000), hash_password("hunter2", iterations=1000)
+    assert a != b and len(a.split("$")[2]) == 32
+    assert verify_password("hunter2", a) and verify_password("hunter2", b)
+    assert not verify_password("hunter3", a) and not verify_password("", a)
+
+
+def test_unicode_password():
+    stored = hash_password("pässwörd✓", iterations=500)
+    assert verify_password("pässwörd✓", stored) and not verify_password("passwort", stored)
+
+
+@pytest.mark.parametrize("bad", ["", "pbkdf2_sha256$1000$zz$00", "md5$1$00$00", "pbkdf2_sha256$x$00$00",
+                                 "pbkdf2_sha256$0$00$00", "pbkdf2_sha256$-5$00$00", "a$b$c", "pbkdf2_sha256$1$00$00$00"])
+def test_malformed_is_false(bad):
+    assert verify_password("pw", bad) is False
+
+
+def test_constant_time_compare(monkeypatch):
+    calls = []
+    real = hmac.compare_digest
+
+    def spy(a, b):
+        calls.append(1)
+        return real(a, b)
+    monkeypatch.setattr(hmac, "compare_digest", spy)
+    monkeypatch.setattr(secrets, "compare_digest", spy)
+    assert verify_password("x", hash_password("x", iterations=10)) and calls
+
+
+def test_tokens():
+    toks = {new_token() for _ in range(50)}
+    assert len(toks) == 50 and all(re.fullmatch(r"[A-Za-z0-9_-]{43}", t) for t in toks)
+    assert len(new_token(8)) == 11
+
+
+def test_file_sha256_chunked(tmp_path, monkeypatch):
+    data = bytes(range(256)) * 4099
+    p = tmp_path / "blob.bin"
+    p.write_bytes(data)
+    reads = []
+    real_open = builtins.open
+
+    def tracking_open(*a, **kw):
+        f = real_open(*a, **kw)
+        orig = f.read
+
+        def read(n=-1):
+            reads.append(n)
+            return orig(n)
+        f.read = read
+        return f
+    monkeypatch.setattr(builtins, "open", tracking_open)
+    assert file_sha256(p, chunk_size=4096) == hashlib.sha256(data).hexdigest()
+    assert reads and all(n == 4096 for n in reads)
+    assert file_sha256(p) == hashlib.sha256(data).hexdigest()
+@@@ task heapq_bisect_timelines leaf=10 diff=3 entry=merge_timelines,price_tier,insert_sorted
+@@@ prompt
+Write three helpers using `heapq` and `bisect`. `merge_timelines(*timelines)` lazily merges iterables of `(timestamp, event)` pairs, each already sorted by timestamp, into one iterator sorted by timestamp. Use `heapq.merge` with a key on the timestamp only: events may be unorderable objects such as dicts, inputs may be infinite generators, and on equal timestamps items keep the order of the timelines as passed. `price_tier(amount, thresholds, labels) -> str` maps an amount to a label with `bisect`, given ascending `thresholds` and `labels` one longer than `thresholds`. Amounts below `thresholds[0]` get `labels[0]`, and an amount equal to a threshold belongs to the tier above it. Raise `ValueError` when the lengths don't fit. `insert_sorted(items, item, key=None) -> None` inserts `item` into the already-sorted list `items` in place, keeping it sorted by `key` (identity when None), after any existing items with an equal key.
+@@@ reference
+import bisect
+import heapq
+
+
+def merge_timelines(*timelines):
+    return heapq.merge(*timelines, key=lambda pair: pair[0])
+
+
+def price_tier(amount, thresholds, labels):
+    if len(labels) != len(thresholds) + 1:
+        raise ValueError("need exactly one more label than thresholds")
+    return labels[bisect.bisect_right(thresholds, amount)]
+
+
+def insert_sorted(items, item, key=None):
+    bisect.insort_right(items, item, key=key)
+@@@ tests
+import itertools
+import pytest
+from solution import merge_timelines, price_tier, insert_sorted
+
+
+def test_merge_sorted():
+    a = [(1, "a1"), (4, "a4"), (9, "a9")]
+    b = [(2, "b2"), (3, "b3"), (10, "b10")]
+    assert [e for _, e in merge_timelines(a, b, [])] == ["a1", "b2", "b3", "a4", "a9", "b10"]
+
+
+def test_merge_unorderable_events_and_stable_ties():
+    a = [(1, {"src": "a", "n": 1}), (2, {"src": "a", "n": 2})]
+    b = [(1, {"src": "b", "n": 1}), (2, {"src": "b", "n": 2})]
+    assert [(t, e["src"]) for t, e in merge_timelines(a, b)] == [(1, "a"), (1, "b"), (2, "a"), (2, "b")]
+
+
+def test_merge_is_lazy_on_infinite_inputs():
+    evens = ((t, object()) for t in itertools.count(0, 2))
+    odds = ((t, object()) for t in itertools.count(1, 2))
+    assert [t for t, _ in itertools.islice(merge_timelines(evens, odds), 7)] == [0, 1, 2, 3, 4, 5, 6]
+
+
+def test_price_tier():
+    th, labels = [10, 50, 100], ["small", "medium", "large", "huge"]
+    assert [price_tier(x, th, labels) for x in (0, 9.99, 10, 49, 50, 99, 100, 1e9)] == [
+        "small", "small", "medium", "medium", "large", "large", "huge", "huge"]
+    assert price_tier(5, [], ["only"]) == "only"
+    with pytest.raises(ValueError):
+        price_tier(5, [1, 2], ["a", "b"])
+
+
+def test_insert_sorted_with_key():
+    items = [("a", 1), ("b", 3), ("c", 3), ("d", 7)]
+    insert_sorted(items, ("new", 3), key=lambda p: p[1])
+    assert items == [("a", 1), ("b", 3), ("c", 3), ("new", 3), ("d", 7)]
+    insert_sorted(items, ("first", 0), key=lambda p: p[1])
+    assert items[0] == ("first", 0)
+
+
+def test_insert_sorted_plain():
+    items = []
+    for x in [5, 1, 4, 1, 3]:
+        assert insert_sorted(items, x) is None
+    assert items == [1, 1, 3, 4, 5]
+@@@ task statistics_describe leaf=11 diff=2 entry=describe,zscores,growth_rate
+@@@ prompt
+Write summary helpers with `statistics` and `math`. `describe(values) -> dict` takes any iterable of numbers (an empty one raises `ValueError`) and returns `{"count", "mean", "median", "stdev", "p90", "total"}`: `mean` from `statistics.fmean`, `median` from `statistics.median`, `stdev` the sample standard deviation (`statistics.stdev`), `p90` the last cut point of `statistics.quantiles(values, n=10, method="inclusive")`, and `total` an exactly rounded float sum from `math.fsum`, so `[0.1] * 10` totals exactly `1.0`. `stdev` and `p90` are None when there are fewer than 2 values. `zscores(values) -> list[float]` standardises with the population mean and `statistics.pstdev`; if the spread is zero every score is `0.0`. `growth_rate(values) -> float` is the average per-period growth of a positive series: the geometric mean of the consecutive ratios minus 1 (`[100, 110, 121]` gives 0.1). It needs at least two values and raises `ValueError` otherwise.
+@@@ reference
+import math
+import statistics
+
+
+def describe(values):
+    vals = list(values)
+    if not vals:
+        raise ValueError("no values")
+    many = len(vals) >= 2
+    return {
+        "count": len(vals),
+        "mean": statistics.fmean(vals),
+        "median": statistics.median(vals),
+        "stdev": statistics.stdev(vals) if many else None,
+        "p90": statistics.quantiles(vals, n=10, method="inclusive")[-1] if many else None,
+        "total": math.fsum(vals),
+    }
+
+
+def zscores(values):
+    vals = list(values)
+    mu = statistics.fmean(vals)
+    sigma = statistics.pstdev(vals, mu)
+    if sigma == 0:
+        return [0.0] * len(vals)
+    return [(v - mu) / sigma for v in vals]
+
+
+def growth_rate(values):
+    vals = list(values)
+    if len(vals) < 2:
+        raise ValueError("need at least two values")
+    return statistics.geometric_mean([b / a for a, b in zip(vals, vals[1:])]) - 1
+@@@ tests
+import math
+import pytest
+from solution import describe, zscores, growth_rate
+
+DATA = [2, 4, 4, 4, 5, 5, 7, 9]
+
+
+def test_describe():
+    d = describe(iter(DATA))
+    assert d["count"] == 8 and d["mean"] == 5.0 and d["median"] == 4.5 and d["total"] == 40
+    assert d["stdev"] == pytest.approx(math.sqrt(32 / 7))
+    assert d["p90"] == pytest.approx(7.6)
+
+
+def test_exact_total():
+    assert describe([0.1] * 10)["total"] == 1.0
+    assert describe([1e100, 1.0, -1e100])["total"] == 1.0
+
+
+def test_single_value_and_empty():
+    assert describe([3]) == {"count": 1, "mean": 3.0, "median": 3, "stdev": None, "p90": None, "total": 3.0}
+    with pytest.raises(ValueError):
+        describe([])
+
+
+def test_zscores_population():
+    assert zscores(DATA) == pytest.approx([-1.5, -0.5, -0.5, -0.5, 0.0, 0.0, 1.0, 2.0])
+    assert zscores([7, 7, 7]) == [0.0, 0.0, 0.0]
+
+
+def test_growth_rate():
+    assert growth_rate([100, 110, 121]) == pytest.approx(0.1)
+    assert growth_rate([50, 200]) == pytest.approx(3.0)
+    assert growth_rate([100, 50, 100]) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_growth_rate_needs_two():
+    with pytest.raises(ValueError):
+        growth_rate([5])
+@@@ task text_tools leaf=12 diff=2 entry=format_paragraphs,fill_template,suggest,diff_lines
+@@@ prompt
+Write four text helpers with `textwrap`, `string` and `difflib`. `format_paragraphs(text, width, indent="") -> str` dedents `text`, splits it into paragraphs at blank lines, collapses each paragraph's internal whitespace (including line breaks) to single spaces, and wraps it with `textwrap.fill` to `width`, prefixing every line with `indent`. Long words and hyphenated words are never broken. Paragraphs are joined by one blank line. `fill_template(template, values) -> str` substitutes `$name` and `${name}` placeholders with `string.Template` (`$$` is a literal dollar); a missing value raises `KeyError`. `suggest(word, choices, n=3) -> list[str]` returns `difflib.get_close_matches` with the default cutoff 0.6, best first. `diff_lines(old, new, name) -> list[str]` returns a unified diff of the two texts' lines (from `str.splitlines()`) with headers `a/<name>` and `b/<name>` and `lineterm=""`. Identical texts give `[]`.
+@@@ reference
+import difflib
+import re
+import string
+import textwrap
+
+
+def format_paragraphs(text, width, indent=""):
+    paras = [p for p in re.split(r"\n\s*\n", textwrap.dedent(text)) if p.strip()]
+    return "\n\n".join(
+        textwrap.fill(" ".join(p.split()), width=width, initial_indent=indent, subsequent_indent=indent,
+                      break_long_words=False, break_on_hyphens=False)
+        for p in paras)
+
+
+def fill_template(template, values):
+    return string.Template(template).substitute(values)
+
+
+def suggest(word, choices, n=3):
+    return difflib.get_close_matches(word, choices, n=n)
+
+
+def diff_lines(old, new, name):
+    return list(difflib.unified_diff(old.splitlines(), new.splitlines(), fromfile=f"a/{name}",
+                                     tofile=f"b/{name}", lineterm=""))
+@@@ tests
+import pytest
+from solution import format_paragraphs, fill_template, suggest, diff_lines
+
+
+def test_paragraphs_wrap_and_join():
+    text = """
+        The quick brown fox
+        jumps over the lazy dog.
+
+        Second   paragraph here.
+    """
+    assert format_paragraphs(text, 20) == "The quick brown fox\njumps over the lazy\ndog.\n\nSecond paragraph\nhere."
+
+
+def test_indent_and_unbroken_words():
+    out = format_paragraphs("see https://example.com/a-very-long-path-name now", 12, indent="> ")
+    assert out == "> see\n> https://example.com/a-very-long-path-name\n> now"
+    assert format_paragraphs("well-known co-operative", 8) == "well-known\nco-operative"
+
+
+def test_template():
+    assert fill_template("Hi $name, you owe $$${amount}.", {"name": "Ada", "amount": "5"}) == "Hi Ada, you owe $5."
+    assert fill_template("${n}th", {"n": 4}) == "4th"
+    with pytest.raises(KeyError):
+        fill_template("$missing", {})
+
+
+def test_suggest():
+    cmds = ["status", "stash", "start", "commit", "stats"]
+    assert suggest("stauts", cmds) == ["stats", "status", "stash"]
+    assert suggest("comit", cmds + ["config", "clone"], n=1) == ["commit"]
+    assert suggest("xyz", cmds) == []
+
+
+def test_diff():
+    old = "a\nb\nc\n"
+    new = "a\nB\nc\nd\n"
+    assert diff_lines(old, new, "f.txt") == ["--- a/f.txt", "+++ b/f.txt", "@@ -1,3 +1,4 @@", " a", "-b", "+B", " c", "+d"]
+
+
+def test_diff_identical():
+    assert diff_lines("x\ny", "x\ny", "same.py") == []
+@@@ task urllib_canonical_urls leaf=13 diff=3 entry=canonicalize,with_query
+@@@ prompt
+Write URL helpers with `urllib.parse` (never by string slicing). `canonicalize(url) -> str` lower-cases the scheme and host, drops credentials (`user:pass@`), drops the port when it is the scheme default (80 for http, 443 for https), turns an empty path into `/`, drops the fragment, and rewrites the query with `urlencode` from `parse_qsl(..., keep_blank_values=True)`. Pairs are sorted by key with a stable sort, so repeated keys keep their relative order. `with_query(url, params) -> str` merges a dict into the query and keeps everything else, the fragment included. A key in `params` replaces all existing values for that key, at the position of its first occurrence. A list or tuple value produces repeated keys. A None value removes the key. New keys are appended in dict order. Values are converted with `str` and encoded with `urlencode`, so a space becomes `+` and `&` becomes `%26`.
+@@@ reference
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def canonicalize(url):
+    parts = urlsplit(url)
+    scheme = parts.scheme.lower()
+    netloc = parts.hostname or ""
+    if parts.port is not None and DEFAULT_PORTS.get(scheme) != parts.port:
+        netloc += f":{parts.port}"
+    pairs = sorted(parse_qsl(parts.query, keep_blank_values=True), key=lambda kv: kv[0])
+    return urlunsplit((scheme, netloc, parts.path or "/", urlencode(pairs), ""))
+
+
+def _expand(key, value):
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [(key, str(v)) for v in value]
+    return [(key, str(value))]
+
+
+def with_query(url, params):
+    parts = urlsplit(url)
+    out, done = [], set()
+    for k, v in parse_qsl(parts.query, keep_blank_values=True):
+        if k in params:
+            if k not in done:
+                done.add(k)
+                out.extend(_expand(k, params[k]))
+        else:
+            out.append((k, v))
+    for k, v in params.items():
+        if k not in done:
+            out.extend(_expand(k, v))
+    return urlunsplit(parts._replace(query=urlencode(out)))
+@@@ tests
+import pytest
+from solution import canonicalize, with_query
+
+
+@pytest.mark.parametrize("url,expected", [
+    ("HTTPS://Example.COM:443/a/b?b=2&a=1&b=1#frag", "https://example.com/a/b?a=1&b=2&b=1"),
+    ("http://example.com:8080", "http://example.com:8080/"),
+    ("http://example.com:80/x", "http://example.com/x"),
+    ("https://example.com:80/x", "https://example.com:80/x"),
+    ("http://user:pw@Host.com/x?q=a b", "http://host.com/x?q=a+b"),
+    ("http://h.com/?flag=&x=1", "http://h.com/?flag=&x=1"),
+    ("http://h.com/p?z=%26&a=%3D", "http://h.com/p?a=%3D&z=%26"),
+])
+def test_canonicalize(url, expected):
+    assert canonicalize(url) == expected
+
+
+def test_canonicalize_idempotent():
+    u = canonicalize("HTTP://A.b.C/x?y=2&x=1&y=1#f")
+    assert canonicalize(u) == u
+
+
+def test_with_query_replace_remove_append():
+    assert with_query("https://x.org/s?q=old&page=2#top", {"q": "new term", "tags": ["a", "b"], "page": None}) == \
+        "https://x.org/s?q=new+term&tags=a&tags=b#top"
+
+
+def test_with_query_replaces_all_occurrences_in_place():
+    assert with_query("http://h/p?a=1&b=2&a=3", {"a": 9}) == "http://h/p?a=9&b=2"
+    assert with_query("http://h/p?a=1&b=2", {"b": (1, 2), "c": 0}) == "http://h/p?a=1&b=1&b=2&c=0"
+
+
+def test_with_query_encoding():
+    assert with_query("http://h/p", {"q": "fish & chips", "n": None}) == "http://h/p?q=fish+%26+chips"
+    assert with_query("http://h/p?x=a+b", {}) == "http://h/p?x=a+b"
+
+
+def test_with_query_keeps_blank_values():
+    assert with_query("http://h/p?debug=&x=1", {"x": 2}) == "http://h/p?debug=&x=2"
+@@@ task struct_sensor_batches leaf=14 diff=3 entry=encode_batch,decode_batch,HEADER,RECORD
+@@@ prompt
+Write a binary file format for sensor readings with `struct`. All values are little-endian with no padding. `HEADER` is a `struct.Struct` for the 9-byte header: the 4-byte magic `b"SNSR"`, a 1-byte version (always 1) and a 4-byte unsigned record count. `RECORD` is a `struct.Struct` for one 15-byte record: sensor id (unsigned 16-bit), timestamp (unsigned 32-bit), value (64-bit float) and flags (unsigned 8-bit). `encode_batch(records) -> bytes` takes an iterable of `(sensor_id, timestamp, value, flags)` tuples and returns header plus records. A value out of range for its field, or of the wrong type, raises `ValueError` chained from the `struct.error`. `decode_batch(data) -> list[tuple]` reverses it and raises `ValueError` for a short header, a wrong magic, an unsupported version, or a total length that does not match the count exactly.
+@@@ reference
+import struct
+
+MAGIC = b"SNSR"
+HEADER = struct.Struct("<4sBI")
+RECORD = struct.Struct("<HIdB")
+
+
+def encode_batch(records):
+    records = list(records)
+    try:
+        body = b"".join(RECORD.pack(*r) for r in records)
+    except struct.error as exc:
+        raise ValueError(f"bad record: {exc}") from exc
+    return HEADER.pack(MAGIC, 1, len(records)) + body
+
+
+def decode_batch(data):
+    if len(data) < HEADER.size:
+        raise ValueError("truncated header")
+    magic, version, count = HEADER.unpack_from(data)
+    if magic != MAGIC:
+        raise ValueError("bad magic")
+    if version != 1:
+        raise ValueError(f"unsupported version {version}")
+    if len(data) != HEADER.size + count * RECORD.size:
+        raise ValueError("length does not match record count")
+    return list(RECORD.iter_unpack(memoryview(data)[HEADER.size:]))
+@@@ tests
+import struct
+import pytest
+from solution import encode_batch, decode_batch, HEADER, RECORD
+
+
+def test_sizes():
+    assert HEADER.size == 9 and RECORD.size == 15
+
+
+def test_exact_bytes():
+    assert encode_batch([(1, 2, 0.5, 3)]) == (b"SNSR\x01\x01\x00\x00\x00" + b"\x01\x00" + b"\x02\x00\x00\x00"
+                                               + b"\x00\x00\x00\x00\x00\x00\xe0?" + b"\x03")
+
+
+def test_round_trip():
+    recs = [(65535, 4294967295, -1.25, 255), (0, 0, 0.0, 0), (7, 1_700_000_000, 3.141592653589793, 8)]
+    data = encode_batch(iter(recs))
+    assert len(data) == 9 + 15 * 3 and decode_batch(data) == recs
+    assert decode_batch(encode_batch([])) == []
+
+
+@pytest.mark.parametrize("rec", [(70000, 1, 1.0, 0), (1, -1, 1.0, 0), (1, 1, 1.0, 256), (1, 1, "x", 0)])
+def test_encode_rejects_bad_values(rec):
+    with pytest.raises(ValueError) as ei:
+        encode_batch([rec])
+    assert isinstance(ei.value.__cause__, struct.error)
+
+
+def test_decode_validation():
+    good = encode_batch([(1, 2, 3.0, 4)])
+    for bad in (b"SNS", b"XXXX" + good[4:], good[:4] + b"\x02" + good[5:], good[:-1], good + b"\x00"):
+        with pytest.raises(ValueError):
+            decode_batch(bad)
+
+
+def test_decode_count_mismatch():
+    data = bytearray(encode_batch([(1, 2, 3.0, 4), (5, 6, 7.0, 8)]))
+    data[5] = 1
+    with pytest.raises(ValueError):
+        decode_batch(bytes(data))
+    assert decode_batch(bytearray(encode_batch([(1, 2, 3.0, 4)]))) == [(1, 2, 3.0, 4)]
+@@@ task zip_gzip_safe leaf=15 diff=3 entry=zip_dir,safe_extract,write_gzip_lines,gzip_lines
+@@@ prompt
+Write archive helpers with `zipfile` and `gzip`. `zip_dir(src_dir, zip_path) -> list[str]` stores every file under `src_dir` with `ZIP_DEFLATED`, using POSIX paths relative to `src_dir` as archive names, added in sorted order, and returns those names. `safe_extract(zip_path, dest) -> list[Path]` guards against "zip slip". It first checks every member, and if any name is absolute, contains a `..` component, contains a backslash, or starts with a drive letter like `C:`, it raises `ValueError` before extracting anything. Otherwise it extracts all members into `dest` and returns `Path(dest) / name` for each file member (not directories), sorted. `write_gzip_lines(path, lines) -> int` writes each string plus `"\n"` into a gzip-compressed UTF-8 text file and returns the count. `gzip_lines(path)` is a generator that lazily yields the lines of such a file without their trailing newline.
+@@@ reference
+import gzip
+import zipfile
+from pathlib import Path, PurePosixPath
+
+
+def zip_dir(src_dir, zip_path):
+    src_dir = Path(src_dir)
+    names = sorted(p.relative_to(src_dir).as_posix() for p in src_dir.rglob("*") if p.is_file())
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for name in names:
+            zf.write(src_dir / name, arcname=name)
+    return names
+
+
+def _unsafe(name):
+    p = PurePosixPath(name)
+    return p.is_absolute() or ".." in p.parts or "\\" in name or (len(name) >= 2 and name[1] == ":")
+
+
+def safe_extract(zip_path, dest):
+    with zipfile.ZipFile(zip_path) as zf:
+        members = zf.infolist()
+        for m in members:
+            if _unsafe(m.filename):
+                raise ValueError(f"unsafe member name {m.filename!r}")
+        zf.extractall(dest, members)
+    return sorted(Path(dest) / m.filename for m in members if not m.is_dir())
+
+
+def write_gzip_lines(path, lines):
+    n = 0
+    with gzip.open(path, "wt", encoding="utf-8") as f:
+        for line in lines:
+            f.write(line + "\n")
+            n += 1
+    return n
+
+
+def gzip_lines(path):
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        for line in f:
+            yield line.rstrip("\n")
+@@@ tests
+import gzip
+import inspect
+import zipfile
+import pytest
+from solution import zip_dir, safe_extract, write_gzip_lines, gzip_lines
+
+
+def test_zip_dir(tmp_path):
+    src = tmp_path / "src"
+    (src / "sub").mkdir(parents=True)
+    (src / "b.txt").write_text("b" * 1000)
+    (src / "sub" / "a.txt").write_text("a")
+    names = zip_dir(src, tmp_path / "out.zip")
+    assert names == ["b.txt", "sub/a.txt"]
+    with zipfile.ZipFile(tmp_path / "out.zip") as zf:
+        assert zf.namelist() == names and zf.read("sub/a.txt") == b"a"
+        assert all(i.compress_type == zipfile.ZIP_DEFLATED for i in zf.infolist())
+        assert zf.getinfo("b.txt").compress_size < 1000
+
+
+def test_safe_extract_round_trip(tmp_path):
+    src = tmp_path / "src"
+    (src / "d").mkdir(parents=True)
+    (src / "d" / "x.bin").write_bytes(b"\x00\x01")
+    zip_dir(src, tmp_path / "a.zip")
+    out = tmp_path / "out"
+    assert safe_extract(tmp_path / "a.zip", out) == [out / "d" / "x.bin"]
+    assert (out / "d" / "x.bin").read_bytes() == b"\x00\x01"
+
+
+@pytest.mark.parametrize("evil", ["../evil.txt", "a/../../evil.txt", "/etc/evil", "..\\evil.txt", "C:evil.txt"])
+def test_zip_slip_rejected_before_any_extraction(tmp_path, evil):
+    zp = tmp_path / "evil.zip"
+    with zipfile.ZipFile(zp, "w") as zf:
+        zf.writestr("fine.txt", "ok")
+        zf.writestr(evil, "pwned")
+    out = tmp_path / "out"
+    with pytest.raises(ValueError):
+        safe_extract(zp, out)
+    assert not (out / "fine.txt").exists()
+    assert not (tmp_path / "evil.txt").exists()
+
+
+def test_gzip_round_trip(tmp_path):
+    p = tmp_path / "log.gz"
+    assert write_gzip_lines(p, iter(["first", "zwei ü", ""])) == 3
+    assert p.read_bytes()[:2] == b"\x1f\x8b"
+    assert gzip.decompress(p.read_bytes()).decode("utf-8") == "first\nzwei ü\n\n"
+    assert list(gzip_lines(p)) == ["first", "zwei ü", ""]
+
+
+def test_gzip_lines_is_lazy(tmp_path):
+    p = tmp_path / "big.gz"
+    write_gzip_lines(p, (f"line {i}" for i in range(50_000)))
+    g = gzip_lines(p)
+    assert inspect.isgenerator(g) and next(g) == "line 0" and next(g) == "line 1"
+    g.close()
+
+
+def test_empty_zip_and_dirs(tmp_path):
+    zp = tmp_path / "d.zip"
+    with zipfile.ZipFile(zp, "w") as zf:
+        zf.writestr("folder/", "")
+        zf.writestr("folder/f.txt", "f")
+    out = tmp_path / "o"
+    assert safe_extract(zp, out) == [out / "folder" / "f.txt"]

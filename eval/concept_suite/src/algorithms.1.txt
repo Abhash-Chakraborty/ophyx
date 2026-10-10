@@ -1,0 +1,1081 @@
+@@@ task bisect_builds_and_roots leaf=0 diff=3 entry=first_bad,floor_root
+@@@ prompt
+Write two binary searches. `first_bad(n, is_bad) -> int` finds the first broken build among builds `0 .. n-1`. `is_bad(i)` is monotonic (False up to some point, True from there on). Return the first index where it is True, or `n` if none is. Call `is_bad` only for indexes in `range(n)` and at most `n.bit_length()` times, so 1000 builds take at most 10 calls. `floor_root(n, k) -> int` returns the largest integer `r` with `r ** k <= n`, for an int `n >= 0` and `k >= 1` (otherwise `ValueError`). It binary-searches over integers with exact integer arithmetic. Floats such as `n ** (1 / k)` are wrong for big numbers, and `n` may have hundreds of digits.
+@@@ reference
+def first_bad(n, is_bad):
+    lo, hi = 0, n
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if is_bad(mid):
+            hi = mid
+        else:
+            lo = mid + 1
+    return lo
+
+
+def floor_root(n, k):
+    if n < 0 or k < 1:
+        raise ValueError("need n >= 0 and k >= 1")
+    lo, hi = 0, 1 << (n.bit_length() // k + 1)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if mid ** k <= n:
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
+@@@ tests
+import math
+import random
+import pytest
+from solution import first_bad, floor_root
+
+
+def counting(n, first):
+    calls = []
+
+    def is_bad(i):
+        assert 0 <= i < n, f"probed out of range: {i}"
+        calls.append(i)
+        return i >= first
+    return is_bad, calls
+
+
+@pytest.mark.parametrize("n", [1, 2, 3, 7, 8, 1000, 1023, 1024])
+def test_first_bad_every_position(n):
+    for first in sorted({0, 1, n // 2, n - 1, n}):
+        is_bad, calls = counting(n, first)
+        assert first_bad(n, is_bad) == first
+        assert len(calls) <= n.bit_length()
+
+
+def test_first_bad_empty_and_huge():
+    assert first_bad(0, lambda i: pytest.fail("must not probe")) == 0
+    is_bad, calls = counting(10 ** 18, 123_456_789_012)
+    assert first_bad(10 ** 18, is_bad) == 123_456_789_012 and len(calls) <= 60
+
+
+def test_floor_root_small():
+    assert [floor_root(x, 2) for x in range(10)] == [0, 1, 1, 1, 2, 2, 2, 2, 2, 3]
+    assert floor_root(26, 3) == 2 and floor_root(27, 3) == 3 and floor_root(5, 1) == 5
+
+
+def test_floor_root_matches_isqrt():
+    rng = random.Random(7)
+    for _ in range(300):
+        n = rng.randrange(10 ** rng.randrange(1, 80))
+        assert floor_root(n, 2) == math.isqrt(n)
+
+
+def test_floor_root_exact_for_big_numbers():
+    r = 10 ** 20 + 1
+    assert floor_root(r ** 3 - 1, 3) == r - 1 and floor_root(r ** 3, 3) == r
+    big = 3 ** 500
+    assert floor_root(big, 5) == 3 ** 100 and floor_root(big - 1, 5) == 3 ** 100 - 1
+
+
+def test_floor_root_errors():
+    with pytest.raises(ValueError):
+        floor_root(-1, 2)
+    with pytest.raises(ValueError):
+        floor_root(4, 0)
+@@@ task bandwidth_windows leaf=1 diff=3 entry=longest_within_budget,count_pairs_between
+@@@ prompt
+Two problems from a network-monitoring tool, both in linear time. `longest_within_budget(sizes, budget) -> tuple[int, int]` takes the bytes sent in each second (a list of non-negative ints) and finds the longest run of consecutive seconds whose total is at most `budget`. Return `(start, length)`. On ties prefer the earliest start, and return `(0, 0)` if no single second fits. Use a sliding window, not nested loops. `count_pairs_between(a, b, lo, hi) -> int` takes two ascending lists of packet sizes from two links and counts the pairs `(i, j)` with `lo <= a[i] + b[j] <= hi`. Use two pointers moving in opposite directions, not every pair. Both functions must handle 200 000 elements in well under a second.
+@@@ reference
+def longest_within_budget(sizes, budget):
+    best_start, best_len = 0, 0
+    start = total = 0
+    for end, s in enumerate(sizes):
+        total += s
+        while total > budget and start <= end:
+            total -= sizes[start]
+            start += 1
+        if end - start + 1 > best_len:
+            best_start, best_len = start, end - start + 1
+    return best_start, best_len
+
+
+def _at_most(a, b, limit):
+    j, count = len(b) - 1, 0
+    for x in a:
+        while j >= 0 and x + b[j] > limit:
+            j -= 1
+        count += j + 1
+    return count
+
+
+def count_pairs_between(a, b, lo, hi):
+    if lo > hi:
+        return 0
+    return _at_most(a, b, hi) - _at_most(a, b, lo - 1)
+@@@ tests
+import random
+import time
+from solution import longest_within_budget, count_pairs_between
+
+
+def brute_window(sizes, budget):
+    best = (0, 0)
+    for i in range(len(sizes)):
+        for j in range(i, len(sizes)):
+            if sum(sizes[i:j + 1]) <= budget and j - i + 1 > best[1]:
+                best = (i, j - i + 1)
+    return best
+
+
+def test_window_examples():
+    assert longest_within_budget([5, 1, 1, 1, 9, 2, 2], 4) == (1, 3)
+    assert longest_within_budget([9, 9], 4) == (0, 0)
+    assert longest_within_budget([], 10) == (0, 0)
+    assert longest_within_budget([0, 0, 7, 0], 0) == (0, 2)
+
+
+def test_window_earliest_tie():
+    assert longest_within_budget([2, 2, 9, 2, 2], 4) == (0, 2)
+
+
+def test_window_against_brute():
+    rng = random.Random(1)
+    for _ in range(300):
+        sizes = [rng.randrange(0, 8) for _ in range(rng.randrange(0, 14))]
+        budget = rng.randrange(0, 20)
+        assert longest_within_budget(sizes, budget) == brute_window(sizes, budget)
+
+
+def test_pairs_examples():
+    assert count_pairs_between([1, 2, 3], [10, 20], 12, 22) == 4
+    assert count_pairs_between([1, 1, 1], [1, 1], 2, 2) == 6
+    assert count_pairs_between([], [1], 0, 10) == 0 and count_pairs_between([5], [5], 11, 20) == 0
+    assert count_pairs_between([1], [1], 5, 1) == 0
+
+
+def test_pairs_against_brute():
+    rng = random.Random(2)
+    for _ in range(300):
+        a = sorted(rng.randrange(-5, 10) for _ in range(rng.randrange(0, 9)))
+        b = sorted(rng.randrange(-5, 10) for _ in range(rng.randrange(0, 9)))
+        lo = rng.randrange(-10, 15)
+        hi = lo + rng.randrange(-2, 10)
+        assert count_pairs_between(a, b, lo, hi) == sum(lo <= x + y <= hi for x in a for y in b)
+
+
+def test_large_inputs_are_linear():
+    rng = random.Random(3)
+    sizes = [rng.randrange(0, 100) for _ in range(200_000)]
+    a = sorted(rng.randrange(10 ** 6) for _ in range(200_000))
+    b = sorted(rng.randrange(10 ** 6) for _ in range(200_000))
+    t = time.perf_counter()
+    start, length = longest_within_budget(sizes, 50_000)
+    assert sum(sizes[start:start + length]) <= 50_000
+    assert count_pairs_between(a, b, 900_000, 1_000_000) > 0
+    assert time.perf_counter() - t < 2.0
+@@@ task multi_key_sorting leaf=2 diff=3 entry=natural_key,sort_by_spec
+@@@ prompt
+Write sorting helpers for a release dashboard. `natural_key(s)` is a sort key that orders strings "naturally". Split the string into runs of digits and non-digits, compare digit runs numerically and text runs case-insensitively, and at the same position a digit run sorts before a text run. So `sorted(["v1.10", "v1.9", "V1.2"], key=natural_key)` gives `["V1.2", "v1.9", "v1.10"]`. The key must never compare an int with a str. `sort_by_spec(rows, spec) -> list` sorts a list of dicts by several fields, where `spec` is a list of `(field, "asc" | "desc")` pairs, most significant first. Fields can be strings, so you cannot negate them. Use the stability of Python's sort: sort once per field, least significant first, with `reverse=True` for descending. Rows equal on every field keep their input order. Return a new list and leave `rows` unchanged. An order other than `"asc"`/`"desc"` raises `ValueError`.
+@@@ reference
+import re
+
+_RUNS = re.compile(r"(\d+)")
+
+
+def natural_key(s):
+    key = []
+    for i, part in enumerate(_RUNS.split(s)):
+        if not part:
+            continue
+        key.append((0, int(part), "") if i % 2 else (1, 0, part.lower()))
+    return tuple(key)
+
+
+def sort_by_spec(rows, spec):
+    out = list(rows)
+    for field, order in reversed(spec):
+        if order not in ("asc", "desc"):
+            raise ValueError(f"bad order {order!r}")
+        out.sort(key=lambda r: r[field], reverse=order == "desc")
+    return out
+@@@ tests
+import random
+import pytest
+from solution import natural_key, sort_by_spec
+
+
+def test_natural_order():
+    tags = ["v1.10", "v1.9", "V1.2", "v1.10a", "v1.10.1", "v10", "v2"]
+    assert sorted(tags, key=natural_key) == ["V1.2", "v1.9", "v1.10", "v1.10.1", "v1.10a", "v2", "v10"]
+
+
+def test_digits_before_text_and_mixed_starts():
+    assert sorted(["file", "10", "2", "a1"], key=natural_key) == ["2", "10", "a1", "file"]
+    assert sorted(["img12.png", "img2.png", "IMG3.png"], key=natural_key) == ["img2.png", "IMG3.png", "img12.png"]
+    assert natural_key("abc") == natural_key("ABC")
+
+
+ROWS = [
+    {"team": "core", "name": "bo", "score": 7},
+    {"team": "web", "name": "al", "score": 9},
+    {"team": "core", "name": "cy", "score": 9},
+    {"team": "web", "name": "di", "score": 7},
+    {"team": "core", "name": "al", "score": 7},
+]
+
+
+def test_spec_sort_mixed_directions():
+    out = sort_by_spec(ROWS, [("team", "desc"), ("score", "desc"), ("name", "asc")])
+    assert [(r["team"], r["name"]) for r in out] == [("web", "al"), ("web", "di"), ("core", "cy"),
+                                                    ("core", "al"), ("core", "bo")]
+    out = sort_by_spec(ROWS, [("name", "desc"), ("team", "asc")])
+    assert [(r["name"], r["team"]) for r in out] == [("di", "web"), ("cy", "core"), ("bo", "core"),
+                                                    ("al", "core"), ("al", "web")]
+
+
+def test_stable_for_ties_even_when_descending():
+    rows = [{"k": 1, "id": i} for i in range(5)] + [{"k": 2, "id": 9}]
+    assert [r["id"] for r in sort_by_spec(rows, [("k", "desc")])] == [9, 0, 1, 2, 3, 4]
+
+
+def test_matches_tuple_key_on_numbers():
+    rng = random.Random(4)
+    rows = [{"a": rng.randrange(3), "b": rng.randrange(3), "id": i} for i in range(60)]
+    expected = sorted(rows, key=lambda r: (-r["a"], r["b"]))
+    assert sort_by_spec(rows, [("a", "desc"), ("b", "asc")]) == expected
+
+
+def test_returns_new_list_and_validates():
+    rows = list(ROWS)
+    sort_by_spec(rows, [("name", "asc")])
+    assert rows == ROWS
+    assert sort_by_spec([], [("x", "asc")]) == []
+    with pytest.raises(ValueError):
+        sort_by_spec(ROWS, [("name", "up")])
+@@@ task invoice_grouping leaf=3 diff=2 entry=duplicate_groups,top_pairs
+@@@ prompt
+Write two hash-map helpers for an accounting system. `duplicate_groups(invoices) -> list[list]` finds likely duplicate invoices. Each invoice is a dict with `id`, `customer`, `amount` (a decimal string such as `"19.9"` or `"19.90"`) and `date`. Two invoices are duplicates when the customer (stripped and case-folded), the amount as a `Decimal` rounded to cents, and the date are all equal. Return the ids of every group with more than one invoice, ids in input order, groups ordered by where their first invoice appears. Use a dict, not pairwise comparison. `top_pairs(baskets, k) -> list[tuple[tuple[str, str], int]]` counts, over all baskets, how often each unordered pair of distinct items is bought together. An item repeated in one basket counts once. Pairs are sorted tuples like `("bread", "milk")`. Return the `k` most frequent `(pair, count)` entries, by count descending and then pair ascending.
+@@@ reference
+from collections import Counter
+from decimal import Decimal
+from itertools import combinations
+
+
+def duplicate_groups(invoices):
+    groups = {}
+    for inv in invoices:
+        key = (inv["customer"].strip().casefold(), Decimal(inv["amount"]).quantize(Decimal("0.01")), inv["date"])
+        groups.setdefault(key, []).append(inv["id"])
+    return [ids for ids in groups.values() if len(ids) > 1]
+
+
+def top_pairs(baskets, k):
+    counts = Counter()
+    for basket in baskets:
+        counts.update(combinations(sorted(set(basket)), 2))
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:k]
+@@@ tests
+import random
+import time
+from solution import duplicate_groups, top_pairs
+
+
+def inv(i, customer, amount, date="2026-01-01"):
+    return {"id": i, "customer": customer, "amount": amount, "date": date}
+
+
+def test_duplicates_normalised():
+    invoices = [inv(1, "ACME ", "19.9"), inv(2, "Globex", "5"), inv(3, "acme", "19.90"),
+                inv(4, "Globex", "5.00", "2026-01-02"), inv(5, "Acme", "19.900"), inv(6, "globex", "5.001")]
+    assert duplicate_groups(invoices) == [[1, 3, 5], [2, 6]]
+
+
+def test_group_order_by_first_appearance():
+    invoices = [inv("a", "x", "1"), inv("b", "y", "2"), inv("c", "y", "2"), inv("d", "x", "1")]
+    assert duplicate_groups(invoices) == [["a", "d"], ["b", "c"]]
+    assert duplicate_groups([inv(1, "x", "1")]) == [] and duplicate_groups([]) == []
+
+
+def test_duplicates_scale_linearly():
+    invoices = [inv(i, f"c{i}", "1.00") for i in range(100_000)] + [inv("dup", "c5", "1")]
+    t = time.perf_counter()
+    assert duplicate_groups(invoices) == [[5, "dup"]]
+    assert time.perf_counter() - t < 2.0
+
+
+def test_top_pairs():
+    baskets = [["milk", "bread", "eggs"], ["bread", "milk"], ["eggs", "milk", "milk"], ["tea"]]
+    assert top_pairs(baskets, 2) == [(("bread", "milk"), 2), (("eggs", "milk"), 2)]
+    assert top_pairs(baskets, 10)[-1] == (("bread", "eggs"), 1)
+
+
+def test_top_pairs_against_brute():
+    rng = random.Random(5)
+    items = list("abcdef")
+    baskets = [[rng.choice(items) for _ in range(rng.randrange(0, 6))] for _ in range(200)]
+    counts = {}
+    for x in items:
+        for y in items:
+            if x < y:
+                c = sum(x in b and y in b for b in baskets)
+                if c:
+                    counts[(x, y)] = c
+    assert top_pairs(baskets, 100) == sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+
+
+def test_top_pairs_edge_cases():
+    assert top_pairs([], 3) == [] and top_pairs([["a"], ["a", "a"]], 3) == []
+    assert top_pairs([["b", "a"]], 0) == []
+@@@ task skyline_and_postfix leaf=4 diff=3 entry=nearest_blocker,eval_postfix
+@@@ prompt
+Write two stack algorithms. `nearest_blocker(heights) -> list[int]` describes towers in a row, each looking left. For every index it gives the index of the nearest tower to its left that is at least as tall, or -1 if there is none. Use a monotonic stack so the whole thing is O(n). Scanning left from every tower is quadratic and too slow for 200 000 towers. `eval_postfix(tokens) -> int` evaluates a postfix (RPN) list of string tokens: integer literals (possibly negative, like `"-3"`); binary operators `+`, `-`, `*` and `/`, where `/` is integer division truncating toward zero and dividing by zero raises `ZeroDivisionError`; and the stack words `dup` (duplicate the top), `swap` (swap the top two) and `drop` (discard the top). For binary operators the second-from-top item is the left operand. A missing operand, an unknown token, or anything other than exactly one value left at the end raises `ValueError`.
+@@@ reference
+def nearest_blocker(heights):
+    stack, out = [], []
+    for i, h in enumerate(heights):
+        while stack and heights[stack[-1]] < h:
+            stack.pop()
+        out.append(stack[-1] if stack else -1)
+        stack.append(i)
+    return out
+
+
+def _div(a, b):
+    q = abs(a) // abs(b)
+    return q if (a >= 0) == (b > 0) else -q
+
+
+_OPS = {"+": lambda a, b: a + b, "-": lambda a, b: a - b, "*": lambda a, b: a * b, "/": _div}
+
+
+def eval_postfix(tokens):
+    stack = []
+
+    def pop():
+        if not stack:
+            raise ValueError("stack underflow")
+        return stack.pop()
+    for tok in tokens:
+        if tok in _OPS:
+            b, a = pop(), pop()
+            stack.append(_OPS[tok](a, b))
+        elif tok == "dup":
+            x = pop()
+            stack += [x, x]
+        elif tok == "swap":
+            b, a = pop(), pop()
+            stack += [b, a]
+        elif tok == "drop":
+            pop()
+        else:
+            try:
+                stack.append(int(tok))
+            except ValueError:
+                raise ValueError(f"unknown token {tok!r}") from None
+    if len(stack) != 1:
+        raise ValueError(f"expected one result, stack has {len(stack)}")
+    return stack[0]
+@@@ tests
+import random
+import time
+import pytest
+from solution import nearest_blocker, eval_postfix
+
+
+def brute(h):
+    return [next((j for j in range(i - 1, -1, -1) if h[j] >= h[i]), -1) for i in range(len(h))]
+
+
+def test_blocker_example():
+    assert nearest_blocker([5, 3, 4, 4, 1, 6, 2]) == [-1, 0, 0, 2, 3, -1, 5]
+    assert nearest_blocker([]) == []
+
+
+def test_blocker_against_brute():
+    rng = random.Random(6)
+    for _ in range(300):
+        h = [rng.randrange(5) for _ in range(rng.randrange(0, 15))]
+        assert nearest_blocker(h) == brute(h)
+
+
+def test_blocker_linear_time():
+    h = list(range(200_000))
+    t = time.perf_counter()
+    assert nearest_blocker(h)[-1] == -1
+    assert nearest_blocker(h[::-1])[-1] == 199_998
+    assert time.perf_counter() - t < 2.0
+
+
+def test_postfix_arithmetic():
+    assert eval_postfix(["3", "4", "+", "2", "*"]) == 14
+    assert eval_postfix(["10", "3", "-"]) == 7
+    assert eval_postfix(["-7", "2", "/"]) == -3 and eval_postfix(["7", "-2", "/"]) == -3
+    assert eval_postfix(["7", "2", "/"]) == 3 and eval_postfix(["42"]) == 42
+
+
+def test_postfix_stack_words():
+    assert eval_postfix(["5", "dup", "*"]) == 25
+    assert eval_postfix(["2", "10", "swap", "-"]) == 8
+    assert eval_postfix(["1", "2", "drop"]) == 1
+
+
+@pytest.mark.parametrize("tokens", [["+"], ["1", "+"], ["1", "2"], [], ["1", "x"], ["swap"], ["1", "swap"], ["drop"]])
+def test_postfix_errors(tokens):
+    with pytest.raises(ValueError):
+        eval_postfix(tokens)
+
+
+def test_postfix_division_by_zero():
+    with pytest.raises(ZeroDivisionError):
+        eval_postfix(["1", "0", "/"])
+@@@ task teleport_grid_bfs leaf=5 diff=4 entry=min_moves
+@@@ prompt
+A warehouse robot moves on a grid given as a list of equal-length strings: `#` is a wall, `.` is floor, and digits `1`-`9` are teleport pads that are also floor. Write `min_moves(grid, start, goal) -> int`, where `start` and `goal` are `(row, col)` tuples. One move steps up, down, left or right onto a non-wall cell inside the grid. A robot standing on a pad may instead jump, also for one move, to any other pad with the same digit. Return the minimum number of moves, 0 if `start == goal`, or -1 if the goal can't be reached. A start or goal that is outside the grid or on a wall raises `ValueError`. Use breadth-first search with a `collections.deque`. Expand each digit's pad group only once (remove it after the first time), or a grid full of identical pads becomes quadratic. A 200x200 grid must take well under 2 seconds.
+@@@ reference
+from collections import deque
+
+
+def min_moves(grid, start, goal):
+    rows = len(grid)
+    cols = len(grid[0]) if rows else 0
+    for r, c in (start, goal):
+        if not (0 <= r < rows and 0 <= c < cols) or grid[r][c] == "#":
+            raise ValueError(f"bad cell {(r, c)}")
+    pads = {}
+    for r, row in enumerate(grid):
+        for c, ch in enumerate(row):
+            if ch.isdigit():
+                pads.setdefault(ch, []).append((r, c))
+    start, goal = tuple(start), tuple(goal)
+    dist = {start: 0}
+    queue = deque([start])
+    while queue:
+        cell = queue.popleft()
+        d = dist[cell]
+        if cell == goal:
+            return d
+        r, c = cell
+        nxt = [(r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)]
+        nxt += pads.pop(grid[r][c], [])
+        for nr, nc in nxt:
+            if 0 <= nr < rows and 0 <= nc < cols and grid[nr][nc] != "#" and (nr, nc) not in dist:
+                dist[(nr, nc)] = d + 1
+                queue.append((nr, nc))
+    return -1
+@@@ tests
+import heapq
+import random
+import time
+import pytest
+from solution import min_moves
+
+
+def brute(grid, start, goal):
+    rows, cols = len(grid), len(grid[0])
+    best = {start: 0}
+    heap = [(0, start)]
+    while heap:
+        d, (r, c) = heapq.heappop(heap)
+        if (r, c) == goal:
+            return d
+        if d > best[(r, c)]:
+            continue
+        nbrs = [(r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)]
+        if grid[r][c].isdigit():
+            nbrs += [(i, j) for i in range(rows) for j in range(cols) if grid[i][j] == grid[r][c]]
+        for nr, nc in nbrs:
+            if 0 <= nr < rows and 0 <= nc < cols and grid[nr][nc] != "#" and d + 1 < best.get((nr, nc), 1e9):
+                best[(nr, nc)] = d + 1
+                heapq.heappush(heap, (d + 1, (nr, nc)))
+    return -1
+
+
+def test_plain_maze():
+    grid = ["..#.",
+            ".##.",
+            "...."]
+    assert min_moves(grid, (0, 0), (0, 3)) == 7
+    assert min_moves(grid, (0, 0), (0, 0)) == 0
+
+
+def test_teleport_shortcut():
+    grid = ["1.#..",
+            "###.1",
+            "....."]
+    assert min_moves(grid, (0, 0), (1, 4)) == 1
+    assert min_moves(grid, (0, 1), (2, 0)) == 7
+
+
+def test_unreachable_and_errors():
+    grid = [".#.",
+            "##."]
+    assert min_moves(grid, (0, 0), (1, 2)) == -1
+    with pytest.raises(ValueError):
+        min_moves(grid, (0, 1), (0, 0))
+    with pytest.raises(ValueError):
+        min_moves(grid, (0, 0), (5, 5))
+
+
+def test_different_digits_do_not_link():
+    grid = ["1#2",
+            "###",
+            "2#1"]
+    assert min_moves(grid, (0, 0), (2, 2)) == 1
+    assert min_moves(grid, (0, 0), (0, 2)) == -1
+
+
+def test_against_brute():
+    rng = random.Random(8)
+    for _ in range(200):
+        rows, cols = rng.randrange(1, 6), rng.randrange(1, 6)
+        grid = ["".join(rng.choice("..#12") for _ in range(cols)) for _ in range(rows)]
+        free = [(r, c) for r in range(rows) for c in range(cols) if grid[r][c] != "#"]
+        if not free:
+            continue
+        s, g = rng.choice(free), rng.choice(free)
+        assert min_moves(grid, s, g) == brute(grid, s, g)
+
+
+def test_large_pad_field_is_fast():
+    grid = ["1" * 200 for _ in range(200)]
+    grid[100] = "#" * 199 + "."
+    t = time.perf_counter()
+    assert min_moves(grid, (0, 0), (199, 199)) == 1
+    assert min_moves(["." * 200] * 200, (0, 0), (199, 199)) == 398
+    assert time.perf_counter() - t < 2.0
+@@@ task shift_roster_backtracking leaf=6 diff=4 entry=all_rosters
+@@@ prompt
+Write a backtracking search for a clinic's shift roster. `all_rosters(shifts, available, max_shifts)` is a generator. `shifts` is a list of unique shift names in time order, and `available` maps each shift to the workers who can take it. Every yielded roster is a dict mapping each shift to one worker such that no worker works two consecutive shifts in the list and no worker has more than `max_shifts` shifts. Yield every valid roster exactly once, in lexicographic order of the worker sequence (shift by shift, try candidate workers in sorted order, ignoring duplicates). Rosters must be produced lazily, building assignments shift by shift and abandoning a partial roster as soon as it breaks a rule, so the first roster of a 30-shift problem arrives instantly. Generating all combinations and filtering them is exponential. A shift with no available workers means there are no rosters, and an empty `shifts` list yields one empty dict.
+@@@ reference
+def all_rosters(shifts, available, max_shifts):
+    shifts = list(shifts)
+    chosen, load = [], {}
+
+    def extend(i):
+        if i == len(shifts):
+            yield dict(zip(shifts, chosen))
+            return
+        for w in sorted(set(available.get(shifts[i], ()))):
+            if (chosen and chosen[-1] == w) or load.get(w, 0) >= max_shifts:
+                continue
+            chosen.append(w)
+            load[w] = load.get(w, 0) + 1
+            yield from extend(i + 1)
+            chosen.pop()
+            load[w] -= 1
+    yield from extend(0)
+@@@ tests
+import inspect
+import itertools
+import random
+import time
+from solution import all_rosters
+
+
+def brute(shifts, available, max_shifts):
+    out = []
+    for combo in itertools.product(*(sorted(set(available.get(s, ()))) for s in shifts)):
+        if any(a == b for a, b in zip(combo, combo[1:])):
+            continue
+        if any(combo.count(w) > max_shifts for w in combo):
+            continue
+        out.append(dict(zip(shifts, combo)))
+    return out
+
+
+def test_small_example():
+    shifts = ["mon-am", "mon-pm", "tue-am"]
+    avail = {"mon-am": ["bo", "al"], "mon-pm": ["al", "cy"], "tue-am": ["al", "bo"]}
+    assert list(all_rosters(shifts, avail, 1)) == [
+        {"mon-am": "al", "mon-pm": "cy", "tue-am": "bo"},
+        {"mon-am": "bo", "mon-pm": "cy", "tue-am": "al"}]
+    got = list(all_rosters(shifts, avail, 2))
+    assert got == brute(shifts, avail, 2)
+    assert got[0] == {"mon-am": "al", "mon-pm": "cy", "tue-am": "al"}
+
+
+def test_max_shifts_enforced():
+    shifts = ["s1", "s2", "s3"]
+    avail = {s: ["a", "b"] for s in shifts}
+    assert list(all_rosters(shifts, avail, 2)) == [{"s1": "a", "s2": "b", "s3": "a"}, {"s1": "b", "s2": "a", "s3": "b"}]
+    assert list(all_rosters(shifts, avail, 1)) == []
+
+
+def test_against_brute():
+    rng = random.Random(9)
+    workers = ["a", "b", "c", "d"]
+    for _ in range(150):
+        shifts = [f"s{i}" for i in range(rng.randrange(0, 6))]
+        avail = {s: rng.sample(workers, rng.randrange(0, 4)) + rng.sample(workers, 1) for s in shifts}
+        m = rng.randrange(1, 4)
+        assert list(all_rosters(shifts, avail, m)) == brute(shifts, avail, m)
+
+
+def test_edge_cases():
+    assert list(all_rosters([], {}, 1)) == [{}]
+    assert list(all_rosters(["x", "y"], {"x": ["a"]}, 3)) == []
+
+
+def test_lazy_on_large_problem():
+    shifts = [f"s{i}" for i in range(30)]
+    avail = {s: ["ann", "ben", "cat"] for s in shifts}
+    gen = all_rosters(shifts, avail, 30)
+    assert inspect.isgenerator(gen)
+    t = time.perf_counter()
+    first = list(itertools.islice(gen, 3))
+    assert time.perf_counter() - t < 1.0
+    assert first[0] == {s: ("ann", "ben")[i % 2] for i, s in enumerate(shifts)}
+    assert first[1]["s29"] == "cat" and len({tuple(r.values()) for r in first}) == 3
+
+
+def test_prunes_impossible_load_early():
+    shifts = [f"s{i}" for i in range(40)]
+    avail = {s: ["a", "b"] for s in shifts}
+    t = time.perf_counter()
+    assert list(all_rosters(shifts, avail, 19)) == []
+    assert time.perf_counter() - t < 1.0
+@@@ task cable_cost_dp leaf=7 diff=3 entry=min_cost_memo,min_cost_table,cheapest_plan
+@@@ prompt
+A supplier sells cable in fixed lengths. `offers` is a list of `(length, price)` pairs of positive ints, and each offer can be bought any number of times. The goal is the minimum total price to buy at least `need` metres; overshooting is allowed, so with offers `[(5, 6), (2, 4)]` and need 4 the answer is 6. Write it twice. `min_cost_memo(offers, need) -> int` is the top-down recursion `cost(n) = 0 if n <= 0 else min(price + cost(n - length))`, memoised with `functools.lru_cache` or a dict, so it is polynomial (need 300 with offers of length 1 and 2 must be instant). `min_cost_table(offers, need) -> int` is the bottom-up tabulation over `0..need`, with no recursion, so `need = 100_000` works. `cheapest_plan(offers, need) -> list[int]` returns the sorted indexes of the offers bought in one optimal purchase (repeated indexes for repeated purchases), reconstructed from the table. A need of 0 or less costs 0 with an empty plan. No offers with a positive need raises `ValueError` in all three functions.
+@@@ reference
+import functools
+
+
+def min_cost_memo(offers, need):
+    offers = tuple(offers)
+    if need > 0 and not offers:
+        raise ValueError("no offers")
+
+    @functools.lru_cache(maxsize=None)
+    def cost(n):
+        if n <= 0:
+            return 0
+        return min(price + cost(n - length) for length, price in offers)
+    return cost(need)
+
+
+def _table(offers, need):
+    if need > 0 and not offers:
+        raise ValueError("no offers")
+    cost = [0] * (max(need, 0) + 1)
+    choice = [-1] * len(cost)
+    for n in range(1, len(cost)):
+        best = None
+        for idx, (length, price) in enumerate(offers):
+            c = price + cost[max(n - length, 0)]
+            if best is None or c < best:
+                best, choice[n] = c, idx
+        cost[n] = best
+    return cost, choice
+
+
+def min_cost_table(offers, need):
+    return _table(offers, need)[0][max(need, 0)]
+
+
+def cheapest_plan(offers, need):
+    _, choice = _table(offers, need)
+    plan, n = [], need
+    while n > 0:
+        plan.append(choice[n])
+        n -= offers[choice[n]][0]
+    return sorted(plan)
+@@@ tests
+import random
+import time
+import pytest
+from solution import min_cost_memo, min_cost_table, cheapest_plan
+
+
+def brute(offers, need):
+    if need <= 0:
+        return 0
+    return min(p + brute(offers, need - l) for l, p in offers)
+
+
+def test_examples():
+    for f in (min_cost_memo, min_cost_table):
+        assert f([(5, 6), (2, 4)], 4) == 6
+        assert f([(5, 8), (3, 5)], 6) == 10
+        assert f([(5, 8), (3, 5)], 7) == 13
+        assert f([(5, 8), (3, 5)], 1) == 5
+        assert f([(5, 8)], 0) == 0 and f([], 0) == 0 and f([], -3) == 0
+
+
+def test_against_brute():
+    rng = random.Random(10)
+    for _ in range(100):
+        offers = [(rng.randrange(1, 6), rng.randrange(1, 20)) for _ in range(rng.randrange(1, 4))]
+        need = rng.randrange(0, 14)
+        expected = brute(offers, need)
+        assert min_cost_memo(offers, need) == expected == min_cost_table(offers, need)
+
+
+def test_memo_is_memoised():
+    t = time.perf_counter()
+    assert min_cost_memo([(1, 3), (2, 5)], 300) == 750
+    assert time.perf_counter() - t < 1.0
+
+
+def test_table_handles_large_need():
+    t = time.perf_counter()
+    assert min_cost_table([(7, 10), (10, 13), (3, 5)], 100_000) == 130_000
+    assert time.perf_counter() - t < 2.0
+
+
+def test_plan_is_optimal_and_sufficient():
+    rng = random.Random(11)
+    for _ in range(100):
+        offers = [(rng.randrange(1, 9), rng.randrange(1, 30)) for _ in range(rng.randrange(1, 5))]
+        need = rng.randrange(0, 40)
+        plan = cheapest_plan(offers, need)
+        assert plan == sorted(plan)
+        assert sum(offers[i][1] for i in plan) == min_cost_table(offers, need)
+        assert sum(offers[i][0] for i in plan) >= need
+    assert cheapest_plan([(5, 6), (2, 4)], 4) == [0] and cheapest_plan([(1, 1)], 0) == []
+
+
+def test_no_offers():
+    for f in (min_cost_memo, min_cost_table, cheapest_plan):
+        with pytest.raises(ValueError):
+            f([], 5)
+@@@ task toll_road_dijkstra leaf=8 diff=3 entry=cheapest_route
+@@@ prompt
+Write `cheapest_route(roads, start, goal)` for a delivery planner, using Dijkstra's algorithm with `heapq`. `roads` is an iterable of directed `(from, to, toll)` triples with non-negative numeric tolls; a negative toll raises `ValueError` before any search. Places are any hashable values, not necessarily comparable with each other (a mix of strings and tuples, say), so heap entries must never compare two places; add a tie-breaking counter. Return `(total_toll, path)`, where `path` is the list of places from `start` to `goal` along one cheapest route, or None if `goal` can't be reached. `start == goal` gives `(0, [start])` even if `start` has no roads. Parallel roads between the same places are allowed. The search must scale: 20 000 places and 100 000 roads in well under 2 seconds.
+@@@ reference
+import heapq
+import itertools
+
+
+def cheapest_route(roads, start, goal):
+    graph = {}
+    for a, b, toll in roads:
+        if toll < 0:
+            raise ValueError(f"negative toll on {a!r} -> {b!r}")
+        graph.setdefault(a, []).append((b, toll))
+    tie = itertools.count()
+    dist, prev, done = {start: 0}, {}, set()
+    heap = [(0, next(tie), start)]
+    while heap:
+        d, _, u = heapq.heappop(heap)
+        if u in done:
+            continue
+        done.add(u)
+        if u == goal:
+            path = [u]
+            while path[-1] != start:
+                path.append(prev[path[-1]])
+            return d, path[::-1]
+        for v, w in graph.get(u, ()):
+            nd = d + w
+            if v not in dist or nd < dist[v]:
+                dist[v], prev[v] = nd, u
+                heapq.heappush(heap, (nd, next(tie), v))
+    return None
+@@@ tests
+import random
+import time
+import pytest
+from solution import cheapest_route
+
+
+def bellman_ford(roads, start, goal):
+    nodes = {start, goal} | {a for a, _, _ in roads} | {b for _, b, _ in roads}
+    dist = {n: float("inf") for n in nodes}
+    dist[start] = 0
+    for _ in range(len(nodes)):
+        for a, b, w in roads:
+            if dist[a] + w < dist[b]:
+                dist[b] = dist[a] + w
+    return None if dist[goal] == float("inf") else dist[goal]
+
+
+def check_path(roads, path, cost):
+    best = {}
+    for a, b, w in roads:
+        best[(a, b)] = min(w, best.get((a, b), float("inf")))
+    assert sum(best[(a, b)] for a, b in zip(path, path[1:])) == cost
+
+
+def test_example():
+    roads = [("depot", "a", 4), ("depot", "b", 1), ("b", "a", 2), ("a", "shop", 1), ("b", "shop", 5)]
+    assert cheapest_route(roads, "depot", "shop") == (4, ["depot", "b", "a", "shop"])
+
+
+def test_directed_and_unreachable():
+    roads = [("a", "b", 1)]
+    assert cheapest_route(roads, "b", "a") is None
+    assert cheapest_route(roads, "a", "zzz") is None
+    assert cheapest_route([], "x", "x") == (0, ["x"])
+
+
+def test_unorderable_places_and_parallel_roads():
+    roads = [("depot", ("hub", 1), 2), ("depot", ("hub", 2), 2), (("hub", 1), 7, 3), (("hub", 2), 7, 3),
+             ("depot", 7, 9), ("depot", 7, 5)]
+    cost, path = cheapest_route(roads, "depot", 7)
+    assert cost == 5 and path[0] == "depot" and path[-1] == 7
+    check_path(roads, path, cost)
+
+
+def test_negative_toll_rejected():
+    with pytest.raises(ValueError):
+        cheapest_route([("a", "b", 1), ("c", "d", -1)], "a", "b")
+
+
+def test_against_bellman_ford():
+    rng = random.Random(12)
+    for _ in range(150):
+        n = rng.randrange(1, 8)
+        roads = [(rng.randrange(n), rng.randrange(n), rng.randrange(0, 10)) for _ in range(rng.randrange(0, 20))]
+        s, g = rng.randrange(n), rng.randrange(n)
+        res = cheapest_route(roads, s, g)
+        expected = bellman_ford(roads, s, g)
+        if expected is None:
+            assert res is None
+        else:
+            assert res[0] == expected and res[1][0] == s and res[1][-1] == g
+            check_path(roads, res[1], res[0])
+
+
+def test_scales():
+    rng = random.Random(13)
+    n = 20_000
+    roads = [(i, i + 1, 1000) for i in range(n - 1)]
+    roads += [(rng.randrange(n), rng.randrange(n), rng.randrange(1, 2000)) for _ in range(100_000)]
+    t = time.perf_counter()
+    cost, path = cheapest_route(roads, 0, n - 1)
+    assert time.perf_counter() - t < 2.0
+    assert path[0] == 0 and path[-1] == n - 1 and cost <= 1000 * (n - 1)
+@@@ task build_step_toposort leaf=9 diff=3 entry=build_order,parallel_stages,CycleError
+@@@ prompt
+Write dependency resolution for a build tool. `deps` maps each target name (a str) to an iterable of the targets it depends on; a target that only appears as a dependency has no dependencies of its own. `build_order(deps) -> list[str]` returns every target in an order where each comes after all its dependencies, using Kahn's algorithm. Whenever several targets are ready, take the alphabetically smallest (use a heap), so the result is deterministic. `parallel_stages(deps) -> list[list[str]]` groups targets into stages that can run in parallel: stage 0 has no dependencies, and a target's stage is one more than the highest stage among its dependencies. Each stage is sorted. If the graph has a cycle, both functions raise `CycleError(ValueError)`, whose `cycle` attribute is a list of targets `[t0, t1, ..., t0]` in which each target depends directly on the next one, and whose message names them.
+@@@ reference
+import heapq
+
+
+class CycleError(ValueError):
+    def __init__(self, cycle):
+        super().__init__("dependency cycle: " + " -> ".join(cycle))
+        self.cycle = cycle
+
+
+def _graph(deps):
+    nodes = set(deps)
+    for ds in deps.values():
+        nodes.update(ds)
+    prereq = {n: set(deps.get(n, ())) for n in nodes}
+    users = {n: [] for n in nodes}
+    for n, ps in prereq.items():
+        for p in ps:
+            users[p].append(n)
+    return prereq, users
+
+
+def _find_cycle(remaining, prereq):
+    node, index, path = min(remaining), {}, []
+    while node not in index:
+        index[node] = len(path)
+        path.append(node)
+        node = min(p for p in prereq[node] if p in remaining)
+    return path[index[node]:] + [node]
+
+
+def build_order(deps):
+    prereq, users = _graph(deps)
+    indegree = {n: len(ps) for n, ps in prereq.items()}
+    ready = [n for n, d in indegree.items() if d == 0]
+    heapq.heapify(ready)
+    order = []
+    while ready:
+        n = heapq.heappop(ready)
+        order.append(n)
+        for u in users[n]:
+            indegree[u] -= 1
+            if indegree[u] == 0:
+                heapq.heappush(ready, u)
+    if len(order) < len(prereq):
+        raise CycleError(_find_cycle(set(prereq) - set(order), prereq))
+    return order
+
+
+def parallel_stages(deps):
+    prereq, _ = _graph(deps)
+    stage = {}
+    for n in build_order(deps):
+        stage[n] = 1 + max((stage[p] for p in prereq[n]), default=-1)
+    out = [[] for _ in range(max(stage.values(), default=-1) + 1)]
+    for n in sorted(stage):
+        out[stage[n]].append(n)
+    return out
+@@@ tests
+import random
+import pytest
+from solution import build_order, parallel_stages, CycleError
+
+DEPS = {"app": ["lib", "assets"], "lib": ["codegen"], "tests": ["app", "fixtures"], "assets": [], "docs": ["lib"]}
+
+
+def test_build_order_deterministic():
+    assert build_order(DEPS) == ["assets", "codegen", "fixtures", "lib", "app", "docs", "tests"]
+
+
+def test_stages():
+    assert parallel_stages(DEPS) == [["assets", "codegen", "fixtures"], ["lib"], ["app", "docs"], ["tests"]]
+    assert parallel_stages({}) == [] and build_order({}) == []
+
+
+def test_order_is_valid_on_random_dags():
+    rng = random.Random(14)
+    for _ in range(100):
+        names = [f"t{i:02d}" for i in range(rng.randrange(1, 15))]
+        deps = {n: [m for m in names[:i] if rng.random() < 0.3] for i, n in enumerate(names)}
+        order = build_order(deps)
+        pos = {n: i for i, n in enumerate(order)}
+        assert sorted(order) == sorted(names)
+        assert all(pos[d] < pos[n] for n, ds in deps.items() for d in ds)
+        stages = parallel_stages(deps)
+        level = {n: i for i, s in enumerate(stages) for n in s}
+        for n, ds in deps.items():
+            assert level[n] == (1 + max(level[d] for d in ds) if ds else 0)
+
+
+def check_cycle(deps, err):
+    cyc = err.cycle
+    assert len(cyc) >= 2 and cyc[0] == cyc[-1]
+    assert all(b in deps.get(a, ()) for a, b in zip(cyc, cyc[1:]))
+    assert all(n in str(err) for n in cyc)
+
+
+def test_cycle_reported():
+    deps = {"a": ["b"], "b": ["c"], "c": ["a"], "d": ["a"], "e": []}
+    with pytest.raises(CycleError) as ei:
+        build_order(deps)
+    assert isinstance(ei.value, ValueError)
+    check_cycle(deps, ei.value)
+    assert set(ei.value.cycle) == {"a", "b", "c"}
+
+
+def test_self_dependency_and_stages_cycle():
+    with pytest.raises(CycleError) as ei:
+        build_order({"x": ["x"]})
+    assert ei.value.cycle == ["x", "x"]
+    deps = {"p": ["q"], "q": ["r", "p"], "r": []}
+    with pytest.raises(CycleError) as ei:
+        parallel_stages(deps)
+    check_cycle(deps, ei.value)
+
+
+def test_dependency_only_targets_included():
+    assert build_order({"z": ["y", "x"]}) == ["x", "y", "z"]
+@@@ task office_network_union_find leaf=10 diff=3 entry=DisjointSet,first_full_connection,redundant_cables
+@@@ prompt
+Write a union-find (disjoint set) structure and use it for an office network. `DisjointSet(n)` covers elements `0..n-1` and has `find(x)` (the representative, with path compression), `union(a, b) -> bool` (union by size; True if two different sets were merged, False if they were already joined), `connected(a, b) -> bool`, `size(x)` (the size of x's set) and a `count` attribute holding the current number of sets. Do not recurse in `find`, since chains can be long. `first_full_connection(n, cables) -> int` takes cables, a list of `(a, b)` office pairs installed in order, and returns the index of the cable whose installation first connects all `n` offices, or -1 if they never are; `n < 2` raises `ValueError`. `redundant_cables(n, cables) -> list[int]` returns the indexes of the cables that joined offices already connected by earlier cables. Both must handle 100 000 offices and 200 000 cables quickly.
+@@@ reference
+class DisjointSet:
+    def __init__(self, n):
+        self.parent = list(range(n))
+        self._size = [1] * n
+        self.count = n
+
+    def find(self, x):
+        root = x
+        while self.parent[root] != root:
+            root = self.parent[root]
+        while self.parent[x] != root:
+            self.parent[x], x = root, self.parent[x]
+        return root
+
+    def union(self, a, b):
+        ra, rb = self.find(a), self.find(b)
+        if ra == rb:
+            return False
+        if self._size[ra] < self._size[rb]:
+            ra, rb = rb, ra
+        self.parent[rb] = ra
+        self._size[ra] += self._size[rb]
+        self.count -= 1
+        return True
+
+    def connected(self, a, b):
+        return self.find(a) == self.find(b)
+
+    def size(self, x):
+        return self._size[self.find(x)]
+
+
+def first_full_connection(n, cables):
+    if n < 2:
+        raise ValueError("need at least two offices")
+    ds = DisjointSet(n)
+    for i, (a, b) in enumerate(cables):
+        ds.union(a, b)
+        if ds.count == 1:
+            return i
+    return -1
+
+
+def redundant_cables(n, cables):
+    ds = DisjointSet(n)
+    return [i for i, (a, b) in enumerate(cables) if not ds.union(a, b)]
+@@@ tests
+import random
+import time
+import pytest
+from solution import DisjointSet, first_full_connection, redundant_cables
+
+
+def test_basic_operations():
+    ds = DisjointSet(6)
+    assert ds.count == 6 and ds.size(3) == 1
+    assert ds.union(0, 1) and ds.union(2, 3) and ds.union(1, 3)
+    assert not ds.union(0, 2)
+    assert ds.connected(0, 3) and not ds.connected(0, 4)
+    assert ds.count == 3 and ds.size(2) == 4 and ds.size(5) == 1
+    assert ds.find(0) == ds.find(3)
+
+
+def test_against_naive_components():
+    rng = random.Random(15)
+    for _ in range(50):
+        n = rng.randrange(1, 12)
+        ds = DisjointSet(n)
+        comp = list(range(n))
+        for _ in range(rng.randrange(0, 15)):
+            a, b = rng.randrange(n), rng.randrange(n)
+            merged = comp[a] != comp[b]
+            assert ds.union(a, b) == merged
+            old = comp[b]
+            comp = [comp[a] if c == old else c for c in comp]
+            assert ds.count == len(set(comp))
+            x = rng.randrange(n)
+            assert ds.size(x) == comp.count(comp[x])
+
+
+def test_first_full_connection():
+    cables = [(0, 1), (2, 3), (1, 0), (1, 2), (3, 4), (0, 4)]
+    assert first_full_connection(5, cables) == 4
+    assert first_full_connection(5, cables[:4]) == -1
+    assert first_full_connection(2, [(1, 0)]) == 0
+    with pytest.raises(ValueError):
+        first_full_connection(1, [])
+
+
+def test_redundant():
+    assert redundant_cables(4, [(0, 1), (1, 2), (0, 2), (3, 3), (2, 3), (3, 0)]) == [2, 3, 5]
+    assert redundant_cables(3, []) == []
+
+
+def test_long_chain_no_recursion():
+    n = 100_000
+    ds = DisjointSet(n)
+    for i in range(n - 1):
+        ds.parent[i] = i + 1  # a degenerate chain, as a sloppy union could build
+    assert ds.find(0) == n - 1 and ds.parent[0] == n - 1
+
+
+def test_scales():
+    rng = random.Random(16)
+    n = 100_000
+    cables = [(rng.randrange(n), rng.randrange(n)) for _ in range(200_000)] + [(i, i + 1) for i in range(n - 1)]
+    t = time.perf_counter()
+    idx = first_full_connection(n, cables)
+    red = redundant_cables(n, cables)
+    assert time.perf_counter() - t < 3.0
+    assert 0 <= idx < len(cables) and len(red) == len(cables) - (n - 1)

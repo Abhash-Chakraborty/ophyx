@@ -1,0 +1,882 @@
+@@@ task scaffold_src_layout leaf=0 diff=3 entry=scaffold_package min_python=3.11
+@@@ prompt
+Write `scaffold_package(root, name, version="0.1.0") -> list[str]`, which creates a new src-layout Python project under `root` and returns the created files' POSIX paths relative to `root`, sorted. `name` must match `[a-z][a-z0-9_]*`, else `ValueError`. `root` may be missing or an empty directory; anything else raises `FileExistsError`. Create exactly these files. `pyproject.toml` has a `[build-system]` table (`requires = ["setuptools>=61"]`, `build-backend = "setuptools.build_meta"`), a `[project]` table with `name`, `version` and `requires-python = ">=3.10"`, and `[tool.setuptools.packages.find]` with `where = ["src"]`. `README.md` starts with `# <name>`. `src/<name>/__init__.py` defines `__version__`. `src/<name>/__main__.py` prints `<name> <version>` (importing `__version__` from the package), so `python -m <name>` works when `src` is on the path. `tests/test_<name>.py` holds a pytest test asserting the version. Do not put the package at the top level: in a src layout, running Python from `root` must not be able to import it by accident.
+@@@ reference
+import re
+from pathlib import Path
+
+_NAME = re.compile(r"[a-z][a-z0-9_]*")
+
+
+def scaffold_package(root, name, version="0.1.0"):
+    if not _NAME.fullmatch(name):
+        raise ValueError(f"invalid package name {name!r}")
+    root = Path(root)
+    if root.exists() and (not root.is_dir() or any(root.iterdir())):
+        raise FileExistsError(f"{root} exists and is not empty")
+    files = {
+        "pyproject.toml": (
+            "[build-system]\n"
+            'requires = ["setuptools>=61"]\n'
+            'build-backend = "setuptools.build_meta"\n\n'
+            "[project]\n"
+            f'name = "{name}"\n'
+            f'version = "{version}"\n'
+            'requires-python = ">=3.10"\n\n'
+            "[tool.setuptools.packages.find]\n"
+            'where = ["src"]\n'
+        ),
+        "README.md": f"# {name}\n",
+        f"src/{name}/__init__.py": f'__version__ = "{version}"\n',
+        f"src/{name}/__main__.py": f'from {name} import __version__\n\nprint(f"{name} {{__version__}}")\n',
+        f"tests/test_{name}.py": f'import {name}\n\n\ndef test_version():\n    assert {name}.__version__ == "{version}"\n',
+    }
+    for rel, text in files.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    return sorted(files)
+@@@ tests
+import os
+import subprocess
+import sys
+import tomllib
+import pytest
+from solution import scaffold_package
+
+
+def run(args, cwd, src=None):
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    if src:
+        env["PYTHONPATH"] = str(src)
+    return subprocess.run([sys.executable, *args], cwd=cwd, env=env, capture_output=True, text=True, timeout=30)
+
+
+def test_files_created(tmp_path):
+    files = scaffold_package(tmp_path / "proj", "widgets", "1.2.3")
+    assert files == ["README.md", "pyproject.toml", "src/widgets/__init__.py", "src/widgets/__main__.py",
+                     "tests/test_widgets.py"]
+    assert all((tmp_path / "proj" / f).is_file() for f in files)
+    assert not (tmp_path / "proj" / "widgets").exists()
+    assert (tmp_path / "proj" / "README.md").read_text().startswith("# widgets")
+
+
+def test_pyproject_parses(tmp_path):
+    scaffold_package(tmp_path / "p", "widgets", "1.2.3")
+    data = tomllib.loads((tmp_path / "p" / "pyproject.toml").read_text())
+    assert data["project"] == {"name": "widgets", "version": "1.2.3", "requires-python": ">=3.10"}
+    assert data["build-system"]["build-backend"] == "setuptools.build_meta"
+    assert data["tool"]["setuptools"]["packages"]["find"]["where"] == ["src"]
+
+
+def test_python_dash_m_with_src_on_path(tmp_path):
+    root = tmp_path / "p"
+    scaffold_package(root, "gizmo", "0.4.0")
+    p = run(["-m", "gizmo"], cwd=root, src=root / "src")
+    assert p.returncode == 0 and p.stdout == "gizmo 0.4.0\n"
+
+
+def test_src_layout_prevents_accidental_import(tmp_path):
+    root = tmp_path / "p"
+    scaffold_package(root, "gizmo")
+    p = run(["-c", "import gizmo"], cwd=root)
+    assert p.returncode != 0 and "ModuleNotFoundError" in p.stderr
+
+
+def test_generated_tests_pass(tmp_path):
+    root = tmp_path / "p"
+    scaffold_package(root, "gizmo", "2.0.0")
+    p = run(["-m", "pytest", "-q", "-p", "no:cacheprovider", "tests"], cwd=root, src=root / "src")
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert "1 passed" in p.stdout
+
+
+def test_validation(tmp_path):
+    for bad in ("Widgets", "1abc", "my-pkg", ""):
+        with pytest.raises(ValueError):
+            scaffold_package(tmp_path / "x", bad)
+    (tmp_path / "busy").mkdir()
+    (tmp_path / "busy" / "keep.txt").write_text("x")
+    with pytest.raises(FileExistsError):
+        scaffold_package(tmp_path / "busy", "ok")
+    (tmp_path / "empty").mkdir()
+    assert scaffold_package(tmp_path / "empty", "ok")
+@@@ task main_guard_cli leaf=1 diff=2 entry=top_words,main
+@@@ prompt
+Write a module that is both an importable library and a command-line tool. `top_words(text, n) -> list[tuple[str, int]]` returns the `n` most common words, where a word is a lower-cased run of letters and apostrophes, ordered by count descending and then alphabetically. `main(argv=None) -> int` uses `argparse` (`prog="wordstats"`) with a positional `path` and an option `--top N` (int, default 3). It reads the file as UTF-8, prints one line per word as `word<TAB>count` to stdout, and returns 0. A missing or unreadable file prints `error: <message>` to stderr and returns 1. Bad usage exits with argparse's status 2. `main` reads `sys.argv[1:]` when `argv` is None and never calls `sys.exit` itself. Importing the module must have no side effects (no output, no argument parsing). End the module with an `if __name__ == "__main__":` guard that calls `raise SystemExit(main())`, so both `python solution.py FILE` and `python -m solution FILE` work and propagate the exit status.
+@@@ reference
+import argparse
+import re
+import sys
+from collections import Counter
+
+_WORD = re.compile(r"[a-z']+")
+
+
+def top_words(text, n):
+    counts = Counter(_WORD.findall(text.lower()))
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:n]
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="wordstats", description="Show the most common words in a file.")
+    parser.add_argument("path")
+    parser.add_argument("--top", type=int, default=3)
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    try:
+        with open(args.path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    for word, count in top_words(text, args.top):
+        print(f"{word}\t{count}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+@@@ tests
+import importlib
+import os
+import subprocess
+import sys
+import pytest
+import solution
+from solution import top_words, main
+
+HERE = os.path.dirname(os.path.abspath(solution.__file__))
+
+
+def run(args):
+    return subprocess.run([sys.executable, *args], cwd=HERE, capture_output=True, text=True, timeout=30)
+
+
+def test_top_words():
+    assert top_words("The cat and the hat. THE end; cat's cat", 3) == [("the", 3), ("cat", 2), ("and", 1)]
+    assert top_words("", 5) == []
+
+
+def test_import_has_no_side_effects(capsys, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["x", "--definitely-bad-flag"])
+    importlib.reload(solution)
+    assert capsys.readouterr() == ("", "")
+
+
+def test_main_in_process(tmp_path, capsys):
+    p = tmp_path / "t.txt"
+    p.write_text("b a b c b a", encoding="utf-8")
+    assert main([str(p), "--top", "2"]) == 0
+    assert capsys.readouterr().out == "b\t3\na\t2\n"
+
+
+def test_main_reads_sys_argv_and_missing_file(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["wordstats", str(tmp_path / "nope.txt")])
+    assert main() == 1
+    err = capsys.readouterr().err
+    assert err.startswith("error: ") and "nope.txt" in err
+
+
+def test_bad_usage_exits_2(capsys):
+    with pytest.raises(SystemExit) as ei:
+        main(["f.txt", "--top", "many"])
+    assert ei.value.code == 2
+
+
+def test_script_and_dash_m(tmp_path):
+    p = tmp_path / "t.txt"
+    p.write_text("x y x", encoding="utf-8")
+    for args in (["solution.py", str(p)], ["-m", "solution", str(p), "--top", "1"]):
+        r = run(args)
+        assert r.returncode == 0 and r.stdout.startswith("x\t2\n")
+    r = run(["solution.py", str(tmp_path / "missing.txt")])
+    assert r.returncode == 1 and r.stderr.startswith("error: ")
+    assert run(["solution.py"]).returncode == 2
+@@@ task env_config_loader leaf=2 diff=3 entry=Config,ConfigError,load_config
+@@@ prompt
+Write configuration loading from environment variables. `Config` is a frozen dataclass with fields `database_url: str`, `port: int`, `debug: bool`, `allowed_hosts: tuple[str, ...]` and `timeout: float`. `load_config(environ=None) -> Config` reads a mapping, defaulting to `os.environ` at call time (not import time). The variables are: `APP_DATABASE_URL` (required, non-empty); `APP_PORT` (int 1..65535, default 8000); `APP_DEBUG` (case-insensitive `1/true/yes/on` or `0/false/no/off`, default false); `APP_ALLOWED_HOSTS` (comma-separated, items stripped, empty items dropped, default empty tuple); `APP_TIMEOUT` (float > 0, default 5.0). Values are stripped of surrounding whitespace. Validate everything before failing. If anything is wrong, raise `ConfigError` (an `Exception` subclass) whose `problems` attribute lists one message per bad variable, each message starting with the variable's name, and whose `str()` contains all of them.
+@@@ reference
+import os
+from dataclasses import dataclass
+
+_TRUE, _FALSE = {"1", "true", "yes", "on"}, {"0", "false", "no", "off"}
+
+
+@dataclass(frozen=True)
+class Config:
+    database_url: str
+    port: int
+    debug: bool
+    allowed_hosts: tuple
+    timeout: float
+
+
+class ConfigError(Exception):
+    def __init__(self, problems):
+        super().__init__("invalid configuration: " + "; ".join(problems))
+        self.problems = problems
+
+
+def load_config(environ=None):
+    env = os.environ if environ is None else environ
+    problems = []
+
+    def get(name, default=None):
+        value = env.get(name)
+        return default if value is None else value.strip()
+
+    url = get("APP_DATABASE_URL", "")
+    if not url:
+        problems.append("APP_DATABASE_URL is required")
+    port = 8000
+    raw = get("APP_PORT")
+    if raw is not None:
+        try:
+            port = int(raw)
+            if not 1 <= port <= 65535:
+                raise ValueError
+        except ValueError:
+            problems.append(f"APP_PORT must be an integer between 1 and 65535, got {raw!r}")
+    debug = False
+    raw = get("APP_DEBUG")
+    if raw is not None:
+        if raw.lower() in _TRUE:
+            debug = True
+        elif raw.lower() not in _FALSE:
+            problems.append(f"APP_DEBUG must be a boolean, got {raw!r}")
+    hosts = tuple(h.strip() for h in get("APP_ALLOWED_HOSTS", "").split(",") if h.strip())
+    timeout = 5.0
+    raw = get("APP_TIMEOUT")
+    if raw is not None:
+        try:
+            timeout = float(raw)
+            if not timeout > 0:
+                raise ValueError
+        except ValueError:
+            problems.append(f"APP_TIMEOUT must be a positive number, got {raw!r}")
+    if problems:
+        raise ConfigError(problems)
+    return Config(url, port, debug, hosts, timeout)
+@@@ tests
+import dataclasses
+import pytest
+from solution import Config, ConfigError, load_config
+
+
+def test_defaults():
+    assert load_config({"APP_DATABASE_URL": "sqlite:///x.db"}) == Config("sqlite:///x.db", 8000, False, (), 5.0)
+
+
+def test_all_values():
+    env = {"APP_DATABASE_URL": " postgres://db ", "APP_PORT": "9000", "APP_DEBUG": "Yes",
+           "APP_ALLOWED_HOSTS": " a.com, ,b.org ,", "APP_TIMEOUT": "2.5", "OTHER": "ignored"}
+    assert load_config(env) == Config("postgres://db", 9000, True, ("a.com", "b.org"), 2.5)
+
+
+@pytest.mark.parametrize("raw,expected", [("1", True), ("TRUE", True), ("on", True), ("0", False), ("off", False), ("No", False)])
+def test_booleans(raw, expected):
+    assert load_config({"APP_DATABASE_URL": "u", "APP_DEBUG": raw}).debug is expected
+
+
+def test_reads_os_environ_at_call_time(monkeypatch):
+    monkeypatch.delenv("APP_PORT", raising=False)
+    monkeypatch.setenv("APP_DATABASE_URL", "env://one")
+    assert load_config().database_url == "env://one"
+    monkeypatch.setenv("APP_DATABASE_URL", "env://two")
+    monkeypatch.setenv("APP_PORT", "1234")
+    cfg = load_config()
+    assert cfg.database_url == "env://two" and cfg.port == 1234
+
+
+def test_collects_all_problems():
+    env = {"APP_PORT": "70000", "APP_DEBUG": "maybe", "APP_TIMEOUT": "-1"}
+    with pytest.raises(ConfigError) as ei:
+        load_config(env)
+    probs = ei.value.problems
+    assert len(probs) == 4
+    for name, p in zip(["APP_DATABASE_URL", "APP_PORT", "APP_DEBUG", "APP_TIMEOUT"], probs):
+        assert p.startswith(name) and p in str(ei.value)
+
+
+@pytest.mark.parametrize("key,value", [("APP_PORT", "abc"), ("APP_PORT", "0"), ("APP_TIMEOUT", "0"),
+                                       ("APP_TIMEOUT", "soon"), ("APP_DATABASE_URL", "   ")])
+def test_single_bad_value(key, value):
+    env = {"APP_DATABASE_URL": "u", key: value}
+    with pytest.raises(ConfigError) as ei:
+        load_config(env)
+    assert [p.split()[0] for p in ei.value.problems] == [key]
+
+
+def test_frozen():
+    cfg = load_config({"APP_DATABASE_URL": "u"})
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        cfg.port = 1
+@@@ task app_logging_setup leaf=3 diff=3 entry=setup_logging,get_logger,FORMAT
+@@@ prompt
+Write application logging setup that is safe to call more than once. `FORMAT = "%(levelname)s %(name)s: %(message)s"`. `setup_logging(level="INFO", *, stream=None, logfile=None) -> logging.Logger` configures the application's top-level logger `"app"` (never the root logger) and returns it. Remove and close every handler a previous call added, so repeated calls never duplicate output. Set the level (a level name like `"DEBUG"` or an int; an unknown name raises `ValueError`) and set `propagate = False`. Add a `StreamHandler` on `stream` (`sys.stderr` when None) and, if `logfile` is given, a UTF-8 `FileHandler` too, both using `FORMAT`. `get_logger(name) -> logging.Logger` returns the child logger `"app.<name>"` for modules to use, so their records flow to the app handlers.
+@@@ reference
+import logging
+import sys
+
+APP = "app"
+FORMAT = "%(levelname)s %(name)s: %(message)s"
+
+
+def setup_logging(level="INFO", *, stream=None, logfile=None):
+    logger = logging.getLogger(APP)
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        handler.close()
+    logger.setLevel(level)
+    logger.propagate = False
+    formatter = logging.Formatter(FORMAT)
+    handlers = [logging.StreamHandler(stream if stream is not None else sys.stderr)]
+    if logfile is not None:
+        handlers.append(logging.FileHandler(logfile, encoding="utf-8"))
+    for handler in handlers:
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+    return logger
+
+
+def get_logger(name):
+    return logging.getLogger(f"{APP}.{name}")
+@@@ tests
+import io
+import logging
+import pytest
+from solution import setup_logging, get_logger, FORMAT
+
+
+def test_basic_output():
+    buf = io.StringIO()
+    logger = setup_logging("INFO", stream=buf)
+    assert logger.name == "app" and logger.propagate is False
+    get_logger("db").info("connected")
+    get_logger("db").debug("hidden")
+    assert buf.getvalue() == "INFO app.db: connected\n"
+    assert FORMAT == "%(levelname)s %(name)s: %(message)s"
+
+
+def test_idempotent():
+    buf = io.StringIO()
+    setup_logging(stream=buf)
+    setup_logging(stream=buf)
+    setup_logging(stream=buf)
+    get_logger("x").warning("once")
+    assert buf.getvalue() == "WARNING app.x: once\n"
+    assert len(logging.getLogger("app").handlers) == 1
+
+
+def test_reconfigure_level_and_stream():
+    old, new = io.StringIO(), io.StringIO()
+    setup_logging("WARNING", stream=old)
+    setup_logging(logging.DEBUG, stream=new)
+    get_logger("svc").debug("details")
+    assert old.getvalue() == "" and new.getvalue() == "DEBUG app.svc: details\n"
+
+
+def test_logfile_and_handler_closed(tmp_path):
+    log = tmp_path / "app.log"
+    setup_logging(stream=io.StringIO(), logfile=log)
+    get_logger("io").error("disk full ü")
+    file_handlers = [h for h in logging.getLogger("app").handlers if isinstance(h, logging.FileHandler)]
+    assert len(file_handlers) == 1
+    setup_logging(stream=io.StringIO())
+    assert file_handlers[0].stream is None
+    assert log.read_text(encoding="utf-8") == "ERROR app.io: disk full ü\n"
+
+
+def test_root_logger_untouched():
+    root = logging.getLogger()
+    before = list(root.handlers)
+    setup_logging(stream=io.StringIO(), logfile=None)
+    assert root.handlers == before
+
+
+def test_unknown_level():
+    with pytest.raises(ValueError):
+        setup_logging("LOUD", stream=io.StringIO())
+@@@ task pure_core_io_shell leaf=4 diff=3 entry=parse_lines,compute_invoice,render,run
+@@@ prompt
+Write an invoice tool split into a pure core and a thin I/O shell. `parse_lines(text) -> list[tuple[str, int, Decimal]]` parses lines of the form `description;qty;unit_price`, stripping each field and skipping blank lines and lines starting with `#`. A malformed line (wrong field count, non-integer or non-positive qty, bad price) raises `ValueError` naming its 1-based line number as `line N`. `compute_invoice(items, tax_rate) -> dict` returns `{"lines": [(description, qty, line_total), ...], "subtotal": ..., "tax": ..., "total": ...}`, with every money value a `Decimal` rounded to cents with `ROUND_HALF_UP`. Tax is `subtotal * tax_rate`, rounded. `render(invoice) -> str` produces one line per item as `"<description> x<qty>: <line_total>"`, then `subtotal: ...`, `tax: ...` and `total: ...`, each line ending in `\n`. These three functions must do no I/O at all. Only `run(in_path, out_path, tax_rate="0.20") -> Decimal` touches files: it reads UTF-8 input, writes the rendered invoice, and returns the total.
+@@@ reference
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+
+_CENT = Decimal("0.01")
+
+
+def _money(x):
+    return x.quantize(_CENT, rounding=ROUND_HALF_UP)
+
+
+def parse_lines(text):
+    items = []
+    for n, line in enumerate(text.splitlines(), 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [p.strip() for p in line.split(";")]
+        try:
+            desc, qty, price = parts
+            qty = int(qty)
+            price = Decimal(price)
+            if qty <= 0 or not price.is_finite():
+                raise ValueError
+        except (ValueError, InvalidOperation):
+            raise ValueError(f"line {n}: cannot parse {line!r}") from None
+        items.append((desc, qty, price))
+    return items
+
+
+def compute_invoice(items, tax_rate):
+    lines = [(desc, qty, _money(qty * price)) for desc, qty, price in items]
+    subtotal = _money(sum((t for _, _, t in lines), Decimal(0)))
+    tax = _money(subtotal * Decimal(tax_rate))
+    return {"lines": lines, "subtotal": subtotal, "tax": tax, "total": subtotal + tax}
+
+
+def render(invoice):
+    out = [f"{d} x{q}: {t}" for d, q, t in invoice["lines"]]
+    out += [f"subtotal: {invoice['subtotal']}", f"tax: {invoice['tax']}", f"total: {invoice['total']}"]
+    return "".join(line + "\n" for line in out)
+
+
+def run(in_path, out_path, tax_rate="0.20"):
+    with open(in_path, encoding="utf-8") as f:
+        invoice = compute_invoice(parse_lines(f.read()), Decimal(tax_rate))
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(render(invoice))
+    return invoice["total"]
+@@@ tests
+import builtins
+import io
+import pathlib
+from decimal import Decimal
+import pytest
+from solution import parse_lines, compute_invoice, render, run
+
+TEXT = "# items\nWidget; 3; 2.50\n\nGadget;1;9.999\n"
+
+
+@pytest.fixture
+def no_io(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("pure function did I/O")
+    monkeypatch.setattr(builtins, "open", boom)
+    monkeypatch.setattr(io, "open", boom)
+    monkeypatch.setattr(pathlib.Path, "open", boom)
+
+
+def test_parse(no_io):
+    assert parse_lines(TEXT) == [("Widget", 3, Decimal("2.50")), ("Gadget", 1, Decimal("9.999"))]
+
+
+@pytest.mark.parametrize("bad,line", [("a;1\n", 1), ("ok;1;1\nb;x;1\n", 2), ("\n\nc;0;1\n", 3), ("d;1;abc", 1), ("e;-2;1", 1)])
+def test_parse_errors_name_line(bad, line):
+    with pytest.raises(ValueError, match=f"line {line}"):
+        parse_lines(bad)
+
+
+def test_compute_rounding(no_io):
+    inv = compute_invoice(parse_lines(TEXT), Decimal("0.20"))
+    assert inv["lines"] == [("Widget", 3, Decimal("7.50")), ("Gadget", 1, Decimal("10.00"))]
+    assert (inv["subtotal"], inv["tax"], inv["total"]) == (Decimal("17.50"), Decimal("3.50"), Decimal("21.00"))
+    half = compute_invoice([("x", 1, Decimal("0.125"))], Decimal("0"))
+    assert half["subtotal"] == Decimal("0.13") and str(half["tax"]) == "0.00"
+
+
+def test_render(no_io):
+    inv = compute_invoice([("Widget", 2, Decimal("1.005"))], Decimal("0.1"))
+    assert render(inv) == "Widget x2: 2.01\nsubtotal: 2.01\ntax: 0.20\ntotal: 2.21\n"
+
+
+def test_run_shell(tmp_path):
+    src, dst = tmp_path / "in.txt", tmp_path / "out.txt"
+    src.write_text(TEXT, encoding="utf-8")
+    assert run(src, dst) == Decimal("21.00")
+    assert dst.read_text(encoding="utf-8").endswith("total: 21.00\n")
+    assert run(src, dst, tax_rate="0") == Decimal("17.50")
+
+
+def test_empty_invoice(no_io):
+    inv = compute_invoice(parse_lines("# nothing\n"), Decimal("0.2"))
+    assert render(inv) == "subtotal: 0.00\ntax: 0.00\ntotal: 0.00\n"
+@@@ task layered_order_service leaf=5 diff=4 entry=DomainError,Order,InMemoryOrderRepository,OrderService
+@@@ prompt
+Write a small layered order system. Domain layer: `DomainError(Exception)` and `Order(order_id, customer)` with `items` (a dict sku -> qty), `status` (`"open"`, `"placed"` or `"cancelled"`) and `placed_at` (None until placed). `add(sku, qty)` needs qty > 0 and an open order; `place(now)` needs an open, non-empty order and sets the status and `placed_at`; `cancel()` needs an open or placed order. Each rule violation raises `DomainError`. Adapter layer: `InMemoryOrderRepository` with `save(order)`, `get(order_id)` (None if unknown) and `list()` (all orders sorted by id). Service layer: `OrderService(repo, notifier, clock)` depends only on those interfaces. `notifier.notify(customer, message)` sends a message and `clock()` returns the current time. `create(customer) -> str` makes ids `"o-1"`, `"o-2"`, ... and saves the new order. `add_item(order_id, sku, qty)`, `place(order_id)` and `cancel(order_id)` load the order from the repository, apply the domain method, and save it back. An unknown id raises `DomainError`. `place` and `cancel` call `notifier.notify(customer, "order <id> placed")` (or `cancelled`) only after a successful save. Never keep orders anywhere except the repository: a repository may hand out copies.
+@@@ reference
+class DomainError(Exception):
+    pass
+
+
+class Order:
+    def __init__(self, order_id, customer):
+        self.order_id = order_id
+        self.customer = customer
+        self.items = {}
+        self.status = "open"
+        self.placed_at = None
+
+    def add(self, sku, qty):
+        if self.status != "open":
+            raise DomainError(f"order {self.order_id} is {self.status}")
+        if qty <= 0:
+            raise DomainError("quantity must be positive")
+        self.items[sku] = self.items.get(sku, 0) + qty
+
+    def place(self, now):
+        if self.status != "open":
+            raise DomainError(f"order {self.order_id} is {self.status}")
+        if not self.items:
+            raise DomainError("cannot place an empty order")
+        self.status, self.placed_at = "placed", now
+
+    def cancel(self):
+        if self.status not in ("open", "placed"):
+            raise DomainError(f"order {self.order_id} is {self.status}")
+        self.status = "cancelled"
+
+
+class InMemoryOrderRepository:
+    def __init__(self):
+        self._orders = {}
+
+    def save(self, order):
+        self._orders[order.order_id] = order
+
+    def get(self, order_id):
+        return self._orders.get(order_id)
+
+    def list(self):
+        return [self._orders[k] for k in sorted(self._orders)]
+
+
+class OrderService:
+    def __init__(self, repo, notifier, clock):
+        self.repo, self.notifier, self.clock = repo, notifier, clock
+        self._next = 0
+
+    def _load(self, order_id):
+        order = self.repo.get(order_id)
+        if order is None:
+            raise DomainError(f"unknown order {order_id}")
+        return order
+
+    def create(self, customer):
+        self._next += 1
+        order = Order(f"o-{self._next}", customer)
+        self.repo.save(order)
+        return order.order_id
+
+    def add_item(self, order_id, sku, qty):
+        order = self._load(order_id)
+        order.add(sku, qty)
+        self.repo.save(order)
+
+    def place(self, order_id):
+        order = self._load(order_id)
+        order.place(self.clock())
+        self.repo.save(order)
+        self.notifier.notify(order.customer, f"order {order_id} placed")
+
+    def cancel(self, order_id):
+        order = self._load(order_id)
+        order.cancel()
+        self.repo.save(order)
+        self.notifier.notify(order.customer, f"order {order_id} cancelled")
+@@@ tests
+import copy
+import pytest
+from solution import DomainError, Order, InMemoryOrderRepository, OrderService
+
+
+class FakeNotifier:
+    def __init__(self):
+        self.sent = []
+
+    def notify(self, customer, message):
+        self.sent.append((customer, message))
+
+
+class CopyingRepo:
+    """Behaves like a database: callers only ever get copies."""
+    def __init__(self):
+        self.rows, self.saves = {}, 0
+
+    def save(self, order):
+        self.saves += 1
+        self.rows[order.order_id] = copy.deepcopy(order)
+
+    def get(self, order_id):
+        return copy.deepcopy(self.rows.get(order_id))
+
+
+def test_domain_rules_without_service():
+    o = Order("o-9", "ann")
+    with pytest.raises(DomainError):
+        o.place(1)
+    with pytest.raises(DomainError):
+        o.add("x", 0)
+    o.add("x", 2)
+    o.add("x", 1)
+    o.place(42)
+    assert o.items == {"x": 3} and o.status == "placed" and o.placed_at == 42
+    with pytest.raises(DomainError):
+        o.add("y", 1)
+    o.cancel()
+    with pytest.raises(DomainError):
+        o.cancel()
+
+
+def test_in_memory_repository():
+    repo = InMemoryOrderRepository()
+    a, b = Order("o-2", "x"), Order("o-1", "y")
+    repo.save(a)
+    repo.save(b)
+    assert repo.get("o-2") is a and repo.get("nope") is None and repo.list() == [b, a]
+
+
+def test_service_persists_through_repository():
+    repo, notes = CopyingRepo(), FakeNotifier()
+    svc = OrderService(repo, notes, clock=lambda: "2026-10-10T12:00")
+    oid = svc.create("ann")
+    svc.add_item(oid, "book", 2)
+    svc.place(oid)
+    stored = repo.rows[oid]
+    assert oid == "o-1" and stored.items == {"book": 2} and stored.status == "placed"
+    assert stored.placed_at == "2026-10-10T12:00"
+    assert notes.sent == [("ann", "order o-1 placed")]
+
+
+def test_failed_place_sends_nothing():
+    repo, notes = CopyingRepo(), FakeNotifier()
+    svc = OrderService(repo, notes, clock=lambda: 0)
+    oid = svc.create("bob")
+    with pytest.raises(DomainError):
+        svc.place(oid)
+    assert notes.sent == [] and repo.rows[oid].status == "open"
+
+
+def test_notify_after_save():
+    order_of_events = []
+
+    class Repo(CopyingRepo):
+        def save(self, order):
+            order_of_events.append(("save", order.status))
+            super().save(order)
+
+    class Notifier:
+        def notify(self, customer, message):
+            order_of_events.append(("notify", message))
+    svc = OrderService(Repo(), Notifier(), clock=lambda: 1)
+    oid = svc.create("cy")
+    svc.add_item(oid, "pen", 1)
+    svc.cancel(oid)
+    assert order_of_events[-2:] == [("save", "cancelled"), ("notify", "order o-1 cancelled")]
+
+
+def test_unknown_ids_and_sequence():
+    svc = OrderService(InMemoryOrderRepository(), FakeNotifier(), clock=lambda: 0)
+    assert [svc.create("a"), svc.create("b")] == ["o-1", "o-2"]
+    for call in (lambda: svc.add_item("o-99", "x", 1), lambda: svc.place("o-99"), lambda: svc.cancel("o-99")):
+        with pytest.raises(DomainError):
+            call()
+@@@ task library_public_api leaf=6 diff=3 entry=slugify,SlugError,__all__
+@@@ prompt
+Write a module designed as a reusable library with a deliberate public API. Its public names are exactly `__all__ = ["slugify", "SlugError"]`, and every other module-level name, helpers and compiled patterns included, is private (leading underscore). Imported modules are the only exception. `SlugError(ValueError)` is the library's error type. `slugify(text, /, *, separator="-", max_length=None) -> str`: `text` is positional-only and the options are keyword-only. It normalises with NFKD and drops non-ASCII characters (so `"Crème Brûlée"` becomes `"creme-brulee"`), lower-cases, turns each run of characters other than `a-z0-9` into one `separator`, and strips separators from both ends. With `max_length`, the result is cut to at most that many characters at a word boundary, with no trailing separator. If even the first word is longer, cut the word itself. A `separator` that is empty or contains a letter or digit raises `SlugError`, a non-positive `max_length` raises `SlugError`, and an empty result raises `SlugError`.
+@@@ reference
+import re
+import unicodedata
+
+__all__ = ["slugify", "SlugError"]
+
+
+class SlugError(ValueError):
+    pass
+
+
+_RUNS = re.compile(r"[^a-z0-9]+")
+
+
+def _ascii(text):
+    return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+
+
+def _truncate(words, separator, max_length):
+    out = ""
+    for w in words:
+        candidate = w if not out else out + separator + w
+        if len(candidate) > max_length:
+            break
+        out = candidate
+    return out or words[0][:max_length]
+
+
+def slugify(text, /, *, separator="-", max_length=None):
+    if not separator or any(c.isalnum() for c in separator):
+        raise SlugError(f"invalid separator {separator!r}")
+    if max_length is not None and max_length <= 0:
+        raise SlugError("max_length must be positive")
+    words = [w for w in _RUNS.split(_ascii(text).lower()) if w]
+    if not words:
+        raise SlugError(f"nothing to slugify in {text!r}")
+    if max_length is None:
+        return separator.join(words)
+    return _truncate(words, separator, max_length)
+@@@ tests
+import inspect
+import types
+import pytest
+import solution
+from solution import slugify, SlugError
+
+
+def test_public_api_surface():
+    assert solution.__all__ == ["slugify", "SlugError"]
+    ns = {}
+    exec("from solution import *", ns)
+    assert sorted(k for k in ns if k != "__builtins__") == ["SlugError", "slugify"]
+    public = [n for n, v in vars(solution).items() if not n.startswith("_") and not isinstance(v, types.ModuleType)]
+    assert sorted(public) == ["SlugError", "slugify"]
+
+
+def test_signature_kinds():
+    params = inspect.signature(slugify).parameters
+    assert params["text"].kind is inspect.Parameter.POSITIONAL_ONLY
+    assert params["separator"].kind is params["max_length"].kind is inspect.Parameter.KEYWORD_ONLY
+    with pytest.raises(TypeError):
+        slugify("a b", "_")
+    with pytest.raises(TypeError):
+        slugify(text="a b")
+
+
+def test_basic_slugs():
+    assert slugify("Hello, World!") == "hello-world"
+    assert slugify("  Crème Brûlée -- recipe #2 ") == "creme-brulee-recipe-2"
+    assert slugify("C'est la vie", separator="_") == "c_est_la_vie"
+    assert slugify("a.b", separator="--") == "a--b"
+
+
+def test_max_length_word_boundary():
+    assert slugify("the quick brown fox", max_length=15) == "the-quick-brown"
+    assert slugify("the quick brown fox", max_length=14) == "the-quick"
+    assert slugify("supercalifragilistic word", max_length=5) == "super"
+    assert slugify("ab cd", max_length=100) == "ab-cd"
+
+
+def test_errors_are_library_type():
+    assert issubclass(SlugError, ValueError)
+    for call in (lambda: slugify("!!!"), lambda: slugify("日本語"), lambda: slugify("x", separator=""),
+                 lambda: slugify("x", separator="a"), lambda: slugify("x", max_length=0)):
+        with pytest.raises(SlugError):
+            call()
+@@@ task deprecation_shims leaf=7 diff=3 entry=__version__,deprecated,parse_duration,parse_time,DEFAULT_TIMEOUT_SECONDS
+@@@ prompt
+Write a library module (version `__version__ = "2.3.0"`) that deprecates old APIs properly. `deprecated(since, removed_in, replacement=None)` is a decorator factory. Wrapped functions keep their metadata (`functools.wraps`) and, on every call, issue `DeprecationWarning` with `stacklevel=2` (so the warning points at the caller's line) and the message `"<name> is deprecated since <since> and will be removed in <removed_in>"`, plus `"; use <replacement> instead"` when a replacement is given. If the library's own version is already `>= removed_in`, comparing numerically by dotted components (`2.10.0 > 2.3.0`), the decorator raises `RuntimeError` at decoration time, because the shim should have been deleted. The new API is `parse_duration(text) -> int`, which turns strings like `"1h30m"`, `"45s"`, `"2m"` and `"1h"` (units h, m, s in that order, each optional but at least one) into seconds and raises `ValueError` otherwise. `parse_time` is the old name, deprecated since `2.0.0`, removed in `3.0.0`, replaced by `parse_duration`. The constant `DEFAULT_TIMEOUT_SECONDS = 30` replaces the old `DEFAULT_TIMEOUT`. Accessing `DEFAULT_TIMEOUT` must still work but warn (same message style, since `2.1.0`, removed in `3.0.0`, pointing at the accessing line), via a module-level `__getattr__`. Any other unknown attribute raises `AttributeError`.
+@@@ reference
+import functools
+import re
+import warnings
+
+__version__ = "2.3.0"
+DEFAULT_TIMEOUT_SECONDS = 30
+_DURATION = re.compile(r"(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?")
+
+
+def _vt(version):
+    return tuple(int(p) for p in version.split("."))
+
+
+def _message(name, since, removed_in, replacement):
+    msg = f"{name} is deprecated since {since} and will be removed in {removed_in}"
+    return msg + (f"; use {replacement} instead" if replacement else "")
+
+
+def deprecated(since, removed_in, replacement=None):
+    if _vt(__version__) >= _vt(removed_in):
+        raise RuntimeError(f"deprecated shim should have been removed in {removed_in}")
+
+    def decorate(fn):
+        msg = _message(fn.__name__, since, removed_in, replacement)
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            warnings.warn(msg, DeprecationWarning, stacklevel=2)
+            return fn(*args, **kwargs)
+        return wrapper
+    return decorate
+
+
+def parse_duration(text):
+    m = _DURATION.fullmatch(text.strip())
+    if not m or not any(m.groups()):
+        raise ValueError(f"invalid duration {text!r}")
+    h, mi, s = (int(g) if g else 0 for g in m.groups())
+    return h * 3600 + mi * 60 + s
+
+
+@deprecated("2.0.0", "3.0.0", replacement="parse_duration")
+def parse_time(text):
+    """Old name for parse_duration."""
+    return parse_duration(text)
+
+
+def __getattr__(name):
+    if name == "DEFAULT_TIMEOUT":
+        warnings.warn(_message(name, "2.1.0", "3.0.0", "DEFAULT_TIMEOUT_SECONDS"), DeprecationWarning, stacklevel=2)
+        return DEFAULT_TIMEOUT_SECONDS
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+@@@ tests
+import warnings
+import pytest
+import solution
+from solution import deprecated, parse_duration, parse_time, DEFAULT_TIMEOUT_SECONDS
+
+
+def test_parse_duration():
+    assert [parse_duration(s) for s in ("1h30m", "45s", "2m", "1h", "1h0m5s")] == [5400, 45, 120, 3600, 3605]
+    for bad in ("", "5", "1m1h", "abc", "1d"):
+        with pytest.raises(ValueError):
+            parse_duration(bad)
+
+
+def test_new_api_does_not_warn():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert parse_duration("10s") == 10 and DEFAULT_TIMEOUT_SECONDS == 30
+
+
+def test_old_function_warns_at_caller():
+    with pytest.warns(DeprecationWarning) as rec:
+        assert parse_time("2m") == 120
+    assert len(rec) == 1
+    assert str(rec[0].message) == ("parse_time is deprecated since 2.0.0 and will be removed in 3.0.0; "
+                                   "use parse_duration instead")
+    assert rec[0].filename == __file__
+    assert parse_time.__name__ == "parse_time" and parse_time.__doc__ == "Old name for parse_duration."
+
+
+def test_old_constant_warns_at_access_site():
+    with pytest.warns(DeprecationWarning, match="DEFAULT_TIMEOUT is deprecated since 2.1.0") as rec:
+        value = solution.DEFAULT_TIMEOUT
+    assert value == 30 and rec[0].filename == __file__
+    with pytest.raises(AttributeError):
+        solution.NOT_A_THING
+
+
+def test_decorator_without_replacement():
+    @deprecated("1.0.0", "2.10.0")
+    def legacy(x):
+        return x * 2
+    with pytest.warns(DeprecationWarning) as rec:
+        assert legacy(4) == 8
+    assert str(rec[0].message) == "legacy is deprecated since 1.0.0 and will be removed in 2.10.0"
+
+
+def test_overdue_shim_refuses():
+    with pytest.raises(RuntimeError):
+        deprecated("1.0.0", "2.3.0")
+    with pytest.raises(RuntimeError):
+        deprecated("1.0.0", "1.9.9")

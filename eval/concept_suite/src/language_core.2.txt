@@ -1,0 +1,1690 @@
+@@@ task expression_simplifier leaf=18 diff=3 entry=Num,Var,Add,Mul,simplify,evaluate
+@@@ prompt
+Write a tiny symbolic-expression module using structural pattern matching (`match`/`case` with class patterns and guards). Define frozen dataclasses `Num(value)`, `Var(name)`, `Add(left, right)` and `Mul(left, right)` (dataclasses give them `__match_args__` in field order). `simplify(expr)` simplifies bottom-up (children first) and returns a new expression: `Add` of two `Num`s folds to `Num(a + b)` and `Mul` of two `Num`s to `Num(a * b)`; `x + 0` and `0 + x` become `x`; `x * 1` and `1 * x` become `x`; `x * 0` and `0 * x` become `Num(0)`; `x + x` (structurally equal operands) becomes `Mul(Num(2), x)`; anything else is rebuilt from its simplified children. `evaluate(expr, env)` computes the numeric value, looking variables up in the dict `env` (a missing variable raises `KeyError`). Both functions raise `TypeError` for anything that is not one of the four node types.
+@@@ reference
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Num:
+    value: object
+
+
+@dataclass(frozen=True)
+class Var:
+    name: str
+
+
+@dataclass(frozen=True)
+class Add:
+    left: object
+    right: object
+
+
+@dataclass(frozen=True)
+class Mul:
+    left: object
+    right: object
+
+
+def simplify(expr):
+    match expr:
+        case Num() | Var():
+            return expr
+        case Add(left, right):
+            match simplify(left), simplify(right):
+                case Num(a), Num(b):
+                    return Num(a + b)
+                case (Num(0), x) | (x, Num(0)):
+                    return x
+                case x, y if x == y:
+                    return Mul(Num(2), x)
+                case x, y:
+                    return Add(x, y)
+        case Mul(left, right):
+            match simplify(left), simplify(right):
+                case Num(a), Num(b):
+                    return Num(a * b)
+                case (Num(0), _) | (_, Num(0)):
+                    return Num(0)
+                case (Num(1), x) | (x, Num(1)):
+                    return x
+                case x, y:
+                    return Mul(x, y)
+    raise TypeError(f"not an expression: {expr!r}")
+
+
+def evaluate(expr, env):
+    match expr:
+        case Num(value):
+            return value
+        case Var(name):
+            return env[name]
+        case Add(left, right):
+            return evaluate(left, env) + evaluate(right, env)
+        case Mul(left, right):
+            return evaluate(left, env) * evaluate(right, env)
+    raise TypeError(f"not an expression: {expr!r}")
+@@@ tests
+import pytest
+from solution import Num, Var, Add, Mul, simplify, evaluate
+
+x, y = Var("x"), Var("y")
+
+
+def test_constant_folding():
+    assert simplify(Add(Num(2), Mul(Num(3), Num(4)))) == Num(14)
+
+
+def test_identities():
+    assert simplify(Add(x, Num(0))) == x and simplify(Add(Num(0), x)) == x
+    assert simplify(Mul(Num(1), y)) == y and simplify(Mul(y, Num(1))) == y
+    assert simplify(Mul(x, Num(0))) == Num(0)
+    assert simplify(Mul(Num(0), Add(x, y))) == Num(0)
+
+
+def test_bottom_up():
+    assert simplify(Add(Mul(x, Add(Num(1), Num(0))), Mul(Num(0), y))) == x
+    assert simplify(Mul(Add(x, Num(0)), Add(Num(2), Num(-1)))) == x
+
+
+def test_doubling_and_rebuild():
+    assert simplify(Add(Add(x, Num(0)), x)) == Mul(Num(2), x)
+    assert simplify(Add(x, y)) == Add(x, y)
+    e = Add(x, Mul(y, Num(2)))
+    assert simplify(e) == e
+    assert simplify(Num(5)) == Num(5) and simplify(x) == x
+
+
+def test_evaluate():
+    env = {"x": 3, "y": 4}
+    assert evaluate(Add(Mul(x, x), Mul(Num(2), y)), env) == 17
+    assert evaluate(simplify(Add(x, x)), env) == 6
+    with pytest.raises(KeyError):
+        evaluate(Var("z"), env)
+
+
+@pytest.mark.parametrize("bad", [("add", 1, 2), 5, None, Add(x, "1")])
+def test_bad_input(bad):
+    with pytest.raises(TypeError):
+        simplify(bad)
+    with pytest.raises(TypeError):
+        evaluate(bad, {"x": 1})
+
+
+def test_dataclass_shape():
+    assert Add.__match_args__ == ("left", "right") and Num.__match_args__ == ("value",)
+    with pytest.raises(Exception):
+        x.name = "q"
+    assert hash(Add(x, y)) == hash(Add(Var("x"), Var("y")))
+@@@ task permission_enums leaf=19 diff=2 entry=Perm,Level,Status,parse_mode,format_mode
+@@@ prompt
+Use the `enum` module. Define `Perm(enum.Flag)` with members `X = 1`, `W = 2`, `R = 4` and the combined alias `RWX = 7`. `parse_mode(text)` turns a Unix-style triple such as `"r-x"` into a `Perm` (position 0 is `r` or `-`, position 1 `w` or `-`, position 2 `x` or `-`; anything else, including wrong length or uppercase, raises `ValueError`); `"---"` gives `Perm(0)`. `format_mode(perm)` is the inverse. Define `Level(enum.IntEnum)` with `LOW = 10`, `MEDIUM = 20`, `HIGH = 30` and a classmethod `Level.parse(text)` that accepts a member name in any case (`"high"`) or a decimal string of a member value (`"20"`), raising `ValueError` otherwise. Define `Status(enum.Enum)` (a plain Enum, not a str mix-in) with values `ACTIVE = "active"`, `SUSPENDED = "suspended"`, `CLOSED = "closed"`, and implement the `_missing_` hook so that `Status("Active")` and `Status("CLOSED")` look values up case-insensitively; unknown values still raise `ValueError`.
+@@@ reference
+import enum
+
+_BITS = (("r", 4), ("w", 2), ("x", 1))
+
+
+class Perm(enum.Flag):
+    X = 1
+    W = 2
+    R = 4
+    RWX = 7
+
+
+def parse_mode(text):
+    if not isinstance(text, str) or len(text) != 3:
+        raise ValueError(f"bad mode {text!r}")
+    perm = Perm(0)
+    for ch, (letter, bit) in zip(text, _BITS):
+        if ch == letter:
+            perm |= Perm(bit)
+        elif ch != "-":
+            raise ValueError(f"bad mode {text!r}")
+    return perm
+
+
+def format_mode(perm):
+    return "".join(letter if Perm(bit) in perm else "-" for letter, bit in _BITS)
+
+
+class Level(enum.IntEnum):
+    LOW = 10
+    MEDIUM = 20
+    HIGH = 30
+
+    @classmethod
+    def parse(cls, text):
+        if text.isdigit():
+            return cls(int(text))
+        try:
+            return cls[text.upper()]
+        except KeyError:
+            raise ValueError(f"unknown level {text!r}") from None
+
+
+class Status(enum.Enum):
+    ACTIVE = "active"
+    SUSPENDED = "suspended"
+    CLOSED = "closed"
+
+    @classmethod
+    def _missing_(cls, value):
+        if isinstance(value, str):
+            for member in cls:
+                if member.value == value.lower():
+                    return member
+        return None
+@@@ tests
+import pytest
+from solution import Perm, Level, Status, parse_mode, format_mode
+
+
+def test_flags_combine():
+    p = parse_mode("r-x")
+    assert p == Perm.R | Perm.X and p.value == 5
+    assert Perm.R in p and Perm.W not in p
+    assert parse_mode("rwx") is Perm.RWX and parse_mode("---") == Perm(0)
+
+
+def test_format_round_trip():
+    for v in range(8):
+        assert parse_mode(format_mode(Perm(v))) == Perm(v)
+    assert format_mode(Perm(6)) == "rw-" and format_mode(Perm.RWX) == "rwx" and format_mode(Perm(0)) == "---"
+
+
+@pytest.mark.parametrize("bad", ["rw", "rwxx", "xwr", "r_x", "RWX", ""])
+def test_parse_mode_invalid(bad):
+    with pytest.raises(ValueError):
+        parse_mode(bad)
+
+
+def test_level_is_int():
+    assert Level.HIGH > Level.LOW and Level.MEDIUM == 20 and isinstance(Level.LOW, int)
+    assert Level(30) is Level.HIGH
+    assert sorted([Level.HIGH, 15, Level.LOW]) == [Level.LOW, 15, Level.HIGH]
+
+
+def test_level_parse():
+    assert Level.parse("high") is Level.HIGH and Level.parse("Medium") is Level.MEDIUM
+    assert Level.parse("10") is Level.LOW
+    for bad in ["15", "urgent", ""]:
+        with pytest.raises(ValueError):
+            Level.parse(bad)
+
+
+def test_status_missing_hook():
+    assert Status("Active") is Status.ACTIVE and Status("CLOSED") is Status.CLOSED
+    assert Status("suspended") is Status.SUSPENDED
+    with pytest.raises(ValueError):
+        Status("deleted")
+    assert Status.ACTIVE != "active" and [s.name for s in Status] == ["ACTIVE", "SUSPENDED", "CLOSED"]
+@@@ task money_operators leaf=20 diff=3 entry=Money
+@@@ prompt
+Write an immutable `Money(amount, currency="EUR")` type with operator overloading. `amount` may be an `int`, a `str` or a `decimal.Decimal`; floats (and bools) raise `TypeError`. Store the amount as a `Decimal` rounded to cents with `ROUND_HALF_UP`, exposed with the currency through read-only `amount` and `currency` attributes (assigning any attribute raises `AttributeError`). Support `+` and `-` between Money of the same currency (different currencies raise `ValueError`; non-Money operands give `TypeError` by returning `NotImplemented`); `0 + money` must return the money so that `sum()` of a list of Money works; `*` by an `int` or `Decimal` on either side (Money * Money is a `TypeError`); unary `-` and `abs()`; `bool()` is False for zero. `==` compares amount and currency (different currencies are simply unequal) and `hash` is consistent with it; `<`, `<=`, `>`, `>=` work within a currency and raise `ValueError` across currencies. `str()` is `"12.50 EUR"` and `repr()` is `Money('12.50', 'EUR')`.
+@@@ reference
+import functools
+from decimal import Decimal, ROUND_HALF_UP
+
+_CENT = Decimal("0.01")
+
+
+@functools.total_ordering
+class Money:
+    __slots__ = ("_amount", "_currency")
+
+    def __init__(self, amount, currency="EUR"):
+        if isinstance(amount, bool) or not isinstance(amount, (int, str, Decimal)):
+            raise TypeError("amount must be int, str or Decimal")
+        object.__setattr__(self, "_amount", Decimal(amount).quantize(_CENT, ROUND_HALF_UP))
+        object.__setattr__(self, "_currency", currency)
+
+    def __setattr__(self, name, value):
+        raise AttributeError("Money is immutable")
+
+    @property
+    def amount(self):
+        return self._amount
+
+    @property
+    def currency(self):
+        return self._currency
+
+    def _same(self, other):
+        if other._currency != self._currency:
+            raise ValueError(f"currency mismatch: {self._currency} vs {other._currency}")
+
+    def __add__(self, other):
+        if not isinstance(other, Money):
+            return NotImplemented
+        self._same(other)
+        return Money(self._amount + other._amount, self._currency)
+
+    def __radd__(self, other):
+        if isinstance(other, int) and not isinstance(other, bool) and other == 0:
+            return self
+        return NotImplemented
+
+    def __sub__(self, other):
+        if not isinstance(other, Money):
+            return NotImplemented
+        self._same(other)
+        return Money(self._amount - other._amount, self._currency)
+
+    def __mul__(self, factor):
+        if isinstance(factor, bool) or not isinstance(factor, (int, Decimal)):
+            return NotImplemented
+        return Money(self._amount * factor, self._currency)
+
+    __rmul__ = __mul__
+
+    def __neg__(self):
+        return Money(-self._amount, self._currency)
+
+    def __abs__(self):
+        return Money(abs(self._amount), self._currency)
+
+    def __bool__(self):
+        return bool(self._amount)
+
+    def __eq__(self, other):
+        if not isinstance(other, Money):
+            return NotImplemented
+        return (self._amount, self._currency) == (other._amount, other._currency)
+
+    def __hash__(self):
+        return hash((self._amount, self._currency))
+
+    def __lt__(self, other):
+        if not isinstance(other, Money):
+            return NotImplemented
+        self._same(other)
+        return self._amount < other._amount
+
+    def __str__(self):
+        return f"{self._amount} {self._currency}"
+
+    def __repr__(self):
+        return f"Money('{self._amount}', '{self._currency}')"
+@@@ tests
+from decimal import Decimal
+import pytest
+from solution import Money
+
+
+def test_construction_and_rounding():
+    assert Money(3).amount == Decimal("3.00") and str(Money(3)) == "3.00 EUR"
+    assert Money("0.005").amount == Decimal("0.01") and Money("2.675", "USD").amount == Decimal("2.68")
+    assert repr(Money("12.5")) == "Money('12.50', 'EUR')"
+    for bad in [1.5, True, None]:
+        with pytest.raises(TypeError):
+            Money(bad)
+
+
+def test_immutable():
+    m = Money(1)
+    with pytest.raises(AttributeError):
+        m.amount = Decimal(5)
+    with pytest.raises(AttributeError):
+        m.extra = 1
+
+
+def test_add_sub_sum():
+    assert Money("1.10") + Money("2.25") == Money("3.35")
+    assert Money(5) - Money("0.01") == Money("4.99")
+    assert sum([Money(1), Money("2.5"), Money("0.25")]) == Money("3.75")
+    with pytest.raises(ValueError):
+        Money(1, "EUR") + Money(1, "USD")
+    with pytest.raises(TypeError):
+        Money(1) + 5
+    with pytest.raises(TypeError):
+        1 + Money(1)
+
+
+def test_multiply():
+    assert 3 * Money("1.10") == Money("3.30") and Money("1.10") * 3 == Money("3.30")
+    assert Money("10") * Decimal("0.333") == Money("3.33")
+    with pytest.raises(TypeError):
+        Money(1) * Money(2)
+    with pytest.raises(TypeError):
+        Money(1) * 1.5
+
+
+def test_unary_and_bool():
+    assert -Money("2.5") == Money("-2.50") and abs(Money("-3")) == Money(3)
+    assert not Money(0) and Money("0.01")
+
+
+def test_equality_hash_ordering():
+    assert Money(1) == Money("1.00") and len({Money(1), Money("1.00"), Money(1, "USD")}) == 2
+    assert (Money(1, "EUR") == Money(1, "USD")) is False
+    assert Money(1) < Money(2) and Money(2) >= Money(2)
+    assert sorted([Money(3), Money(1), Money(2)]) == [Money(1), Money(2), Money(3)]
+    with pytest.raises(ValueError):
+        Money(1, "EUR") < Money(2, "USD")
+@@@ task slots_storage leaf=21 diff=3 entry=Vec3,Tagged,Node,slot_names
+@@@ prompt
+Explore `__slots__`. `Vec3(x=0.0, y=0.0, z=0.0)` declares `__slots__ = ("x", "y", "z")`, so instances have no `__dict__` and assigning any other attribute raises `AttributeError`; give it `__repr__` (`Vec3(1, 2, 3)` style, using `repr` of each value) and `__eq__`. `Tagged(x, y, z, tag)` subclasses `Vec3` and declares only the new slot (`__slots__ = ("tag",)`), so it still has no `__dict__`. `Node(value)` declares `__slots__ = ("value", "next", "__weakref__")` so that it supports weak references; its constructor sets only `value`, leaving `next` unset (reading it raises `AttributeError` until assigned). Instances of all three must survive `pickle` and `copy.copy`. Finally write `slot_names(cls)` returning every slot name declared by `cls` and its base classes, base classes first and in declaration order, without duplicates, excluding `"__dict__"` and `"__weakref__"`; a `__slots__` given as a single string counts as one name.
+@@@ reference
+class Vec3:
+    __slots__ = ("x", "y", "z")
+
+    def __init__(self, x=0.0, y=0.0, z=0.0):
+        self.x, self.y, self.z = x, y, z
+
+    def __repr__(self):
+        return f"{type(self).__name__}({self.x!r}, {self.y!r}, {self.z!r})"
+
+    def __eq__(self, other):
+        if not isinstance(other, Vec3):
+            return NotImplemented
+        return (self.x, self.y, self.z) == (other.x, other.y, other.z)
+
+    __hash__ = None
+
+
+class Tagged(Vec3):
+    __slots__ = ("tag",)
+
+    def __init__(self, x, y, z, tag):
+        super().__init__(x, y, z)
+        self.tag = tag
+
+
+class Node:
+    __slots__ = ("value", "next", "__weakref__")
+
+    def __init__(self, value):
+        self.value = value
+
+
+def slot_names(cls):
+    names = []
+    for klass in reversed(cls.__mro__):
+        slots = klass.__dict__.get("__slots__", ())
+        if isinstance(slots, str):
+            slots = (slots,)
+        for s in slots:
+            if s not in ("__dict__", "__weakref__") and s not in names:
+                names.append(s)
+    return names
+@@@ tests
+import copy
+import pickle
+import types
+import weakref
+import pytest
+from solution import Vec3, Tagged, Node, slot_names
+
+
+def test_no_instance_dict():
+    v = Vec3(1, 2, 3)
+    assert not hasattr(v, "__dict__") and repr(v) == "Vec3(1, 2, 3)"
+    with pytest.raises(AttributeError):
+        v.w = 4
+    assert isinstance(Vec3.__dict__["x"], types.MemberDescriptorType)
+
+
+def test_subclass_keeps_slots():
+    t = Tagged(1, 2, 3, "a")
+    assert not hasattr(t, "__dict__") and t.tag == "a" and t == Vec3(1, 2, 3)
+    assert Tagged.__slots__ == ("tag",)
+    with pytest.raises(AttributeError):
+        t.colour = "red"
+
+
+def test_weakref_slot():
+    n = Node(1)
+    r = weakref.ref(n)
+    assert r() is n
+    with pytest.raises(TypeError):
+        weakref.ref(Vec3())
+
+
+def test_unset_slot():
+    n = Node(5)
+    with pytest.raises(AttributeError):
+        n.next
+    n.next = Node(6)
+    assert n.next.value == 6
+
+
+def test_pickle_and_copy():
+    t = Tagged(1.5, 2, 3, ["x"])
+    t2 = pickle.loads(pickle.dumps(t))
+    assert type(t2) is Tagged and t2 == t and t2.tag == ["x"]
+    c = copy.copy(t)
+    assert c == t and c.tag is t.tag
+    n = pickle.loads(pickle.dumps(Node("v")))
+    assert n.value == "v"
+
+
+def test_slot_names():
+    assert slot_names(Tagged) == ["x", "y", "z", "tag"]
+    assert slot_names(Node) == ["value", "next"]
+
+    class A:
+        __slots__ = "a"
+
+    class B(A):
+        __slots__ = ("b", "__dict__")
+
+    class C(B):
+        pass
+    assert slot_names(C) == ["a", "b"] and slot_names(object) == []
+@@@ task mutable_defaults leaf=22 diff=2 entry=add_tag,Basket,Team,get_setting
+@@@ prompt
+Write four small pieces of code that avoid the mutable-default-argument trap and its relatives. `add_tag(tag, tags=None) -> list` returns a new list with `tag` appended to `tags` (or `[tag]` when `tags` is omitted) and never mutates the list passed in; no default value of the function may be a list, dict or set. `Basket(items=None)` keeps its own list in `self.items` (a copy of the iterable passed in, so the caller's list is never aliased) and has `add(item)`. `Team(name)` has a `members` list that belongs to each instance (not a class attribute shared between teams) and `join(person)`. `get_setting(settings, key, default=<sentinel>)` returns `settings[key]` if present; otherwise returns `default` if one was passed, even when that default is `None`; otherwise raises `KeyError(key)`. Use a private sentinel object to tell "not passed" apart from `None`.
+@@@ reference
+_MISSING = object()
+
+
+def add_tag(tag, tags=None):
+    return [*(tags or ()), tag]
+
+
+class Basket:
+    def __init__(self, items=None):
+        self.items = list(items) if items is not None else []
+
+    def add(self, item):
+        self.items.append(item)
+
+
+class Team:
+    def __init__(self, name):
+        self.name = name
+        self.members = []
+
+    def join(self, person):
+        self.members.append(person)
+
+
+def get_setting(settings, key, default=_MISSING):
+    if key in settings:
+        return settings[key]
+    if default is _MISSING:
+        raise KeyError(key)
+    return default
+@@@ tests
+import pytest
+from solution import add_tag, Basket, Team, get_setting
+
+
+def test_add_tag_calls_independent():
+    assert add_tag("a") == ["a"]
+    assert add_tag("b") == ["b"]
+    assert all(not isinstance(d, (list, dict, set)) for d in (add_tag.__defaults__ or ()))
+
+
+def test_add_tag_does_not_mutate():
+    src = ["x"]
+    out = add_tag("y", src)
+    assert out == ["x", "y"] and src == ["x"] and out is not src
+
+
+def test_basket_copies_and_isolates():
+    a, b = Basket(), Basket()
+    a.add(1)
+    assert b.items == [] and a.items == [1]
+    src = ["apple"]
+    c = Basket(src)
+    c.add("pear")
+    assert src == ["apple"] and c.items == ["apple", "pear"]
+    d = Basket(x for x in "ab")
+    assert d.items == ["a", "b"]
+
+
+def test_basket_defaults_not_mutable():
+    assert all(not isinstance(v, (list, dict, set)) for v in (Basket.__init__.__defaults__ or ()))
+
+
+def test_team_members_per_instance():
+    red, blue = Team("red"), Team("blue")
+    red.join("ann")
+    assert blue.members == [] and red.members == ["ann"]
+    assert not isinstance(Team.__dict__.get("members"), list)
+
+
+def test_get_setting_sentinel():
+    s = {"a": 1, "n": None}
+    assert get_setting(s, "a") == 1
+    assert get_setting(s, "n", 5) is None
+    assert get_setting(s, "zz", None) is None and get_setting(s, "zz", 0) == 0
+    with pytest.raises(KeyError):
+        get_setting(s, "zz")
+@@@ task scoping_rules leaf=23 diff=2 entry=TOTAL,REGISTRY,register,reset_registry,make_tally,make_multipliers
+@@@ prompt
+Demonstrate Python's scoping rules. At module level define `TOTAL = 0` and `REGISTRY = {}`. `register(name) -> int` increments the module-level `TOTAL` (rebinding it with the `global` statement), records `REGISTRY[name] = TOTAL` and returns the new total; registering a name that is already present raises `ValueError` and changes nothing. `reset_registry()` sets `TOTAL` back to 0 and empties `REGISTRY` in place (the same dict object must stay bound to `REGISTRY`). `make_tally(start=0)` returns a pair `(tally, reset)` of closures sharing one private running total: `tally(n=1)` adds `n` and returns the new total, `reset()` restores it to `start`; separate calls to `make_tally` are independent. `make_multipliers(n)` returns a list of `n` functions where the i-th returns `x * i`; avoid the late-binding closure pitfall so each function keeps its own `i`.
+@@@ reference
+TOTAL = 0
+REGISTRY = {}
+
+
+def register(name):
+    global TOTAL
+    if name in REGISTRY:
+        raise ValueError(f"{name!r} already registered")
+    TOTAL += 1
+    REGISTRY[name] = TOTAL
+    return TOTAL
+
+
+def reset_registry():
+    global TOTAL
+    TOTAL = 0
+    REGISTRY.clear()
+
+
+def make_tally(start=0):
+    total = start
+
+    def tally(n=1):
+        nonlocal total
+        total += n
+        return total
+
+    def reset():
+        nonlocal total
+        total = start
+
+    return tally, reset
+
+
+def make_multipliers(n):
+    return [lambda x, i=i: x * i for i in range(n)]
+@@@ tests
+import pytest
+import solution
+from solution import register, reset_registry, make_tally, make_multipliers
+
+
+def test_register_rebinds_global():
+    reset_registry()
+    assert register("a") == 1 and register("b") == 2
+    assert solution.TOTAL == 2 and solution.REGISTRY == {"a": 1, "b": 2}
+
+
+def test_duplicate_changes_nothing():
+    reset_registry()
+    register("a")
+    with pytest.raises(ValueError):
+        register("a")
+    assert solution.TOTAL == 1 and solution.REGISTRY == {"a": 1}
+
+
+def test_reset_keeps_dict_identity():
+    reset_registry()
+    before = solution.REGISTRY
+    register("x")
+    reset_registry()
+    assert solution.TOTAL == 0 and solution.REGISTRY is before and before == {}
+    assert register("y") == 1
+
+
+def test_tally_nonlocal():
+    tally, reset = make_tally()
+    assert tally() == 1 and tally(5) == 6
+    reset()
+    assert tally(2) == 2
+    t2, _ = make_tally(100)
+    assert t2() == 101 and tally() == 3
+
+
+def test_tally_state_is_private():
+    tally, reset = make_tally(10)
+    assert tally.__closure__ and reset.__closure__
+    assert not hasattr(solution, "total")
+
+
+def test_multipliers_bind_early():
+    fs = make_multipliers(4)
+    assert [f(10) for f in fs] == [0, 10, 20, 30]
+    assert make_multipliers(0) == []
+@@@ task higher_order_functions leaf=24 diff=2 entry=compose,flip,rounder,apply_n
+@@@ prompt
+Write higher-order helpers that treat functions as values. `compose(*fns)` returns a function applying the functions right to left: `compose(f, g, h)(*args, **kwargs) == f(g(h(*args, **kwargs)))`, so only the rightmost receives the original arguments; `compose()` returns the identity function of one argument. `flip(fn)` returns a function that calls `fn` with its first two positional arguments swapped (further positional and keyword arguments pass through unchanged) and copies `fn`'s metadata with `functools.wraps`. `rounder(ndigits)` returns a `functools.partial` of the built-in `round` with `ndigits` bound as a keyword argument. `apply_n(fn, n)` returns a function that applies `fn` to its argument `n` times (`n == 0` gives the identity); a negative `n` raises `ValueError` immediately when `apply_n` is called.
+@@@ reference
+import functools
+
+
+def compose(*fns):
+    if not fns:
+        return lambda x: x
+    *outer, inner = fns
+
+    def composed(*args, **kwargs):
+        value = inner(*args, **kwargs)
+        for f in reversed(outer):
+            value = f(value)
+        return value
+    return composed
+
+
+def flip(fn):
+    @functools.wraps(fn)
+    def flipped(a, b, *args, **kwargs):
+        return fn(b, a, *args, **kwargs)
+    return flipped
+
+
+def rounder(ndigits):
+    return functools.partial(round, ndigits=ndigits)
+
+
+def apply_n(fn, n):
+    if n < 0:
+        raise ValueError("n must be non-negative")
+
+    def repeated(x):
+        for _ in range(n):
+            x = fn(x)
+        return x
+    return repeated
+@@@ tests
+import functools
+import pytest
+from solution import compose, flip, rounder, apply_n
+
+
+def test_compose_order():
+    assert compose(str, abs, int)("-5") == "5"
+    assert compose(lambda s: s + "!", str.upper)("hi") == "HI!"
+    assert [compose(len, str)(n) for n in (5, 50, 500)] == [1, 2, 3]
+
+
+def test_compose_rightmost_gets_all_args():
+    assert compose(str, pow)(2, 10) == "1024"
+    assert compose(sorted, dict.fromkeys)("bca", 0) == ["a", "b", "c"]
+    assert compose()(42) == 42
+
+
+def test_flip():
+    assert flip(pow)(2, 3) == 9
+    assert flip(lambda a, b, c, d=0: (a, b, c, d))(1, 2, 3, d=4) == (2, 1, 3, 4)
+
+    def sub(a, b):
+        "subtract"
+        return a - b
+    f = flip(sub)
+    assert f(1, 10) == 9 and f.__name__ == "sub" and f.__doc__ == "subtract" and f.__wrapped__ is sub
+
+
+def test_rounder_is_partial():
+    r = rounder(2)
+    assert r(3.14159) == 3.14 and rounder(0)(2.6) == 3.0
+    assert isinstance(r, functools.partial) and r.func is round and r.keywords == {"ndigits": 2}
+    assert list(map(rounder(1), [1.26, 2.04])) == [1.3, 2.0]
+
+
+def test_apply_n():
+    assert apply_n(lambda x: x * 2, 5)(1) == 32
+    assert apply_n(lambda x: x + "a", 0)("z") == "z"
+    with pytest.raises(ValueError):
+        apply_n(abs, -1)
+@@@ task folding_accumulate leaf=25 diff=3 entry=running_balance,max_drawdown,deep_merge_all
+@@@ prompt
+Write three folds. `running_balance(start, deltas) -> list` returns the balance after each step including the starting balance first (so its length is `len(deltas) + 1`), e.g. `running_balance(100, [-20, 50])` is `[100, 80, 130]`; use `itertools.accumulate`. `max_drawdown(prices) -> number` returns the largest drop from a running peak to a later price (0 for an empty or never-falling series); compute the running peak with `itertools.accumulate(prices, max)`. `deep_merge_all(dicts) -> dict` folds an iterable of dicts with `functools.reduce`: later dicts win, but when both sides have a dict for the same key those are merged recursively; a non-dict value replaces a dict and vice versa. It never mutates its inputs and returns `{}` for no input. All three accept any iterable, including generators.
+@@@ reference
+import functools
+import itertools
+import operator
+
+
+def running_balance(start, deltas):
+    return list(itertools.accumulate(deltas, operator.add, initial=start))
+
+
+def max_drawdown(prices):
+    prices = list(prices)
+    peaks = itertools.accumulate(prices, max)
+    return max((peak - p for peak, p in zip(peaks, prices)), default=0)
+
+
+def _merge(a, b):
+    out = dict(a)
+    for k, v in b.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def deep_merge_all(dicts):
+    return functools.reduce(_merge, dicts, {})
+@@@ tests
+import copy
+from solution import running_balance, max_drawdown, deep_merge_all
+
+
+def test_running_balance():
+    assert running_balance(100, [-20, 50, -200]) == [100, 80, 130, -70]
+    assert running_balance(5, []) == [5]
+    assert running_balance(0, (d for d in [1, 2, 3])) == [0, 1, 3, 6]
+
+
+def test_max_drawdown():
+    assert max_drawdown([5, 7, 3, 8, 2, 6]) == 6
+    assert max_drawdown([1, 2, 3]) == 0 and max_drawdown([]) == 0
+    assert max_drawdown(p for p in [10, 4, 9, 1]) == 9
+
+
+def test_drawdown_matches_brute_force():
+    import random
+    rng = random.Random(7)
+    for _ in range(50):
+        xs = [rng.randint(0, 50) for _ in range(rng.randint(0, 12))]
+        brute = max((xs[i] - xs[j] for i in range(len(xs)) for j in range(i, len(xs))), default=0)
+        assert max_drawdown(xs) == brute
+
+
+def test_deep_merge():
+    layers = [{"db": {"host": "a", "port": 1}, "debug": False},
+              {"db": {"port": 2}},
+              {"debug": True, "db": {"opts": {"x": 1}}}]
+    snapshot = copy.deepcopy(layers)
+    assert deep_merge_all(layers) == {"db": {"host": "a", "port": 2, "opts": {"x": 1}}, "debug": True}
+    assert layers == snapshot
+
+
+def test_replace_types():
+    assert deep_merge_all([{"a": {"b": 1}}, {"a": 5}]) == {"a": 5}
+    assert deep_merge_all([{"a": 5}, {"a": {"b": 1}}]) == {"a": {"b": 1}}
+    assert deep_merge_all([]) == {} and deep_merge_all(iter([{"k": 1}])) == {"k": 1}
+
+
+def test_merge_does_not_mutate_nested():
+    a = {"x": {"y": 1}}
+    b = {"x": {"z": 2}}
+    out = deep_merge_all([a, b])
+    assert out == {"x": {"y": 1, "z": 2}} and a == {"x": {"y": 1}} and b == {"x": {"z": 2}}
+@@@ task itertools_toolkit leaf=26 diff=3 entry=rle,paginate,budget_combos,seat_labels
+@@@ prompt
+Write four helpers with `itertools`. `rle(text) -> list[tuple[str, int]]` run-length encodes a string with `groupby` (`"aaab"` gives `[("a", 3), ("b", 1)]`). `paginate(iterable, size)` returns an iterator of lists of up to `size` items built with `islice`; it must be lazy (works on infinite iterators and never pulls more items from the source than the pages handed out so far), and a `size` below 1 raises `ValueError` immediately when `paginate` is called, not when it is first iterated. `budget_combos(prices, k, budget) -> list[tuple[str, ...]]` takes a dict of item name to price and returns every combination of `k` distinct item names whose total price is at most `budget`, in the order `itertools.combinations` produces them over the dict's insertion order. `seat_labels(rows, count) -> list[str]` returns labels like `"A1"`, `"A2"`, ..., `"B1"` for every row letter in the string `rows` and seat numbers 1..count, using `itertools.product`.
+@@@ reference
+import itertools
+
+
+def rle(text):
+    return [(ch, sum(1 for _ in group)) for ch, group in itertools.groupby(text)]
+
+
+def paginate(iterable, size):
+    if size < 1:
+        raise ValueError("size must be at least 1")
+    return _pages(iter(iterable), size)
+
+
+def _pages(it, size):
+    while page := list(itertools.islice(it, size)):
+        yield page
+
+
+def budget_combos(prices, k, budget):
+    return [combo for combo in itertools.combinations(prices, k)
+            if sum(prices[name] for name in combo) <= budget]
+
+
+def seat_labels(rows, count):
+    return [f"{row}{n}" for row, n in itertools.product(rows, range(1, count + 1))]
+@@@ tests
+import itertools
+import pytest
+from solution import rle, paginate, budget_combos, seat_labels
+
+
+def test_rle():
+    assert rle("aaabccdddd") == [("a", 3), ("b", 1), ("c", 2), ("d", 4)]
+    assert rle("") == [] and rle("abab") == [("a", 1), ("b", 1), ("a", 1), ("b", 1)]
+
+
+def test_paginate_pages():
+    assert list(paginate(range(7), 3)) == [[0, 1, 2], [3, 4, 5], [6]]
+    assert list(paginate([], 2)) == [] and list(paginate("ab", 5)) == [["a", "b"]]
+
+
+def test_paginate_lazy():
+    pages = paginate(itertools.count(), 2)
+    assert next(pages) == [0, 1] and next(pages) == [2, 3]
+    src = iter(range(10))
+    p = paginate(src, 3)
+    next(p)
+    assert next(src) == 3
+
+
+def test_paginate_validates_eagerly():
+    with pytest.raises(ValueError):
+        paginate([1, 2], 0)
+
+
+def test_budget_combos():
+    prices = {"tea": 3, "cake": 5, "soup": 7, "bread": 2}
+    assert budget_combos(prices, 2, 8) == [("tea", "cake"), ("tea", "bread"), ("cake", "bread")]
+    assert budget_combos(prices, 5, 100) == [] and budget_combos(prices, 1, 2) == [("bread",)]
+    assert len(budget_combos(prices, 3, 100)) == 4
+
+
+def test_seat_labels():
+    assert seat_labels("AB", 3) == ["A1", "A2", "A3", "B1", "B2", "B3"]
+    assert seat_labels("", 3) == [] and seat_labels("C", 0) == []
+    assert seat_labels("XYZ", 12)[-1] == "Z12"
+@@@ task collections_toolkit leaf=27 diff=2 entry=Reading,top_words,by_sensor,moving_average,layered
+@@@ prompt
+Use the `collections` module for each of these. `Reading` is a `namedtuple` with fields `sensor`, `value`, `unit`, where `unit` defaults to `"C"`. `top_words(text, n)` lowercases the text, takes words as runs of letters and apostrophes (`[a-z']+`), and returns the `n` most common as `(word, count)` pairs using `Counter`; ties keep first-appearance order. `by_sensor(readings)` groups an iterable of `Reading` into a dict (a `defaultdict` is fine) mapping each sensor to the list of its values in input order. `moving_average(values, window) -> list[float]` returns, for each position, the mean of the last `window` values seen so far (fewer at the start), keeping the window in a `deque(maxlen=window)`; `window < 1` raises `ValueError`. `layered(*maps)` returns a `ChainMap` in which earlier maps take precedence; reads fall through the layers, while writes and deletes go to a fresh empty dict on top, so the input mappings are never modified.
+@@@ reference
+import re
+from collections import ChainMap, Counter, defaultdict, deque, namedtuple
+
+Reading = namedtuple("Reading", "sensor value unit", defaults=("C",))
+
+
+def top_words(text, n):
+    return Counter(re.findall(r"[a-z']+", text.lower())).most_common(n)
+
+
+def by_sensor(readings):
+    groups = defaultdict(list)
+    for r in readings:
+        groups[r.sensor].append(r.value)
+    return groups
+
+
+def moving_average(values, window):
+    if window < 1:
+        raise ValueError("window must be at least 1")
+    buf = deque(maxlen=window)
+    out = []
+    for v in values:
+        buf.append(v)
+        out.append(sum(buf) / len(buf))
+    return out
+
+
+def layered(*maps):
+    return ChainMap({}, *maps)
+@@@ tests
+from collections import ChainMap
+import pytest
+from solution import Reading, top_words, by_sensor, moving_average, layered
+
+
+def test_reading_namedtuple():
+    r = Reading("t1", 20.5)
+    assert r.unit == "C" and r == ("t1", 20.5, "C") and Reading._fields == ("sensor", "value", "unit")
+    assert r._replace(value=21)[1] == 21
+    sensor, value, unit = Reading("t2", 1, "F")
+    assert (sensor, unit) == ("t2", "F")
+
+
+def test_top_words():
+    text = "The cat and the hat. The CAT's hat! and a bat"
+    assert top_words(text, 3) == [("the", 3), ("and", 2), ("hat", 2)]
+    assert top_words("b a b a c", 2) == [("b", 2), ("a", 2)]
+    assert top_words("", 3) == [] and len(top_words("x y z", 10)) == 3
+
+
+def test_by_sensor():
+    rs = [Reading("a", 1), Reading("b", 2), Reading("a", 3)]
+    groups = by_sensor(iter(rs))
+    assert dict(groups) == {"a": [1, 3], "b": [2]} and isinstance(groups, dict)
+
+
+def test_moving_average():
+    assert moving_average([2, 4, 6, 8], 2) == pytest.approx([2, 3, 5, 7])
+    assert moving_average([1, 2, 3], 5) == pytest.approx([1, 1.5, 2])
+    assert moving_average([], 3) == []
+    with pytest.raises(ValueError):
+        moving_average([1], 0)
+
+
+def test_layered_precedence():
+    cli, env, defaults = {"port": 9000}, {"port": 8000, "host": "env"}, {"port": 80, "host": "x", "debug": False}
+    cfg = layered(cli, env, defaults)
+    assert isinstance(cfg, ChainMap)
+    assert (cfg["port"], cfg["host"], cfg["debug"]) == (9000, "env", False)
+
+
+def test_layered_writes_go_on_top():
+    a, b = {"x": 1}, {"y": 2}
+    cfg = layered(a, b)
+    cfg["x"] = 10
+    cfg["z"] = 3
+    assert cfg["x"] == 10 and a == {"x": 1} and b == {"y": 2}
+    del cfg["z"]
+    assert "z" not in cfg
+    with pytest.raises(KeyError):
+        del cfg["y"]
+@@@ task format_specs leaf=28 diff=3 entry=money,pct,table,Duration
+@@@ prompt
+Write formatting helpers with f-strings and format specs. `money(x)` formats an int, float or Decimal as dollars with thousands separators and exactly two decimals: `money(1234.5) == "$1,234.50"`, negatives as `"-$1,234.50"`; a negative amount that rounds to zero prints as `"$0.00"`. `pct(x, places=1)` formats a ratio as a percentage using the `%` presentation type with a nested precision (`pct(0.1234) == "12.3%"`, `pct(1, 0) == "100%"`). `table(headers, rows) -> str` renders a text table: each column is as wide as its longest header or cell; floats are shown with 2 decimals; int and float cells (but not bools) are right-aligned, every other cell and every header is left-aligned; cells are joined with `" | "`, and the second line is a separator of dashes per column joined with `"-+-"`; lines are joined with `"\n"`, have no trailing whitespace, and there is no trailing newline. `Duration(seconds)` (a non-negative int, else `ValueError`) implements `__format__`: spec `""` or `"hms"` gives `H:MM:SS` (hours unpadded and may exceed 24), `"s"` the total seconds, `"short"` the non-zero units only such as `"1h2m3s"`, `"1h"` or `"0s"`; any other spec raises `ValueError`. `str(Duration(...))` equals the `""` format, so `f"{d}"`, `f"{d:short}"` and `format(d, "s")` all work.
+@@@ reference
+def money(x):
+    digits = f"{abs(x):,.2f}"
+    sign = "-" if x < 0 and digits != "0.00" else ""
+    return f"{sign}${digits}"
+
+
+def pct(x, places=1):
+    return f"{x:.{places}%}"
+
+
+def _cell(v):
+    return f"{v:.2f}" if isinstance(v, float) else str(v)
+
+
+def _numeric(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def table(headers, rows):
+    cells = [[_cell(v) for v in row] for row in rows]
+    widths = [max([len(h)] + [len(r[i]) for r in cells]) for i, h in enumerate(headers)]
+    lines = [" | ".join(f"{h:<{w}}" for h, w in zip(headers, widths)),
+             "-+-".join("-" * w for w in widths)]
+    for raw, row in zip(rows, cells):
+        lines.append(" | ".join(f"{c:>{w}}" if _numeric(v) else f"{c:<{w}}"
+                                for v, c, w in zip(raw, row, widths)))
+    return "\n".join(line.rstrip() for line in lines)
+
+
+class Duration:
+    def __init__(self, seconds):
+        if seconds < 0:
+            raise ValueError("duration must be non-negative")
+        self.seconds = int(seconds)
+
+    def __format__(self, spec):
+        h, rem = divmod(self.seconds, 3600)
+        m, s = divmod(rem, 60)
+        if spec in ("", "hms"):
+            return f"{h}:{m:02d}:{s:02d}"
+        if spec == "s":
+            return str(self.seconds)
+        if spec == "short":
+            return "".join(f"{v}{u}" for v, u in ((h, "h"), (m, "m"), (s, "s")) if v) or "0s"
+        raise ValueError(f"unknown format spec {spec!r}")
+
+    def __str__(self):
+        return format(self, "")
+@@@ tests
+from decimal import Decimal
+import pytest
+from solution import money, pct, table, Duration
+
+
+def test_money():
+    assert money(1234.5) == "$1,234.50" and money(-1234.5) == "-$1,234.50"
+    assert money(0) == "$0.00" and money(1234567) == "$1,234,567.00"
+    assert money(Decimal("1000")) == "$1,000.00" and money(Decimal("-0.5")) == "-$0.50"
+    assert money(-0.004) == "$0.00" and money(-0.001) == "$0.00"
+
+
+def test_pct():
+    assert pct(0.1234) == "12.3%" and pct(1, 0) == "100%" and pct(0.5, 2) == "50.00%"
+
+
+def test_table_alignment():
+    out = table(["item", "qty", "price"], [["apple", 3, 1.5], ["kiwi", 12, 0.25]])
+    assert out == ("item  | qty | price\n"
+                   "------+-----+------\n"
+                   "apple |   3 |  1.50\n"
+                   "kiwi  |  12 |  0.25")
+
+
+def test_table_no_trailing_space_and_bools():
+    out = table(["name", "note"], [["a", "long note"], ["bb", True]])
+    lines = out.split("\n")
+    assert lines[3] == "bb   | True" and all(l == l.rstrip() for l in lines)
+    assert not out.endswith("\n") and table(["h"], []) == "h\n-"
+
+
+def test_duration_formats():
+    d = Duration(3723)
+    assert f"{d}" == "1:02:03" == str(d) and f"{d:hms}" == "1:02:03"
+    assert f"{d:s}" == "3723" and format(d, "short") == "1h2m3s"
+    assert f"{Duration(90000)}" == "25:00:00"
+    assert [format(Duration(s), "short") for s in (3600, 61, 0, 59)] == ["1h", "1m1s", "0s", "59s"]
+
+
+def test_duration_bad_spec():
+    with pytest.raises(ValueError):
+        f"{Duration(5):>10}"
+    with pytest.raises(ValueError):
+        Duration(-1)
+@@@ task length_prefixed_frames leaf=29 diff=3 entry=encode_frames,decode_frames,xor_inplace,sniff_decode
+@@@ prompt
+Work with `bytes`, `bytearray`, `memoryview` and text encodings. `encode_frames(messages) -> bytes` encodes each string as UTF-8 and prefixes it with its byte length (not its character length) as a 2-byte big-endian unsigned integer; a message longer than 65535 bytes raises `ValueError`. `decode_frames(data) -> list[str]` reverses it for any bytes-like input (`bytes`, `bytearray` or `memoryview`), slicing through a `memoryview` instead of copying the buffer for every frame; a truncated header or frame raises `ValueError`, as does invalid UTF-8. `xor_inplace(buf, key)` XORs a `bytearray` in place with a repeating non-empty `key` and returns `None`; a `buf` that is not a `bytearray` raises `TypeError` and an empty key `ValueError`. `sniff_decode(data) -> str` decodes bytes by looking at a byte-order mark: the UTF-8 BOM means UTF-8 (BOM removed), a UTF-16 LE or BE BOM means UTF-16 (BOM removed); with no BOM try UTF-8 and fall back to Latin-1. (UTF-32 is out of scope.)
+@@@ reference
+import codecs
+
+
+def encode_frames(messages):
+    out = bytearray()
+    for m in messages:
+        b = m.encode("utf-8")
+        if len(b) > 0xFFFF:
+            raise ValueError("message too long")
+        out += len(b).to_bytes(2, "big")
+        out += b
+    return bytes(out)
+
+
+def decode_frames(data):
+    view = memoryview(data).cast("B")
+    msgs, i = [], 0
+    while i < len(view):
+        if i + 2 > len(view):
+            raise ValueError("truncated header")
+        n = int.from_bytes(view[i:i + 2], "big")
+        if i + 2 + n > len(view):
+            raise ValueError("truncated frame")
+        msgs.append(str(view[i + 2:i + 2 + n], "utf-8"))
+        i += 2 + n
+    return msgs
+
+
+def xor_inplace(buf, key):
+    if not isinstance(buf, bytearray):
+        raise TypeError("buf must be a bytearray")
+    if not key:
+        raise ValueError("key must not be empty")
+    for i in range(len(buf)):
+        buf[i] ^= key[i % len(key)]
+
+
+def sniff_decode(data):
+    data = bytes(data)
+    if data.startswith(codecs.BOM_UTF8):
+        return data[len(codecs.BOM_UTF8):].decode("utf-8")
+    if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return data.decode("utf-16")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("latin-1")
+@@@ tests
+import codecs
+import pytest
+from solution import encode_frames, decode_frames, xor_inplace, sniff_decode
+
+
+def test_byte_length_prefix():
+    data = encode_frames(["héllo", ""])
+    assert data == b"\x00\x06h\xc3\xa9llo\x00\x00" and isinstance(data, bytes)
+    assert encode_frames([]) == b""
+
+
+def test_round_trip_bytes_like():
+    msgs = ["a", "€uro", "日本", "x" * 300]
+    data = encode_frames(msgs)
+    assert decode_frames(data) == msgs
+    assert decode_frames(bytearray(data)) == msgs
+    assert decode_frames(memoryview(b"junk" + data)[4:]) == msgs
+
+
+def test_limits_and_errors():
+    assert len(encode_frames(["é" * 32767])) == 2 + 65534
+    with pytest.raises(ValueError):
+        encode_frames(["é" * 32768])
+    for bad in [b"\x00", b"\x00\x05abc", b"\x00\x02\xff\xfe"]:
+        with pytest.raises(ValueError):
+            decode_frames(bad)
+
+
+def test_xor_inplace():
+    buf = bytearray(b"secret")
+    assert xor_inplace(buf, b"k1") is None and buf != bytearray(b"secret")
+    xor_inplace(buf, b"k1")
+    assert buf == bytearray(b"secret")
+    with pytest.raises(TypeError):
+        xor_inplace(b"immutable", b"k")
+    with pytest.raises(ValueError):
+        xor_inplace(bytearray(b"x"), b"")
+
+
+def test_xor_view_shares_memory():
+    buf = bytearray(b"\x00\x00\x00")
+    xor_inplace(buf, b"\x01\x02")
+    assert bytes(buf) == b"\x01\x02\x01"
+
+
+def test_sniff_decode():
+    assert sniff_decode("naïve".encode("utf-8-sig")) == "naïve"
+    assert sniff_decode("naïve".encode("utf-16")) == "naïve"
+    assert sniff_decode(codecs.BOM_UTF16_BE + "ok€".encode("utf-16-be")) == "ok€"
+    assert sniff_decode(codecs.BOM_UTF16_LE + "ok€".encode("utf-16-le")) == "ok€"
+    assert sniff_decode("café".encode("latin-1")) == "café" and sniff_decode("café".encode()) == "café"
+    assert sniff_decode(b"") == ""
+@@@ task decimal_rounding leaf=30 diff=3 entry=round_half_up,split_bill,ceil_div,almost_equal,float_total
+@@@ prompt
+Write numeric helpers that get rounding and precision right. `round_half_up(x, places=0) -> Decimal` rounds an int, str or Decimal half away from zero (unlike the built-in `round`, which rounds half to even): `round_half_up("2.5") == Decimal("3")`, `round_half_up("-1.005", 2) == Decimal("-1.01")`; floats raise `TypeError` because their binary value is not the decimal the caller typed. `split_bill(total, n) -> list[Decimal]` splits a non-negative amount (int, str or Decimal; floats raise `TypeError`, negatives or `n < 1` raise `ValueError`) into `n` shares of whole cents, each with exactly two decimal places, that add up exactly to the total rounded to cents; the leftover cents go one each to the first shares. `ceil_div(a, b)` is exact ceiling division of integers, correct for negative operands and for integers far beyond float precision (do not go through floats). `almost_equal(a, b)` compares floats with `math.isclose` using a relative tolerance of 1e-9 and an absolute tolerance of 1e-12. `float_total(values)` sums floats without accumulating rounding error (use `math.fsum`).
+@@@ reference
+import math
+from decimal import Decimal, ROUND_HALF_UP
+
+_CENT = Decimal("0.01")
+
+
+def _dec(x):
+    if isinstance(x, bool) or not isinstance(x, (int, str, Decimal)):
+        raise TypeError("use int, str or Decimal, not float")
+    return Decimal(x)
+
+
+def round_half_up(x, places=0):
+    return _dec(x).quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
+
+
+def split_bill(total, n):
+    amount = _dec(total)
+    if amount < 0 or n < 1:
+        raise ValueError("need a non-negative total and n >= 1")
+    cents = int(amount.quantize(_CENT, rounding=ROUND_HALF_UP).scaleb(2))
+    base, extra = divmod(cents, n)
+    return [Decimal(base + (1 if i < extra else 0)).scaleb(-2) for i in range(n)]
+
+
+def ceil_div(a, b):
+    return -(-a // b)
+
+
+def almost_equal(a, b):
+    return math.isclose(a, b, rel_tol=1e-9, abs_tol=1e-12)
+
+
+def float_total(values):
+    return math.fsum(values)
+@@@ tests
+from decimal import Decimal
+import pytest
+from solution import round_half_up, split_bill, ceil_div, almost_equal, float_total
+
+
+def test_round_half_up_vs_bankers():
+    assert round(2.5) == 2 and round_half_up("2.5") == Decimal("3")
+    assert round_half_up("3.5") == Decimal("4") and round_half_up(Decimal("-2.5")) == Decimal("-3")
+    assert round_half_up("-1.005", 2) == Decimal("-1.01") and round_half_up("1.004", 2) == Decimal("1.00")
+    assert str(round_half_up(7, 2)) == "7.00"
+    with pytest.raises(TypeError):
+        round_half_up(2.675, 2)
+
+
+def test_split_bill_exact():
+    shares = split_bill("100.00", 3)
+    assert shares == [Decimal("33.34"), Decimal("33.33"), Decimal("33.33")] and sum(shares) == Decimal("100.00")
+    assert [str(s) for s in split_bill(10, 4)] == ["2.50", "2.50", "2.50", "2.50"]
+    assert [str(s) for s in split_bill("0.05", 3)] == ["0.02", "0.02", "0.01"]
+    assert split_bill("0", 2) == [Decimal("0.00")] * 2
+
+
+def test_split_bill_sums_brute():
+    for cents in range(0, 400, 7):
+        for n in range(1, 9):
+            shares = split_bill(Decimal(cents).scaleb(-2), n)
+            assert sum(shares) == Decimal(cents).scaleb(-2) and max(shares) - min(shares) <= Decimal("0.01")
+
+
+def test_split_bill_errors():
+    with pytest.raises(TypeError):
+        split_bill(10.0, 2)
+    with pytest.raises(ValueError):
+        split_bill("-1", 2)
+    with pytest.raises(ValueError):
+        split_bill("1", 0)
+
+
+def test_ceil_div():
+    assert ceil_div(7, 2) == 4 and ceil_div(6, 2) == 3 and ceil_div(-7, 2) == -3 and ceil_div(7, -2) == -3
+    assert ceil_div(10 ** 30 + 1, 10 ** 15) == 10 ** 15 + 1
+    assert ceil_div(0, 5) == 0
+
+
+def test_float_comparisons():
+    assert 0.1 + 0.2 != 0.3 and almost_equal(0.1 + 0.2, 0.3)
+    assert almost_equal(1e-13, 0.0) and not almost_equal(1.0, 1.0001)
+    assert not almost_equal(float("nan"), float("nan"))
+    naive = 0.0
+    for v in [0.1] * 10:
+        naive += v
+    assert naive != 1.0 and float_total([0.1] * 10) == 1.0
+    assert float_total([1e100, 1.0, -1e100]) == 1.0
+    assert float_total([3.0, 0.001, 1e16, 3.0, -1e16, 1.0]) == 7.001  # beats even sum()'s compensation
+@@@ task recipe_fractions leaf=31 diff=3 entry=parse_quantity,format_quantity,scale_recipe,continued_fraction,from_continued_fraction
+@@@ prompt
+Use `fractions.Fraction` for exact arithmetic in a recipe scaler. `parse_quantity(text) -> Fraction` accepts a whole number (`"2"`), a decimal (`"1.25"`, parsed exactly), a fraction (`"3/4"`) or a mixed number (`"1 1/2"`, one space, the fractional part proper, i.e. numerator smaller than denominator); surrounding whitespace is ignored and anything else, including a zero denominator, raises `ValueError`. `format_quantity(q) -> str` renders a non-negative Fraction as `"2"`, `"3/4"` or `"1 1/2"` (negative raises `ValueError`). `scale_recipe(ingredients, factor) -> dict` takes a dict of ingredient to quantity string and a factor (a quantity string, int or Fraction) and returns a new dict with every quantity multiplied exactly and re-formatted. `continued_fraction(x) -> list[int]` returns the continued-fraction terms `[a0, a1, ...]` of a non-negative Fraction (e.g. 415/93 gives `[4, 2, 6, 7]`) and `from_continued_fraction(terms) -> Fraction` rebuilds the value.
+@@@ reference
+import re
+from fractions import Fraction
+
+_MIXED = re.compile(r"(\d+) (\d+)/(\d+)")
+_FRAC = re.compile(r"(\d+)/(\d+)")
+_NUM = re.compile(r"\d+(?:\.\d+)?")
+
+
+def parse_quantity(text):
+    text = text.strip()
+    if m := _MIXED.fullmatch(text):
+        whole, num, den = map(int, m.groups())
+        if den == 0 or num >= den:
+            raise ValueError(f"bad mixed number {text!r}")
+        return whole + Fraction(num, den)
+    if m := _FRAC.fullmatch(text):
+        num, den = map(int, m.groups())
+        if den == 0:
+            raise ValueError("zero denominator")
+        return Fraction(num, den)
+    if _NUM.fullmatch(text):
+        return Fraction(text)
+    raise ValueError(f"bad quantity {text!r}")
+
+
+def format_quantity(q):
+    q = Fraction(q)
+    if q < 0:
+        raise ValueError("negative quantity")
+    whole, rest = divmod(q, 1)
+    if rest == 0:
+        return str(whole)
+    frac = f"{rest.numerator}/{rest.denominator}"
+    return f"{whole} {frac}" if whole else frac
+
+
+def scale_recipe(ingredients, factor):
+    f = parse_quantity(factor) if isinstance(factor, str) else Fraction(factor)
+    return {name: format_quantity(parse_quantity(q) * f) for name, q in ingredients.items()}
+
+
+def continued_fraction(x):
+    x = Fraction(x)
+    if x < 0:
+        raise ValueError("negative value")
+    terms = []
+    num, den = x.numerator, x.denominator
+    while den:
+        a, r = divmod(num, den)
+        terms.append(a)
+        num, den = den, r
+    return terms
+
+
+def from_continued_fraction(terms):
+    value = Fraction(terms[-1])
+    for a in reversed(terms[:-1]):
+        value = a + 1 / value
+    return value
+@@@ tests
+from fractions import Fraction
+import pytest
+from solution import parse_quantity, format_quantity, scale_recipe, continued_fraction, from_continued_fraction
+
+
+def test_parse_quantity():
+    assert parse_quantity("2") == 2 and parse_quantity(" 3/4 ") == Fraction(3, 4)
+    assert parse_quantity("1 1/2") == Fraction(3, 2) and parse_quantity("1.25") == Fraction(5, 4)
+    assert parse_quantity("0.1") == Fraction(1, 10)
+    assert isinstance(parse_quantity("2"), Fraction)
+
+
+@pytest.mark.parametrize("bad", ["", "1/0", "1 3/2", "abc", "-1", "1  1/2", "1/2/3", "1 1/0"])
+def test_parse_invalid(bad):
+    with pytest.raises(ValueError):
+        parse_quantity(bad)
+
+
+def test_format_quantity():
+    assert [format_quantity(Fraction(n, d)) for n, d in [(2, 1), (3, 4), (3, 2), (0, 1), (14, 3)]] == \
+        ["2", "3/4", "1 1/2", "0", "4 2/3"]
+    with pytest.raises(ValueError):
+        format_quantity(Fraction(-1, 2))
+
+
+def test_scale_recipe_exact():
+    recipe = {"flour": "1 1/2", "sugar": "3/4", "eggs": "2"}
+    assert scale_recipe(recipe, "2/3") == {"flour": "1", "sugar": "1/2", "eggs": "1 1/3"}
+    assert scale_recipe({"salt": "1/10"}, 3) == {"salt": "3/10"}
+    assert scale_recipe({"milk": "1/3"}, Fraction(3)) == {"milk": "1"}
+    assert recipe["flour"] == "1 1/2"
+
+
+def test_continued_fraction():
+    assert continued_fraction(Fraction(415, 93)) == [4, 2, 6, 7]
+    assert continued_fraction(Fraction(5)) == [5] and continued_fraction(Fraction(1, 3)) == [0, 3]
+    assert from_continued_fraction([4, 2, 6, 7]) == Fraction(415, 93)
+
+
+def test_round_trip_and_exactness():
+    for n in range(0, 60):
+        for d in range(1, 25):
+            x = Fraction(n, d)
+            assert from_continued_fraction(continued_fraction(x)) == x
+            assert parse_quantity(format_quantity(x)) == x
+    assert sum(Fraction(1, k) for k in range(1, 11)) == Fraction(7381, 2520)
+@@@ task document_copy_semantics leaf=32 diff=4 entry=Document,make_grid
+@@@ prompt
+Control copying with `__copy__` and `__deepcopy__`. `Document(title, sections=None, owner=None)` stores `title`, `sections` (the list object passed in, or a new empty list), `owner` and a per-instance `cache` dict that starts empty. `copy.copy(doc)` must return a new instance of the same class sharing the same `sections` list and `owner`, with a fresh empty `cache`. `copy.deepcopy(doc)` must return a new instance of the same class whose `sections` (and everything else except `owner`) are deep-copied, whose `owner` is the very same object (owners are shared, never copied), and whose `cache` is a fresh empty dict. Your `__deepcopy__` must honour the `memo` dict so that shared references and cycles survive: a list holding the same document twice deep-copies to a list holding one copy twice, and a section that refers back to its document refers to the copy. Also write `make_grid(rows, cols, fill)` returning a list of `rows` independent row lists, where every cell is its own `copy.deepcopy(fill)` (so a mutable fill is never shared between cells).
+@@@ reference
+import copy
+
+
+class Document:
+    def __init__(self, title, sections=None, owner=None):
+        self.title = title
+        self.sections = sections if sections is not None else []
+        self.owner = owner
+        self.cache = {}
+
+    def __copy__(self):
+        new = type(self).__new__(type(self))
+        new.__dict__.update(self.__dict__)
+        new.cache = {}
+        return new
+
+    def __deepcopy__(self, memo):
+        new = type(self).__new__(type(self))
+        memo[id(self)] = new
+        for name, value in self.__dict__.items():
+            if name == "owner":
+                new.owner = value
+            elif name == "cache":
+                new.cache = {}
+            else:
+                setattr(new, name, copy.deepcopy(value, memo))
+        return new
+
+
+def make_grid(rows, cols, fill):
+    return [[copy.deepcopy(fill) for _ in range(cols)] for _ in range(rows)]
+@@@ tests
+import copy
+from solution import Document, make_grid
+
+
+class Owner:
+    pass
+
+
+def make_doc():
+    return Document("spec", [{"h": "intro", "tags": ["a"]}], Owner())
+
+
+def test_shallow_copy():
+    d = make_doc()
+    d.cache["k"] = 1
+    c = copy.copy(d)
+    assert c is not d and type(c) is Document and c.title == "spec"
+    assert c.sections is d.sections and c.owner is d.owner
+    assert c.cache == {} and d.cache == {"k": 1}
+
+
+def test_deep_copy():
+    d = make_doc()
+    d.cache["k"] = 1
+    c = copy.deepcopy(d)
+    assert c.sections == d.sections and c.sections is not d.sections
+    assert c.sections[0]["tags"] is not d.sections[0]["tags"]
+    assert c.owner is d.owner and c.cache == {} and d.cache == {"k": 1}
+    c.sections[0]["tags"].append("b")
+    assert d.sections[0]["tags"] == ["a"]
+
+
+def test_memo_shared_references():
+    d = make_doc()
+    pair = copy.deepcopy([d, d])
+    assert pair[0] is pair[1] and pair[0] is not d
+
+
+def test_cycles():
+    d = make_doc()
+    d.sections.append({"parent": d})
+    c = copy.deepcopy(d)
+    assert c.sections[-1]["parent"] is c
+
+
+def test_subclass_preserved():
+    class Report(Document):
+        pass
+    r = Report("r", owner=Owner())
+    r.extra = [1]
+    for c in (copy.copy(r), copy.deepcopy(r)):
+        assert type(c) is Report and c.owner is r.owner and c.cache == {}
+    assert copy.deepcopy(r).extra is not r.extra and copy.copy(r).extra is r.extra
+
+
+def test_default_sections_not_shared():
+    assert Document("a").sections is not Document("b").sections
+
+
+def test_make_grid_independent():
+    g = make_grid(2, 3, [])
+    g[0][0].append(1)
+    assert g[0][1] == [] and g[1][0] == [] and g[0] is not g[1]
+    g2 = make_grid(2, 2, 0)
+    g2[0][0] = 9
+    assert g2 == [[9, 0], [0, 0]] and make_grid(0, 3, 1) == []
+@@@ task import_machinery leaf=33 diff=4 entry=load_from_path,public_api,star_import,import_from_root
+@@@ prompt
+Work with the import system through `importlib`. `load_from_path(path, module_name)` imports the Python file at `path` (str or Path) as a module named `module_name` using `importlib.util.spec_from_file_location`, registers it in `sys.modules` before executing it, and returns it; if `module_name` is already in `sys.modules` it returns that module without executing anything; a missing file raises `FileNotFoundError`, and if executing the module raises, the exception propagates and no half-initialised module is left in `sys.modules`. `public_api(module) -> list[str]` returns `list(module.__all__)` when `__all__` is defined, otherwise the sorted names that do not start with an underscore, excluding values that are modules. `star_import(module) -> dict` returns exactly the name-to-value bindings `from module import *` would create: the names in `__all__` (raising `AttributeError` if one is missing), or without `__all__` every name not starting with an underscore (imported modules included, as Python does). `import_from_root(root, dotted)` imports a dotted module name (such as `"pkg.sub.mod"`) from the directory `root` by putting `root` at the front of `sys.path` for the duration of the import only; `root` must be removed from `sys.path` again even when the import fails.
+@@@ reference
+import importlib
+import importlib.util
+import os
+import sys
+import types
+
+
+def load_from_path(path, module_name):
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+    path = os.fspath(path)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(path)
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(module_name, None)
+        raise
+    return module
+
+
+def public_api(module):
+    if hasattr(module, "__all__"):
+        return list(module.__all__)
+    return sorted(n for n, v in vars(module).items()
+                  if not n.startswith("_") and not isinstance(v, types.ModuleType))
+
+
+def star_import(module):
+    if hasattr(module, "__all__"):
+        return {name: getattr(module, name) for name in module.__all__}
+    return {n: v for n, v in vars(module).items() if not n.startswith("_")}
+
+
+def import_from_root(root, dotted):
+    root = os.fspath(root)
+    sys.path.insert(0, root)
+    try:
+        importlib.invalidate_caches()
+        return importlib.import_module(dotted)
+    finally:
+        sys.path.remove(root)
+@@@ tests
+import sys
+import types
+import pytest
+from solution import load_from_path, public_api, star_import, import_from_root
+
+
+def test_load_from_path(tmp_path):
+    f = tmp_path / "plugin_alpha.py"
+    f.write_text("import sys\nVALUE = 42\nSEEN = 'plugin_alpha_mod' in sys.modules\n")
+    m = load_from_path(f, "plugin_alpha_mod")
+    assert m.VALUE == 42 and m.SEEN is True and sys.modules["plugin_alpha_mod"] is m
+    f.write_text("VALUE = 0\n")
+    assert load_from_path(str(f), "plugin_alpha_mod") is m and m.VALUE == 42
+
+
+def test_load_errors(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        load_from_path(tmp_path / "nope.py", "plugin_nope")
+    assert "plugin_nope" not in sys.modules
+    bad = tmp_path / "bad.py"
+    bad.write_text("X = 1\nraise RuntimeError('boom')\n")
+    with pytest.raises(RuntimeError):
+        load_from_path(bad, "plugin_bad")
+    assert "plugin_bad" not in sys.modules
+
+
+def make_module(name, source):
+    m = types.ModuleType(name)
+    exec(source, m.__dict__)
+    sys.modules[name] = m
+    return m
+
+
+def test_public_api():
+    m = make_module("api_one", "import os\n__all__ = ['b', 'a']\na = 1\nb = 2\nc = 3\n")
+    assert public_api(m) == ["b", "a"]
+    m2 = make_module("api_two", "import os\nzeta = 1\nalpha = 2\n_hidden = 3\ndef f(): pass\n")
+    assert public_api(m2) == ["alpha", "f", "zeta"]
+
+
+def test_star_import_matches_python():
+    for name, src in [("star_a", "import os\nx = 1\n_y = 2\n"), ("star_b", "__all__ = ['_y']\nx = 1\n_y = 2\n")]:
+        m = make_module(name, src)
+        ns = {}
+        exec(f"from {name} import *", ns)
+        ns.pop("__builtins__", None)
+        assert star_import(m) == ns
+
+
+def test_star_import_missing_name():
+    m = make_module("star_c", "__all__ = ['ghost']\n")
+    with pytest.raises(AttributeError):
+        star_import(m)
+
+
+def test_import_from_root(tmp_path):
+    pkg = tmp_path / "shopx_pkg"
+    (pkg / "sub").mkdir(parents=True)
+    (pkg / "__init__.py").write_text("from .pricing import total\n__all__ = ['total']\n")
+    (pkg / "pricing.py").write_text("TAX = 0.25\ndef total(x):\n    return x * (1 + TAX)\n")
+    (pkg / "sub" / "__init__.py").write_text("")
+    (pkg / "sub" / "util.py").write_text("from ..pricing import TAX\nRATE = TAX * 100\n")
+    mod = import_from_root(tmp_path, "shopx_pkg.sub.util")
+    assert mod.RATE == 25.0 and sys.modules["shopx_pkg"].total(4) == 5.0
+    assert public_api(sys.modules["shopx_pkg"]) == ["total"]
+    assert str(tmp_path) not in sys.path
+
+
+def test_import_from_root_cleans_up_on_error(tmp_path):
+    before = list(sys.path)
+    with pytest.raises(ModuleNotFoundError):
+        import_from_root(tmp_path, "does_not_exist_here")
+    assert sys.path == before
+@@@ task order_dataclasses leaf=34 diff=3 entry=LineItem,Order
+@@@ prompt
+Model an order with `dataclasses`. `LineItem(sku: str, qty: int, unit_cents: int)` is a frozen dataclass with `order=True` (so it sorts by sku, then qty, then unit_cents, and is hashable); its `__post_init__` raises `ValueError` when `qty <= 0` or `unit_cents < 0`, and a `total_cents` property returns `qty * unit_cents`. `Order` is a regular (mutable) dataclass with fields, in this order: `order_id: str`; `items: list` defaulting to a new empty list per instance (`field(default_factory=...)`); `tags: set` defaulting to a new empty set; `note: str = ""` excluded from equality comparisons (`field(compare=False)`); and an init-only `created_by: InitVar[str | None] = None` that is not stored as a field. `__post_init__` strips whitespace from `order_id` and raises `ValueError` if it is then empty, and when `created_by` is given adds the tag `"by:<created_by>"`. `Order.add(item)` appends a line item and `Order.total_cents()` sums the items.
+@@@ reference
+from dataclasses import InitVar, dataclass, field
+
+
+@dataclass(frozen=True, order=True)
+class LineItem:
+    sku: str
+    qty: int
+    unit_cents: int
+
+    def __post_init__(self):
+        if self.qty <= 0:
+            raise ValueError("qty must be positive")
+        if self.unit_cents < 0:
+            raise ValueError("unit_cents must be non-negative")
+
+    @property
+    def total_cents(self):
+        return self.qty * self.unit_cents
+
+
+@dataclass
+class Order:
+    order_id: str
+    items: list = field(default_factory=list)
+    tags: set = field(default_factory=set)
+    note: str = field(default="", compare=False)
+    created_by: InitVar[str | None] = None
+
+    def __post_init__(self, created_by):
+        self.order_id = self.order_id.strip()
+        if not self.order_id:
+            raise ValueError("order_id must not be blank")
+        if created_by:
+            self.tags.add(f"by:{created_by}")
+
+    def add(self, item):
+        self.items.append(item)
+
+    def total_cents(self):
+        return sum(item.total_cents for item in self.items)
+@@@ tests
+import dataclasses
+import pytest
+from solution import LineItem, Order
+
+
+def test_line_item_frozen_and_hashable():
+    a = LineItem("ABC", 2, 150)
+    assert a.total_cents == 300 and a == LineItem("ABC", 2, 150)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        a.qty = 3
+    assert len({a, LineItem("ABC", 2, 150), LineItem("ABC", 3, 150)}) == 2
+
+
+def test_line_item_ordering():
+    items = [LineItem("b", 1, 5), LineItem("a", 2, 1), LineItem("a", 1, 9), LineItem("a", 1, 2)]
+    assert sorted(items) == [LineItem("a", 1, 2), LineItem("a", 1, 9), LineItem("a", 2, 1), LineItem("b", 1, 5)]
+
+
+def test_line_item_validation_including_replace():
+    for args in [("x", 0, 1), ("x", -1, 1), ("x", 1, -1)]:
+        with pytest.raises(ValueError):
+            LineItem(*args)
+    a = LineItem("x", 1, 0)
+    assert dataclasses.replace(a, qty=5).total_cents == 0
+    with pytest.raises(ValueError):
+        dataclasses.replace(a, qty=0)
+
+
+def test_order_defaults_not_shared():
+    a, b = Order("A1"), Order("B2")
+    a.add(LineItem("x", 1, 100))
+    a.tags.add("rush")
+    assert b.items == [] and b.tags == set() and a.total_cents() == 100
+
+
+def test_fields_and_initvar():
+    names = [f.name for f in dataclasses.fields(Order)]
+    assert names == ["order_id", "items", "tags", "note"]
+    o = Order("  A7 ", created_by="ann")
+    assert o.order_id == "A7" and o.tags == {"by:ann"} and "created_by" not in vars(o)
+    assert Order("A8").tags == set()
+    with pytest.raises(ValueError):
+        Order("   ")
+
+
+def test_note_excluded_from_eq():
+    assert Order("A1", note="call first") == Order("A1", note="leave at door")
+    assert Order("A1") != Order("A1", tags={"x"})
+
+
+def test_asdict_and_total():
+    o = Order("Z9")
+    o.add(LineItem("p", 3, 250))
+    o.add(LineItem("q", 1, 99))
+    assert o.total_cents() == 849
+    d = dataclasses.asdict(o)
+    assert d["items"][0] == {"sku": "p", "qty": 3, "unit_cents": 250} and d["note"] == ""

@@ -1,0 +1,1234 @@
+@@@ task streaming_top_k leaf=11 diff=3 entry=top_k,rolling_top_k
+@@@ prompt
+Write top-k selection for a stream of sales with a bounded heap. `top_k(iterable, k, key=None) -> list` returns the `k` items with the largest `key(item)` (the item itself when `key` is None), largest first. Among equal keys the item that arrived earlier ranks higher, exactly as `sorted(items, key=key, reverse=True)[:k]` would order them. Consume the iterable once and keep at most `k` entries in a `heapq` min-heap, so memory stays O(k) for a stream of millions. Items themselves may be unorderable (dicts), so heap entries must never compare two items. `k <= 0` returns `[]`. `rolling_top_k(stream, k)` is a generator that, after each incoming number, yields the current top-k as a list, largest first, with the same tie rule.
+@@@ reference
+import heapq
+
+
+def _push(heap, k, entry):
+    if len(heap) < k:
+        heapq.heappush(heap, entry)
+    elif entry[:2] > heap[0][:2]:
+        heapq.heapreplace(heap, entry)
+
+
+def _ranked(heap):
+    return [e[2] for e in sorted(heap, key=lambda e: e[:2], reverse=True)]
+
+
+def top_k(iterable, k, key=None):
+    if k <= 0:
+        return []
+    heap = []
+    for i, item in enumerate(iterable):
+        _push(heap, k, (item if key is None else key(item), -i, item))
+    return _ranked(heap)
+
+
+def rolling_top_k(stream, k):
+    heap = []
+    for i, x in enumerate(stream):
+        if k > 0:
+            _push(heap, k, (x, -i, x))
+        yield _ranked(heap)
+@@@ tests
+import random
+import tracemalloc
+from solution import top_k, rolling_top_k
+
+
+def test_basic():
+    assert top_k([5, 1, 9, 3, 7], 3) == [9, 7, 5]
+    assert top_k([2, 1], 5) == [2, 1] and top_k([1, 2], 0) == [] and top_k([], 3) == []
+
+
+def test_key_and_stable_ties_with_unorderable_items():
+    sales = [{"id": i, "amount": a} for i, a in enumerate([10, 30, 10, 30, 20, 30])]
+    got = top_k(iter(sales), 4, key=lambda s: s["amount"])
+    assert [s["id"] for s in got] == [1, 3, 5, 4]
+
+
+def test_against_sorted():
+    rng = random.Random(17)
+    for _ in range(200):
+        items = [(rng.randrange(6), i) for i in range(rng.randrange(0, 30))]
+        k = rng.randrange(0, 8)
+        assert top_k(items, k, key=lambda t: t[0]) == sorted(items, key=lambda t: t[0], reverse=True)[:k]
+
+
+def test_memory_is_bounded():
+    def stream():
+        for i in range(100_000):
+            yield (i * 7919) % 1_000_003 + 1_000_000
+    tracemalloc.start()
+    try:
+        result = top_k(stream(), 5)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert result == sorted(((i * 7919) % 1_000_003 + 1_000_000 for i in range(100_000)), reverse=True)[:5]
+    assert peak < 400_000
+
+
+def test_rolling():
+    assert list(rolling_top_k([4, 8, 1, 8, 9], 2)) == [[4], [8, 4], [8, 4], [8, 8], [9, 8]]
+    assert list(rolling_top_k([], 3)) == [] and list(rolling_top_k([1, 2], 0)) == [[], []]
+
+
+def test_rolling_against_sorted():
+    rng = random.Random(18)
+    xs = [rng.randrange(10) for _ in range(60)]
+    for i, snap in enumerate(rolling_top_k(xs, 4)):
+        assert snap == sorted(xs[:i + 1], reverse=True)[:4]
+@@@ task booking_intervals leaf=12 diff=3 entry=merge_bookings,common_free
+@@@ prompt
+Write interval helpers for a room-booking calendar. Times are integer minutes, and a booking `(start, end)` is half-open, covering `start <= t < end`. A booking with `start >= end` raises `ValueError`. `merge_bookings(bookings) -> list[tuple[int, int]]` sorts the bookings and merges any that overlap or touch, so `(9, 10)` and `(10, 11)` become `(9, 11)`, returning the merged list in ascending order. Do it in O(n log n) with one sort and one pass. `common_free(calendars, day_start, day_end, min_len) -> list[tuple[int, int]]` takes a list of people's booking lists and returns, in order, the gaps inside `[day_start, day_end)` when nobody is booked and which last at least `min_len` minutes. Bookings that stick out of the day are clipped to it.
+@@@ reference
+def merge_bookings(bookings):
+    items = sorted(bookings)
+    merged = []
+    for start, end in items:
+        if start >= end:
+            raise ValueError(f"empty or reversed booking {(start, end)}")
+        if merged and start <= merged[-1][1]:
+            if end > merged[-1][1]:
+                merged[-1] = (merged[-1][0], end)
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def common_free(calendars, day_start, day_end, min_len):
+    busy = merge_bookings([b for cal in calendars for b in cal])
+    free, cursor = [], day_start
+    for start, end in busy + [(day_end, day_end)]:
+        start = min(max(start, day_start), day_end)
+        end = min(max(end, day_start), day_end)
+        if start > cursor and start - cursor >= min_len:
+            free.append((cursor, start))
+        cursor = max(cursor, end)
+    return free
+@@@ tests
+import random
+import time
+import pytest
+from solution import merge_bookings, common_free
+
+
+def test_merge():
+    assert merge_bookings([(13, 14), (9, 10), (10, 11), (9, 9 + 1), (12, 15)]) == [(9, 11), (12, 15)]
+    assert merge_bookings([(1, 10), (2, 3), (4, 5)]) == [(1, 10)]
+    assert merge_bookings([]) == []
+
+
+def test_merge_rejects_bad():
+    with pytest.raises(ValueError):
+        merge_bookings([(1, 2), (5, 5)])
+    with pytest.raises(ValueError):
+        merge_bookings([(6, 3)])
+
+
+def covered(intervals):
+    return {t for s, e in intervals for t in range(s, e)}
+
+
+def test_merge_against_brute():
+    rng = random.Random(19)
+    for _ in range(300):
+        bs = []
+        for _ in range(rng.randrange(0, 8)):
+            s = rng.randrange(0, 30)
+            bs.append((s, s + rng.randrange(1, 6)))
+        m = merge_bookings(bs)
+        assert covered(m) == covered(bs)
+        assert all(a[1] < b[0] for a, b in zip(m, m[1:]))
+
+
+def test_common_free():
+    ann = [(540, 600), (720, 780)]
+    bob = [(570, 630), (900, 1200)]
+    assert common_free([ann, bob], 480, 1080, 30) == [(480, 540), (630, 720), (780, 900)]
+    assert common_free([ann, bob], 480, 1080, 61) == [(630, 720), (780, 900)]
+
+
+def test_common_free_clipping_and_edges():
+    assert common_free([[(0, 500)], [(1000, 2000)]], 480, 1080, 1) == [(500, 1000)]
+    assert common_free([], 480, 540, 60) == [(480, 540)]
+    assert common_free([[(400, 1200)]], 480, 1080, 1) == []
+    assert common_free([[(600, 601)]], 480, 1080, 0) == [(480, 600), (601, 1080)]
+
+
+def test_common_free_against_brute_and_fast():
+    rng = random.Random(20)
+    for _ in range(200):
+        cals = [[(s, s + rng.randrange(1, 40)) for s in rng.sample(range(0, 200), rng.randrange(0, 4))]
+                for _ in range(rng.randrange(0, 4))]
+        busy = covered([b for c in cals for b in c])
+        free_minutes = {t for t in range(50, 150) if t not in busy}
+        assert covered(common_free(cals, 50, 150, 1)) == free_minutes
+    big = [[(i * 10, i * 10 + 5) for i in range(100_000)]]
+    t = time.perf_counter()
+    assert len(common_free(big, 0, 1_000_000, 5)) == 100_000
+    assert time.perf_counter() - t < 2.0
+@@@ task kmp_prefix_function leaf=13 diff=4 entry=prefix_function,find_all,smallest_period
+@@@ prompt
+Write string matching with the Knuth-Morris-Pratt prefix function, for scanning DNA reads for a marker. `prefix_function(s) -> list[int]` returns `pi`, where `pi[i]` is the length of the longest proper prefix of `s[:i+1]` that is also a suffix of it. Compute it in O(n) by falling back through previous `pi` values, not by comparing all prefixes. `find_all(text, pattern) -> list[int]` returns every start index where `pattern` occurs in `text`, overlapping occurrences included, in O(len(text) + len(pattern)) using the prefix function. Do not use `str.find`, `re` or slicing comparisons in a loop. An empty pattern raises `ValueError`. `smallest_period(s) -> int` returns the length `p` of the shortest string `u` such that `s` is a prefix of `u` repeated enough times (`"abcab"` gives 3, `"aaaa"` gives 1). An empty `s` gives 0.
+@@@ reference
+def prefix_function(s):
+    pi = [0] * len(s)
+    for i in range(1, len(s)):
+        k = pi[i - 1]
+        while k and s[i] != s[k]:
+            k = pi[k - 1]
+        if s[i] == s[k]:
+            k += 1
+        pi[i] = k
+    return pi
+
+
+def find_all(text, pattern):
+    if not pattern:
+        raise ValueError("empty pattern")
+    pi = prefix_function(pattern)
+    hits, k, m = [], 0, len(pattern)
+    for i, ch in enumerate(text):
+        while k and ch != pattern[k]:
+            k = pi[k - 1]
+        if ch == pattern[k]:
+            k += 1
+        if k == m:
+            hits.append(i - m + 1)
+            k = pi[k - 1]
+    return hits
+
+
+def smallest_period(s):
+    return len(s) - prefix_function(s)[-1] if s else 0
+@@@ tests
+import random
+import time
+import pytest
+from solution import prefix_function, find_all, smallest_period
+
+
+def brute_pi(s):
+    return [max((k for k in range(i + 1) if s[:k] == s[i + 1 - k:i + 1] and k <= i), default=0) for i in range(len(s))]
+
+
+def test_prefix_function_examples():
+    assert prefix_function("abacaba") == [0, 0, 1, 0, 1, 2, 3]
+    assert prefix_function("aabaaab") == [0, 1, 0, 1, 2, 2, 3]
+    assert prefix_function("") == [] and prefix_function("x") == [0]
+
+
+def test_prefix_function_against_brute():
+    rng = random.Random(21)
+    for _ in range(300):
+        s = "".join(rng.choice("ab") for _ in range(rng.randrange(0, 15)))
+        assert prefix_function(s) == brute_pi(s)
+
+
+def test_find_all_overlapping():
+    assert find_all("GATATATAG", "ATA") == [1, 3, 5]
+    assert find_all("aaaa", "aa") == [0, 1, 2]
+    assert find_all("abc", "abcd") == [] and find_all("", "a") == []
+    with pytest.raises(ValueError):
+        find_all("abc", "")
+
+
+def test_find_all_against_brute():
+    rng = random.Random(22)
+    for _ in range(300):
+        text = "".join(rng.choice("ACG") for _ in range(rng.randrange(0, 30)))
+        pat = "".join(rng.choice("ACG") for _ in range(rng.randrange(1, 4)))
+        assert find_all(text, pat) == [i for i in range(len(text) - len(pat) + 1) if text[i:i + len(pat)] == pat]
+
+
+def test_linear_on_adversarial_input():
+    text = "a" * 200_000
+    pat = "a" * 1000 + "b"
+    t = time.perf_counter()
+    assert find_all(text, pat) == []
+    assert len(prefix_function("ab" * 100_000)) == 200_000
+    assert time.perf_counter() - t < 2.0
+
+
+def test_smallest_period():
+    assert smallest_period("abcab") == 3 and smallest_period("aaaa") == 1
+    assert smallest_period("abcd") == 4 and smallest_period("abab") == 2 and smallest_period("") == 0
+    for s in ("abcab", "abaab", "xyzxyzx"):
+        p = smallest_period(s)
+        assert (s[:p] * len(s))[:len(s)] == s
+        assert all((s[:q] * len(s))[:len(s)] != s for q in range(1, p))
+@@@ task singly_linked_list leaf=14 diff=2 entry=Node,LinkedList
+@@@ prompt
+Implement a singly linked list. `Node(value, next=None)` has `value` and `next` attributes. `LinkedList(iterable=())` keeps `head` (the first `Node` or None) and a tail reference so that `append(value)` is O(1). Provide `appendleft(value)`, `popleft()` (returns the value; `IndexError` when empty), `remove(value)` (unlinks the first node with that value; `ValueError` if absent), `reverse()`, `__iter__` over values, `__len__` (O(1), kept as a counter), and `__repr__` as `LinkedList([1, 2, 3])`. `reverse()` works in place in O(n) by relinking the existing nodes, without creating new ones and without recursion (lists can have 100 000 nodes). Keep the tail reference correct after every operation, including removing the last node and reversing.
+@@@ reference
+class Node:
+    __slots__ = ("value", "next")
+
+    def __init__(self, value, next=None):
+        self.value = value
+        self.next = next
+
+
+class LinkedList:
+    def __init__(self, iterable=()):
+        self.head = self._tail = None
+        self._len = 0
+        for v in iterable:
+            self.append(v)
+
+    def append(self, value):
+        node = Node(value)
+        if self._tail is None:
+            self.head = self._tail = node
+        else:
+            self._tail.next = node
+            self._tail = node
+        self._len += 1
+
+    def appendleft(self, value):
+        self.head = Node(value, self.head)
+        if self._tail is None:
+            self._tail = self.head
+        self._len += 1
+
+    def popleft(self):
+        if self.head is None:
+            raise IndexError("pop from empty list")
+        node = self.head
+        self.head = node.next
+        if self.head is None:
+            self._tail = None
+        self._len -= 1
+        return node.value
+
+    def remove(self, value):
+        prev, cur = None, self.head
+        while cur is not None and cur.value != value:
+            prev, cur = cur, cur.next
+        if cur is None:
+            raise ValueError(f"{value!r} not in list")
+        if prev is None:
+            self.head = cur.next
+        else:
+            prev.next = cur.next
+        if cur is self._tail:
+            self._tail = prev
+        self._len -= 1
+
+    def reverse(self):
+        prev, cur = None, self.head
+        self._tail = cur
+        while cur is not None:
+            cur.next, prev, cur = prev, cur, cur.next
+        self.head = prev
+
+    def __iter__(self):
+        cur = self.head
+        while cur is not None:
+            yield cur.value
+            cur = cur.next
+
+    def __len__(self):
+        return self._len
+
+    def __repr__(self):
+        return f"LinkedList({list(self)!r})"
+@@@ tests
+import pytest
+from solution import Node, LinkedList
+
+
+def nodes(ll):
+    out, cur = [], ll.head
+    while cur is not None:
+        out.append(cur)
+        cur = cur.next
+    return out
+
+
+def test_build_and_iterate():
+    ll = LinkedList([1, 2, 3])
+    ll.append(4)
+    ll.appendleft(0)
+    assert list(ll) == [0, 1, 2, 3, 4] and len(ll) == 5 and repr(ll) == "LinkedList([0, 1, 2, 3, 4])"
+    assert isinstance(ll.head, Node) and ll.head.value == 0
+
+
+def test_popleft():
+    ll = LinkedList("ab")
+    assert ll.popleft() == "a" and ll.popleft() == "b" and len(ll) == 0 and ll.head is None
+    with pytest.raises(IndexError):
+        ll.popleft()
+    ll.append("c")
+    assert list(ll) == ["c"]
+
+
+def test_remove_keeps_tail():
+    ll = LinkedList([1, 2, 3, 2])
+    ll.remove(2)
+    assert list(ll) == [1, 3, 2]
+    ll.remove(2)
+    ll.append(9)
+    assert list(ll) == [1, 3, 9] and len(ll) == 3
+    ll.remove(1)
+    assert list(ll) == [3, 9]
+    with pytest.raises(ValueError):
+        ll.remove(42)
+
+
+def test_reverse_relinks_same_nodes():
+    ll = LinkedList(range(5))
+    before = nodes(ll)
+    ll.reverse()
+    assert list(ll) == [4, 3, 2, 1, 0]
+    assert nodes(ll) == before[::-1] and all(a is b for a, b in zip(nodes(ll), before[::-1]))
+    ll.append(-1)
+    assert list(ll)[-1] == -1 and len(ll) == 6
+
+
+def test_reverse_edge_cases():
+    e = LinkedList()
+    e.reverse()
+    assert list(e) == [] and len(e) == 0
+    e.append(1)
+    assert list(e) == [1]
+    one = LinkedList([7])
+    one.reverse()
+    one.append(8)
+    assert list(one) == [7, 8]
+
+
+def test_large_reverse_no_recursion():
+    ll = LinkedList(range(100_000))
+    ll.reverse()
+    assert ll.head.value == 99_999 and len(ll) == 100_000
+    ll.appendleft("x")
+    ll.append("y")
+    assert list(ll)[:2] == ["x", 99_999] and list(ll)[-2:] == [0, "y"]
+@@@ task iterative_tree_traversals leaf=15 diff=3 entry=TreeNode,preorder,inorder,postorder,levels,height
+@@@ prompt
+Write binary-tree traversals over `TreeNode(value, left=None, right=None)` nodes (a class with those three attributes). `preorder(root)`, `inorder(root)` and `postorder(root)` each return the list of values in that order. `levels(root)` returns a list of lists, one per depth, top to bottom and left to right (breadth-first with a `collections.deque`). `height(root)` returns the number of levels (0 for an empty tree). `root` may be None, giving `[]` (or 0). All five must be iterative, using explicit stacks or queues and no recursion, because they are used on degenerate trees 50 000 levels deep that would overflow Python's recursion limit.
+@@@ reference
+from collections import deque
+
+
+class TreeNode:
+    def __init__(self, value, left=None, right=None):
+        self.value = value
+        self.left = left
+        self.right = right
+
+
+def preorder(root):
+    out, stack = [], [root] if root else []
+    while stack:
+        node = stack.pop()
+        out.append(node.value)
+        if node.right:
+            stack.append(node.right)
+        if node.left:
+            stack.append(node.left)
+    return out
+
+
+def inorder(root):
+    out, stack, node = [], [], root
+    while stack or node:
+        while node:
+            stack.append(node)
+            node = node.left
+        node = stack.pop()
+        out.append(node.value)
+        node = node.right
+    return out
+
+
+def postorder(root):
+    out, stack = [], [root] if root else []
+    while stack:
+        node = stack.pop()
+        out.append(node.value)
+        if node.left:
+            stack.append(node.left)
+        if node.right:
+            stack.append(node.right)
+    return out[::-1]
+
+
+def levels(root):
+    out, queue = [], deque([root] if root else [])
+    while queue:
+        out.append([])
+        for _ in range(len(queue)):
+            node = queue.popleft()
+            out[-1].append(node.value)
+            queue.extend(c for c in (node.left, node.right) if c)
+    return out
+
+
+def height(root):
+    return len(levels(root))
+@@@ tests
+import random
+import sys
+from solution import TreeNode, preorder, inorder, postorder, levels, height
+
+T = TreeNode
+
+
+def sample():
+    #        1
+    #      /   \
+    #     2     3
+    #    / \     \
+    #   4   5     6
+    #      /
+    #     7
+    return T(1, T(2, T(4), T(5, T(7))), T(3, None, T(6)))
+
+
+def test_depth_first_orders():
+    t = sample()
+    assert preorder(t) == [1, 2, 4, 5, 7, 3, 6]
+    assert inorder(t) == [4, 2, 7, 5, 1, 3, 6]
+    assert postorder(t) == [4, 7, 5, 2, 6, 3, 1]
+
+
+def test_levels_and_height():
+    assert levels(sample()) == [[1], [2, 3], [4, 5, 6], [7]]
+    assert height(sample()) == 4 and height(T("x")) == 1
+
+
+def test_empty():
+    for f in (preorder, inorder, postorder, levels):
+        assert f(None) == []
+    assert height(None) == 0
+
+
+def rec(node, order):
+    if node is None:
+        return []
+    l, r = rec(node.left, order), rec(node.right, order)
+    return {"pre": [node.value] + l + r, "in": l + [node.value] + r, "post": l + r + [node.value]}[order]
+
+
+def random_tree(rng, n):
+    root = T(0)
+    nodes = [root]
+    for i in range(1, n):
+        parent = rng.choice(nodes)
+        side = rng.choice(["left", "right"])
+        if getattr(parent, side) is None:
+            setattr(parent, side, T(i))
+            nodes.append(getattr(parent, side))
+    return root
+
+
+def test_against_recursive():
+    rng = random.Random(23)
+    for _ in range(100):
+        t = random_tree(rng, rng.randrange(1, 25))
+        assert preorder(t) == rec(t, "pre") and inorder(t) == rec(t, "in") and postorder(t) == rec(t, "post")
+
+
+def test_deep_degenerate_trees():
+    n = 50_000
+    assert n > sys.getrecursionlimit() * 10
+    left = None
+    for i in range(n):
+        left = T(i, left)
+    right = None
+    for i in range(n):
+        right = T(i, None, right)
+    assert inorder(left)[:3] == [0, 1, 2] and postorder(left)[-1] == n - 1
+    assert preorder(right)[:2] == [n - 1, n - 2] and height(right) == n
+    assert len(levels(left)) == n
+@@@ task bst_floor_ceiling leaf=16 diff=4 entry=BST
+@@@ prompt
+Implement an (unbalanced) binary search tree `BST` of comparable keys, for a price index. Methods: `insert(key) -> bool` (False if the key was already present), `__contains__`, `delete(key)` (raises `KeyError` if absent; handle leaf, one-child and two-children nodes, the last by replacing with the in-order successor), `__len__`, `__iter__` (keys in ascending order), `range(lo, hi) -> list` (keys `k` with `lo <= k < hi`, ascending, skipping subtrees that cannot contain matches), `floor(x)` (largest key `<= x` or None), `ceiling(x)` (smallest key `>= x` or None) and `height()` (0 when empty). Implement everything iteratively, without recursion. Inserting sorted input builds a chain thousands of levels deep, and that must still work.
+@@@ reference
+class _Node:
+    __slots__ = ("key", "left", "right")
+
+    def __init__(self, key):
+        self.key, self.left, self.right = key, None, None
+
+
+class BST:
+    def __init__(self):
+        self.root = None
+        self._n = 0
+
+    def insert(self, key):
+        if self.root is None:
+            self.root = _Node(key)
+            self._n = 1
+            return True
+        cur = self.root
+        while True:
+            if key == cur.key:
+                return False
+            side = "left" if key < cur.key else "right"
+            nxt = getattr(cur, side)
+            if nxt is None:
+                setattr(cur, side, _Node(key))
+                self._n += 1
+                return True
+            cur = nxt
+
+    def __contains__(self, key):
+        cur = self.root
+        while cur is not None and cur.key != key:
+            cur = cur.left if key < cur.key else cur.right
+        return cur is not None
+
+    def delete(self, key):
+        parent, cur = None, self.root
+        while cur is not None and cur.key != key:
+            parent, cur = cur, cur.left if key < cur.key else cur.right
+        if cur is None:
+            raise KeyError(key)
+        if cur.left is not None and cur.right is not None:
+            sp, s = cur, cur.right
+            while s.left is not None:
+                sp, s = s, s.left
+            cur.key = s.key
+            parent, cur = sp, s
+        child = cur.left if cur.left is not None else cur.right
+        if parent is None:
+            self.root = child
+        elif parent.left is cur:
+            parent.left = child
+        else:
+            parent.right = child
+        self._n -= 1
+
+    def __len__(self):
+        return self._n
+
+    def __iter__(self):
+        stack, node = [], self.root
+        while stack or node:
+            while node:
+                stack.append(node)
+                node = node.left
+            node = stack.pop()
+            yield node.key
+            node = node.right
+
+    def range(self, lo, hi):
+        out, stack, node = [], [], self.root
+        while stack or node:
+            while node:
+                stack.append(node)
+                node = node.left if lo < node.key else None
+            node = stack.pop()
+            if node.key >= hi:
+                break
+            if node.key >= lo:
+                out.append(node.key)
+            node = node.right
+        return out
+
+    def floor(self, x):
+        best, cur = None, self.root
+        while cur is not None:
+            if cur.key <= x:
+                best, cur = cur.key, cur.right
+            else:
+                cur = cur.left
+        return best
+
+    def ceiling(self, x):
+        best, cur = None, self.root
+        while cur is not None:
+            if cur.key >= x:
+                best, cur = cur.key, cur.left
+            else:
+                cur = cur.right
+        return best
+
+    def height(self):
+        h, level = 0, [self.root] if self.root else []
+        while level:
+            h += 1
+            level = [c for n in level for c in (n.left, n.right) if c]
+        return h
+@@@ tests
+import bisect
+import random
+import pytest
+from solution import BST
+
+
+def build(keys):
+    t = BST()
+    for k in keys:
+        t.insert(k)
+    return t
+
+
+def test_insert_contains_iter():
+    t = build([50, 30, 70, 20, 40, 60, 80])
+    assert list(t) == [20, 30, 40, 50, 60, 70, 80] and len(t) == 7
+    assert 40 in t and 45 not in t
+    assert t.insert(40) is False and len(t) == 7 and t.height() == 3
+
+
+def test_delete_all_cases():
+    t = build([50, 30, 70, 20, 40, 60, 80, 65])
+    t.delete(20)
+    t.delete(60)
+    t.delete(50)
+    assert list(t) == [30, 40, 65, 70, 80] and len(t) == 5
+    with pytest.raises(KeyError):
+        t.delete(50)
+    for k in [30, 40, 65, 70, 80]:
+        t.delete(k)
+    assert list(t) == [] and len(t) == 0 and t.height() == 0
+
+
+def test_floor_ceiling_range():
+    t = build([10, 5, 15, 3, 7, 12, 20])
+    assert t.floor(11) == 10 and t.floor(3) == 3 and t.floor(2) is None
+    assert t.ceiling(11) == 12 and t.ceiling(21) is None and t.ceiling(-5) == 3
+    assert t.range(5, 13) == [5, 7, 10, 12] and t.range(0, 3) == [] and t.range(20, 99) == [20]
+    assert BST().floor(1) is None and BST().range(0, 10) == []
+
+
+def test_random_ops_against_sorted_list():
+    rng = random.Random(24)
+    t, ref = BST(), []
+    for _ in range(3000):
+        k = rng.randrange(200)
+        op = rng.random()
+        if op < 0.5:
+            assert t.insert(k) == (k not in ref)
+            if k not in ref:
+                bisect.insort(ref, k)
+        elif op < 0.8:
+            if k in ref:
+                t.delete(k)
+                ref.remove(k)
+            else:
+                with pytest.raises(KeyError):
+                    t.delete(k)
+        else:
+            lo, hi = sorted((rng.randrange(200), rng.randrange(200)))
+            assert t.range(lo, hi) == [x for x in ref if lo <= x < hi]
+            i = bisect.bisect_right(ref, k)
+            assert t.floor(k) == (ref[i - 1] if i else None)
+            j = bisect.bisect_left(ref, k)
+            assert t.ceiling(k) == (ref[j] if j < len(ref) else None)
+        assert len(t) == len(ref)
+    assert list(t) == ref
+
+
+def test_sorted_input_deep_chain():
+    t = build(range(2500))
+    assert t.height() == 2500 and len(t) == 2500
+    assert 2499 in t and t.floor(10_000) == 2499 and t.range(2490, 2495) == [2490, 2491, 2492, 2493, 2494]
+    assert list(t)[-1] == 2499
+    t.delete(0)
+    t.delete(2499)
+    assert t.ceiling(-1) == 1 and len(t) == 2498
+
+
+def test_string_keys():
+    t = build(["pear", "apple", "fig"])
+    assert list(t) == ["apple", "fig", "pear"] and t.floor("grape") == "fig"
+@@@ task pure_python_matrices leaf=17 diff=3 entry=identity,rotate,matmul,mat_pow
+@@@ prompt
+Write matrix helpers on lists of lists without numpy, for an image-tile and recurrence toolkit. A matrix must be non-empty and rectangular, otherwise `ValueError`. `identity(n)` returns the n x n identity. `rotate(m, quarter_turns=1)` returns a new matrix rotated clockwise by that many quarter turns: negative values rotate counter-clockwise, any integer works (mod 4), non-square matrices change shape, and the input is never modified. `matmul(a, b, mod=None)` multiplies two matrices (`ValueError` if the inner dimensions differ) and, when `mod` is given, reduces every entry modulo `mod`. `mat_pow(m, k, mod=None)` raises a square matrix to the integer power `k >= 0` (`k = 0` gives the identity; a non-square matrix or negative `k` raises `ValueError`) by repeated squaring in O(log k) multiplications, so `k = 10**18` with a modulus is instant.
+@@@ reference
+def _check(m):
+    if not m or not m[0] or any(len(r) != len(m[0]) for r in m):
+        raise ValueError("matrix must be non-empty and rectangular")
+
+
+def identity(n):
+    return [[int(i == j) for j in range(n)] for i in range(n)]
+
+
+def rotate(m, quarter_turns=1):
+    _check(m)
+    out = [list(r) for r in m]
+    for _ in range(quarter_turns % 4):
+        out = [list(row) for row in zip(*out[::-1])]
+    return out
+
+
+def matmul(a, b, mod=None):
+    _check(a)
+    _check(b)
+    if len(a[0]) != len(b):
+        raise ValueError(f"cannot multiply {len(a)}x{len(a[0])} by {len(b)}x{len(b[0])}")
+    cols = list(zip(*b))
+    out = [[sum(x * y for x, y in zip(row, col)) for col in cols] for row in a]
+    if mod is not None:
+        out = [[v % mod for v in row] for row in out]
+    return out
+
+
+def mat_pow(m, k, mod=None):
+    _check(m)
+    if len(m) != len(m[0]) or k < 0:
+        raise ValueError("need a square matrix and k >= 0")
+    result, base = identity(len(m)), [list(r) for r in m]
+    while k:
+        if k & 1:
+            result = matmul(result, base, mod)
+        base = matmul(base, base, mod)
+        k >>= 1
+    return result
+@@@ tests
+import pytest
+from solution import identity, rotate, matmul, mat_pow
+
+
+def fib_pair(n, mod):
+    if n == 0:
+        return 0, 1
+    a, b = fib_pair(n // 2, mod)
+    c = a * (2 * b - a) % mod
+    d = (a * a + b * b) % mod
+    return (d, (c + d) % mod) if n % 2 else (c, d)
+
+
+def test_identity_and_matmul():
+    assert identity(3) == [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+    assert matmul([[1, 2, 3], [4, 5, 6]], [[7, 8], [9, 10], [11, 12]]) == [[58, 64], [139, 154]]
+    assert matmul([[2, 3]], identity(2)) == [[2, 3]]
+    assert matmul([[5, 7]], [[3], [4]], mod=10) == [[3]]
+
+
+def test_matmul_validation():
+    with pytest.raises(ValueError):
+        matmul([[1, 2]], [[1, 2]])
+    with pytest.raises(ValueError):
+        matmul([[1, 2], [3]], [[1], [2]])
+    with pytest.raises(ValueError):
+        matmul([], [[1]])
+
+
+def test_rotate():
+    m = [[1, 2, 3], [4, 5, 6]]
+    assert rotate(m) == [[4, 1], [5, 2], [6, 3]]
+    assert rotate(m, 2) == [[6, 5, 4], [3, 2, 1]]
+    assert rotate(m, -1) == [[3, 6], [2, 5], [1, 4]] == rotate(m, 3)
+    assert rotate(m, 4) == m and rotate(m, 0) == m and rotate(m, 0) is not m
+    assert m == [[1, 2, 3], [4, 5, 6]]
+
+
+def test_mat_pow_small():
+    f = [[1, 1], [1, 0]]
+    assert mat_pow(f, 0) == identity(2) and mat_pow(f, 1) == f
+    assert mat_pow(f, 10) == [[89, 55], [55, 34]]
+    assert mat_pow(f, 90)[0][1] == 2880067194370816120
+
+
+def test_mat_pow_huge_exponent_mod():
+    p = 1_000_000_007
+    for n in (10 ** 18, 10 ** 18 + 1, 123_456_789_123):
+        assert mat_pow([[1, 1], [1, 0]], n, mod=p)[0][1] == fib_pair(n, p)[0]
+
+
+def test_mat_pow_validation():
+    with pytest.raises(ValueError):
+        mat_pow([[1, 2, 3]], 2)
+    with pytest.raises(ValueError):
+        mat_pow([[1]], -1)
+@@@ task permission_bitmasks leaf=18 diff=3 entry=popcount,iter_bits,lowest_set_bit,submasks,gray_code
+@@@ prompt
+Write bit-manipulation helpers for permission flags stored as non-negative ints; negative inputs raise `ValueError` everywhere. `popcount(n)` counts set bits. `iter_bits(n)` is a generator yielding the positions of set bits in ascending order: clear the lowest set bit with `n & (n - 1)` each step, so it runs once per set bit rather than once per bit position. `lowest_set_bit(n)` returns the value of the lowest set bit (`n & -n`), 0 for 0. `submasks(mask) -> list[int]` returns every submask of `mask` (each int `s` with `s & ~mask == 0`) in descending order, from `mask` down to 0, using the `s = (s - 1) & mask` trick. A mask with 18 set bits spread over 40 positions must take well under a second, so looping over `range(mask + 1)` is out. `gray_code(bits) -> list[int]` returns all `2**bits` values in reflected Gray-code order starting at 0 (`i ^ (i >> 1)`), so consecutive values differ in exactly one bit.
+@@@ reference
+def _check(n):
+    if n < 0:
+        raise ValueError("expected a non-negative int")
+
+
+def popcount(n):
+    _check(n)
+    return bin(n).count("1")
+
+
+def iter_bits(n):
+    _check(n)
+    while n:
+        low = n & -n
+        yield low.bit_length() - 1
+        n &= n - 1
+
+
+def lowest_set_bit(n):
+    _check(n)
+    return n & -n
+
+
+def submasks(mask):
+    _check(mask)
+    out, s = [], mask
+    while True:
+        out.append(s)
+        if s == 0:
+            return out
+        s = (s - 1) & mask
+
+
+def gray_code(bits):
+    _check(bits)
+    return [i ^ (i >> 1) for i in range(1 << bits)]
+@@@ tests
+import inspect
+import itertools
+import random
+import time
+import pytest
+from solution import popcount, iter_bits, lowest_set_bit, submasks, gray_code
+
+
+def test_popcount_and_bits():
+    assert popcount(0) == 0 and popcount(0b101101) == 4 and popcount(2 ** 200 - 1) == 200
+    assert list(iter_bits(0b101100)) == [2, 3, 5] and list(iter_bits(0)) == []
+    assert list(iter_bits(1 << 300)) == [300]
+
+
+def test_iter_bits_is_lazy_generator():
+    g = iter_bits((1 << 1000) | 1)
+    assert inspect.isgenerator(g) and next(g) == 0 and next(g) == 1000
+
+
+def test_lowest_set_bit():
+    assert [lowest_set_bit(x) for x in (0, 1, 6, 8, 12, 2 ** 64 + 2 ** 10)] == [0, 1, 2, 8, 4, 2 ** 10]
+
+
+def test_submasks_small():
+    assert submasks(0b1010) == [0b1010, 0b1000, 0b0010, 0]
+    assert submasks(0) == [0]
+    rng = random.Random(25)
+    for _ in range(50):
+        m = rng.randrange(1 << 10)
+        assert submasks(m) == sorted((s for s in range(m + 1) if s & ~m == 0), reverse=True)
+
+
+def test_submasks_sparse_mask_fast():
+    mask = sum(1 << b for b in range(0, 40, 2)) & ~(1 << 2) & ~(1 << 38)
+    assert popcount(mask) == 18
+    t = time.perf_counter()
+    subs = submasks(mask)
+    assert time.perf_counter() - t < 1.0
+    assert len(subs) == 2 ** 18 and subs[0] == mask and subs[-1] == 0 and all(s & ~mask == 0 for s in subs[:100])
+
+
+def test_gray_code():
+    assert gray_code(0) == [0] and gray_code(2) == [0, 1, 3, 2]
+    g = gray_code(10)
+    assert sorted(g) == list(range(1024))
+    assert all(popcount(a ^ b) == 1 for a, b in zip(g, g[1:]))
+
+
+def test_negative_rejected():
+    for f in (popcount, lowest_set_bit, submasks, gray_code):
+        with pytest.raises(ValueError):
+            f(-1)
+    with pytest.raises(ValueError):
+        list(iter_bits(-4))
+@@@ task greedy_with_proofs leaf=19 diff=3 entry=max_workshops,greedy_counterexample
+@@@ prompt
+Write two greedy routines, each with a docstring that argues why it is correct (or when it is not). `max_workshops(requests) -> list[int]` is given `(start, end)` booking requests for one room (half-open, so a workshop may start exactly when another ends) and returns the indexes of a largest set of non-overlapping requests. Use the earliest-finish-time greedy: sort by end (ties by start, then index) and take each request that starts no earlier than the last chosen one ends; return the indexes in the order chosen. Its docstring must sketch the exchange-argument proof of optimality (use the word "exchange"). `greedy_counterexample(coins, limit) -> int | None` checks whether greedy change-making (repeatedly take the largest coin that fits) is optimal for a coin system. Compare it with a dynamic-programming optimum for every amount `1..limit` and return the smallest amount where greedy uses more coins, or None if there is none. `coins` must contain 1 (else `ValueError`). Its docstring explains why greedy can fail for non-canonical systems such as `[1, 3, 4]`.
+@@@ reference
+def max_workshops(requests):
+    """Choose a maximum set of pairwise compatible half-open intervals.
+
+    Proof sketch (exchange argument): let g1 be the request that finishes first. Take any optimal
+    schedule O and let o1 be its earliest-finishing request. Since g1 ends no later than o1, we can
+    exchange o1 for g1 in O without creating an overlap, so some optimal schedule starts with g1.
+    Removing g1 and every request that starts before it ends leaves the same problem on a smaller
+    input, and induction shows the greedy choice at every step stays within an optimal schedule.
+    """
+    order = sorted(range(len(requests)), key=lambda i: (requests[i][1], requests[i][0], i))
+    chosen, free_at = [], None
+    for i in order:
+        start, end = requests[i]
+        if free_at is None or start >= free_at:
+            chosen.append(i)
+            free_at = end
+    return chosen
+
+
+def greedy_counterexample(coins, limit):
+    """Return the smallest amount <= limit where greedy change-making is not optimal, else None.
+
+    Greedy is only optimal for "canonical" coin systems. Taking the largest coin can block a
+    better combination of smaller coins: with [1, 3, 4] greedy pays 6 as 4 + 1 + 1 (three coins)
+    while 3 + 3 needs two. So the greedy count is compared with an exact DP optimum per amount.
+    """
+    coins = sorted(set(coins), reverse=True)
+    if 1 not in coins:
+        raise ValueError("coin system must contain 1")
+    best = [0] * (limit + 1)
+    for amount in range(1, limit + 1):
+        best[amount] = 1 + min(best[amount - c] for c in coins if c <= amount)
+        rest, used = amount, 0
+        for c in coins:
+            used += rest // c
+            rest %= c
+        if used > best[amount]:
+            return amount
+    return None
+@@@ tests
+import itertools
+import random
+import pytest
+from solution import max_workshops, greedy_counterexample
+
+
+def compatible(reqs, idx):
+    chosen = sorted((reqs[i] for i in idx))
+    return all(a[1] <= b[0] for a, b in zip(chosen, chosen[1:]))
+
+
+def test_example():
+    reqs = [(9, 12), (9, 10), (10, 11), (11, 13), (12, 14), (8, 9)]
+    assert max_workshops(reqs) == [5, 1, 2, 3]
+
+
+def test_touching_and_ties():
+    assert max_workshops([(1, 2), (2, 3), (3, 4)]) == [0, 1, 2]
+    assert max_workshops([(0, 5), (1, 5), (1, 5)]) == [0]
+    assert max_workshops([]) == []
+
+
+def test_optimal_against_brute():
+    rng = random.Random(26)
+    for _ in range(200):
+        reqs = []
+        for _ in range(rng.randrange(0, 9)):
+            s = rng.randrange(0, 20)
+            reqs.append((s, s + rng.randrange(1, 8)))
+        got = max_workshops(reqs)
+        assert compatible(reqs, got)
+        best = max((k for k in range(len(reqs) + 1)
+                    for combo in itertools.combinations(range(len(reqs)), k) if compatible(reqs, combo)), default=0)
+        assert len(got) == best
+
+
+def test_docstrings_argue_correctness():
+    doc = max_workshops.__doc__ or ""
+    assert "exchange" in doc.lower() and len(doc) > 100
+    assert len(greedy_counterexample.__doc__ or "") > 60
+
+
+def test_counterexamples():
+    assert greedy_counterexample([1, 3, 4], 100) == 6
+    assert greedy_counterexample([10, 7, 1], 100) == 14
+    assert greedy_counterexample([1, 5, 10, 25], 500) is None
+    assert greedy_counterexample([1, 3, 4], 5) is None
+
+
+def test_coin_validation():
+    with pytest.raises(ValueError):
+        greedy_counterexample([2, 5], 10)
+@@@ task occupancy_prefix_sums leaf=20 diff=3 entry=Grid2DSum,occupancy
+@@@ prompt
+Write two prefix-sum tools for a hotel. `Grid2DSum(matrix)` precomputes 2-D prefix sums over a rectangular list of lists of numbers (for example bookings per floor and room), and `query(r1, c1, r2, c2)` returns the sum of the inclusive sub-rectangle in O(1). Out-of-range or reversed coordinates raise `IndexError`. `occupancy(n_nights, stays) -> list[int]` returns the number of guests on each night `0..n_nights-1`. `stays` are `(checkin, checkout, guests)` triples, present on nights `checkin <= night < checkout`; a stay with `checkin < 0`, `checkout > n_nights` or `checkin >= checkout` raises `ValueError`. Use a difference array (add at `checkin`, subtract at `checkout`, then a running sum), so 200 000 long stays over 100 000 nights take well under 2 seconds. Looping over every night of every stay is far too slow.
+@@@ reference
+from itertools import accumulate
+
+
+class Grid2DSum:
+    def __init__(self, matrix):
+        self.rows = len(matrix)
+        self.cols = len(matrix[0]) if self.rows else 0
+        p = [[0] * (self.cols + 1) for _ in range(self.rows + 1)]
+        for r in range(self.rows):
+            run = 0
+            for c in range(self.cols):
+                run += matrix[r][c]
+                p[r + 1][c + 1] = p[r][c + 1] + run
+        self._p = p
+
+    def query(self, r1, c1, r2, c2):
+        if not (0 <= r1 <= r2 < self.rows and 0 <= c1 <= c2 < self.cols):
+            raise IndexError("bad rectangle")
+        p = self._p
+        return p[r2 + 1][c2 + 1] - p[r1][c2 + 1] - p[r2 + 1][c1] + p[r1][c1]
+
+
+def occupancy(n_nights, stays):
+    diff = [0] * (n_nights + 1)
+    for checkin, checkout, guests in stays:
+        if not 0 <= checkin < checkout <= n_nights:
+            raise ValueError(f"bad stay {(checkin, checkout)}")
+        diff[checkin] += guests
+        diff[checkout] -= guests
+    return list(accumulate(diff[:n_nights]))
+@@@ tests
+import random
+import time
+import pytest
+from solution import Grid2DSum, occupancy
+
+
+def test_grid_queries():
+    g = Grid2DSum([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+    assert g.query(0, 0, 2, 2) == 45 and g.query(1, 1, 1, 1) == 5
+    assert g.query(0, 1, 1, 2) == 16 and g.query(2, 0, 2, 2) == 24
+
+
+def test_grid_bounds():
+    g = Grid2DSum([[1, 2], [3, 4]])
+    for args in [(0, 0, 2, 1), (-1, 0, 1, 1), (1, 0, 0, 1), (0, 1, 1, 0)]:
+        with pytest.raises(IndexError):
+            g.query(*args)
+
+
+def test_grid_against_brute_and_fast():
+    rng = random.Random(27)
+    m = [[rng.randrange(-5, 10) for _ in range(300)] for _ in range(300)]
+    t = time.perf_counter()
+    g = Grid2DSum(m)
+    for _ in range(20_000):
+        r1, r2 = sorted((rng.randrange(300), rng.randrange(300)))
+        c1, c2 = sorted((rng.randrange(300), rng.randrange(300)))
+        g.query(r1, c1, r2, c2)
+    assert time.perf_counter() - t < 2.0
+    for _ in range(50):
+        r1, r2 = sorted((rng.randrange(300), rng.randrange(300)))
+        c1, c2 = sorted((rng.randrange(300), rng.randrange(300)))
+        assert g.query(r1, c1, r2, c2) == sum(sum(row[c1:c2 + 1]) for row in m[r1:r2 + 1])
+
+
+def test_occupancy_example():
+    assert occupancy(5, [(0, 2, 2), (1, 4, 1), (4, 5, 3)]) == [2, 3, 1, 1, 3]
+    assert occupancy(3, []) == [0, 0, 0] and occupancy(0, []) == []
+
+
+def test_occupancy_validation():
+    for bad in [(-1, 2, 1), (0, 6, 1), (3, 3, 1), (4, 2, 1)]:
+        with pytest.raises(ValueError):
+            occupancy(5, [bad])
+
+
+def test_occupancy_against_brute_and_fast():
+    rng = random.Random(28)
+    stays = []
+    for _ in range(100):
+        a = rng.randrange(20)
+        stays.append((a, rng.randrange(a + 1, 21), rng.randrange(1, 4)))
+    assert occupancy(20, stays) == [sum(g for a, b, g in stays if a <= n < b) for n in range(20)]
+    big = [(rng.randrange(1000), rng.randrange(99_000, 100_001), 1) for _ in range(200_000)]
+    t = time.perf_counter()
+    occ = occupancy(100_000, big)
+    assert time.perf_counter() - t < 2.0
+    assert occ[50_000] == 200_000 and len(occ) == 100_000
+@@@ task multiset_permutations leaf=21 diff=4 entry=distinct_permutations,count_distinct_permutations,nth_permutation
+@@@ prompt
+Write permutation tools for arranging a display shelf where some items are identical. `distinct_permutations(items)` is a generator yielding each distinct ordering of `items` (comparable values, possibly repeated) exactly once as a tuple, in lexicographic order. Use the next-permutation algorithm on a sorted copy (find the rightmost ascent, swap with the rightmost larger element, reverse the suffix). Never generate duplicates and filter them out: `[0] * 12 + [1]` has only 13 distinct orderings but 13! raw permutations. `count_distinct_permutations(items) -> int` returns the multinomial count `n! / (c1! c2! ...)`. `nth_permutation(items, k) -> tuple` returns the k-th (0-based) element of that lexicographic sequence directly, without enumerating the earlier ones, by counting how many permutations start with each candidate. It must handle 20 items and `k` near `10**17`. `k` out of range raises `IndexError`. Empty input has exactly one permutation, `()`.
+@@@ reference
+from collections import Counter
+from math import factorial
+
+
+def distinct_permutations(items):
+    a = sorted(items)
+    while True:
+        yield tuple(a)
+        i = len(a) - 2
+        while i >= 0 and a[i] >= a[i + 1]:
+            i -= 1
+        if i < 0:
+            return
+        j = len(a) - 1
+        while a[j] <= a[i]:
+            j -= 1
+        a[i], a[j] = a[j], a[i]
+        a[i + 1:] = reversed(a[i + 1:])
+
+
+def _multinomial(counts):
+    total = factorial(sum(counts.values()))
+    for c in counts.values():
+        total //= factorial(c)
+    return total
+
+
+def count_distinct_permutations(items):
+    return _multinomial(Counter(items))
+
+
+def nth_permutation(items, k):
+    pool = Counter(items)
+    if not 0 <= k < _multinomial(pool):
+        raise IndexError("k out of range")
+    out = []
+    for _ in range(len(items)):
+        for x in sorted(pool):
+            if pool[x] == 0:
+                continue
+            pool[x] -= 1
+            c = _multinomial(pool)
+            if k < c:
+                out.append(x)
+                break
+            k -= c
+            pool[x] += 1
+    return tuple(out)
+@@@ tests
+import itertools
+import math
+import random
+import time
+import pytest
+from solution import distinct_permutations, count_distinct_permutations, nth_permutation
+
+
+def test_small_with_duplicates():
+    assert list(distinct_permutations("aab")) == [("a", "a", "b"), ("a", "b", "a"), ("b", "a", "a")]
+    assert list(distinct_permutations([2, 1])) == [(1, 2), (2, 1)]
+    assert list(distinct_permutations([])) == [()]
+
+
+def test_against_itertools():
+    rng = random.Random(29)
+    for _ in range(50):
+        items = [rng.randrange(3) for _ in range(rng.randrange(0, 7))]
+        expected = sorted(set(itertools.permutations(items)))
+        assert list(distinct_permutations(items)) == expected
+        assert count_distinct_permutations(items) == len(expected)
+        for k in range(len(expected)):
+            assert nth_permutation(items, k) == expected[k]
+
+
+def test_no_duplicate_generation():
+    t = time.perf_counter()
+    perms = list(distinct_permutations([0] * 12 + [1]))
+    assert len(perms) == 13 and perms[0] == (0,) * 12 + (1,) and perms[-1] == (1,) + (0,) * 12
+    assert sum(1 for _ in distinct_permutations("aaaabbbbcc")) == 3150
+    assert time.perf_counter() - t < 1.0
+
+
+def test_counts():
+    assert count_distinct_permutations("mississippi") == 34650
+    assert count_distinct_permutations([]) == 1 and count_distinct_permutations(range(10)) == math.factorial(10)
+
+
+def test_nth_large():
+    items = list(range(20))
+    k = 10 ** 17
+    p = nth_permutation(items, k)
+    assert sorted(p) == items
+    assert p == nth_permutation(items[::-1], k)
+    assert nth_permutation(items, 0) == tuple(items) and nth_permutation(items, math.factorial(20) - 1) == tuple(items[::-1])
+    assert nth_permutation("aabbc", 29) == tuple("cbbaa")
+
+
+def test_nth_out_of_range():
+    with pytest.raises(IndexError):
+        nth_permutation("abc", 6)
+    with pytest.raises(IndexError):
+        nth_permutation("abc", -1)
+    assert nth_permutation([], 0) == ()

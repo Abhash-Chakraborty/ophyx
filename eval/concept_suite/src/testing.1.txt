@@ -1,0 +1,1354 @@
+@@@ task slugify_with_own_tests leaf=0 diff=3 entry=slugify
+@@@ prompt
+Write `slugify(text: str, max_length: int = 50) -> str` together with its own pytest-style tests in the same module. Rules: fold accents by NFKD-normalising and dropping non-ASCII characters (`"Café"` -> `"cafe"`); lowercase; replace every run of characters other than ASCII letters and digits with a single `-`; strip leading and trailing `-`; finally truncate to `max_length` characters without leaving a trailing `-`. Then, in the same module, write at least five plain test functions named `test_slugify_<something>` that take no arguments, call `slugify` through the module-level name, and check behaviour with plain `assert` statements. Between them the tests must pin down every rule: the grader replaces `slugify` with versions that each break one rule (no lowercasing, no accent folding, runs not collapsed, edges not stripped, a dash left after truncation) and expects at least one of your tests to fail for each.
+@@@ reference
+import re
+import unicodedata
+
+
+def slugify(text: str, max_length: int = 50) -> str:
+    t = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().lower()
+    t = re.sub(r"[^a-z0-9]+", "-", t).strip("-")
+    return t[:max_length].rstrip("-")
+
+
+def test_slugify_lowercases():
+    assert slugify("Hello World") == "hello-world"
+
+
+def test_slugify_folds_accents():
+    assert slugify("Café Crème") == "cafe-creme"
+
+
+def test_slugify_collapses_runs():
+    assert slugify("a  --  b!!c") == "a-b-c"
+
+
+def test_slugify_strips_edges():
+    assert slugify("  --hi there!--  ") == "hi-there"
+
+
+def test_slugify_truncates_cleanly():
+    assert slugify("abc def", max_length=4) == "abc"
+    assert len(slugify("x" * 80)) == 50
+@@@ tests
+import re
+import unicodedata
+import pytest
+import solution
+
+
+def _fold(t):
+    return unicodedata.normalize("NFKD", t).encode("ascii", "ignore").decode()
+
+
+def no_lower(text, max_length=50):
+    t = re.sub(r"[^A-Za-z0-9]+", "-", _fold(text)).strip("-")
+    return t[:max_length].rstrip("-")
+
+
+def no_fold(text, max_length=50):
+    t = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return t[:max_length].rstrip("-")
+
+
+def no_collapse(text, max_length=50):
+    t = re.sub(r"[^a-z0-9]", "-", _fold(text).lower()).strip("-")
+    return t[:max_length].rstrip("-")
+
+
+def no_strip(text, max_length=50):
+    t = re.sub(r"[^a-z0-9]+", "-", _fold(text).lower())
+    return t[:max_length]
+
+
+def dash_after_truncate(text, max_length=50):
+    t = re.sub(r"[^a-z0-9]+", "-", _fold(text).lower()).strip("-")
+    return t[:max_length]
+
+
+def own_tests():
+    return [getattr(solution, n) for n in dir(solution) if n.startswith("test_slugify_") and callable(getattr(solution, n))]
+
+
+def failures(tests):
+    n = 0
+    for t in tests:
+        try:
+            t()
+        except Exception:
+            n += 1
+    return n
+
+
+@pytest.mark.parametrize("text,kw,out", [("Hello World", {}, "hello-world"), ("Café Crème", {}, "cafe-creme"),
+                                          ("--a__b--", {}, "a-b"), ("abc def", {"max_length": 4}, "abc"),
+                                          ("!!!", {}, ""), ("Ünïcödé 2024", {}, "unicode-2024")])
+def test_slugify(text, kw, out):
+    assert solution.slugify(text, **kw) == out
+
+
+def test_truncation_default():
+    assert solution.slugify("ab " * 40) == ("ab-" * 17)[:50].rstrip("-")
+    assert len(solution.slugify("x" * 80)) == 50
+
+
+def test_has_enough_own_tests():
+    assert len(own_tests()) >= 5
+
+
+def test_own_tests_pass():
+    assert failures(own_tests()) == 0
+
+
+@pytest.mark.parametrize("mutant", [no_lower, no_fold, no_collapse, no_strip, dash_after_truncate])
+def test_own_tests_catch_mutant(monkeypatch, mutant):
+    tests = own_tests()
+    monkeypatch.setattr(solution, "slugify", mutant)
+    assert failures(tests) >= 1, f"no test caught {mutant.__name__}"
+@@@ task module_scoped_fixtures leaf=1 diff=3 entry=Engine,Connection,engine,conn
+@@@ prompt
+Write a tiny in-memory database plus the pytest fixtures for testing code that uses it. `Engine()` keeps committed rows in the list `store` and counts its constructions in the class attribute `Engine.instances` (incremented in `__init__`); `connect()` returns a new `Connection`; `dispose()` sets `disposed = True`. A `Connection` buffers rows: `insert(row)` adds a pending row, `rows()` returns committed plus pending rows (committed first), `commit()` appends the pending rows to the engine's store, `rollback()` discards them, `close()` sets `closed = True`; `insert` or `commit` on a closed connection raises RuntimeError. Then write two fixtures in the same module: `engine`, with `scope="module"`, that yields one `Engine` shared by all tests of a module and disposes it afterwards; and `conn` (function scope, depending on `engine`) that yields a fresh connection for each test and, after the test, rolls it back and closes it, so uncommitted data never leaks between tests. Test modules will use them via `from solution import engine, conn`.
+@@@ reference
+import pytest
+
+
+class Engine:
+    instances = 0
+
+    def __init__(self):
+        Engine.instances += 1
+        self.store = []
+        self.disposed = False
+
+    def connect(self):
+        return Connection(self)
+
+    def dispose(self):
+        self.disposed = True
+
+
+class Connection:
+    def __init__(self, engine):
+        self._engine = engine
+        self._pending = []
+        self.closed = False
+
+    def _check(self):
+        if self.closed:
+            raise RuntimeError("connection is closed")
+
+    def insert(self, row):
+        self._check()
+        self._pending.append(row)
+
+    def rows(self):
+        return list(self._engine.store) + list(self._pending)
+
+    def commit(self):
+        self._check()
+        self._engine.store.extend(self._pending)
+        self._pending = []
+
+    def rollback(self):
+        self._pending = []
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.fixture(scope="module")
+def engine():
+    eng = Engine()
+    yield eng
+    eng.dispose()
+
+
+@pytest.fixture
+def conn(engine):
+    c = engine.connect()
+    yield c
+    c.rollback()
+    c.close()
+@@@ tests
+import pytest
+from solution import Engine, Connection, engine, conn
+
+seen = []
+
+
+def test_first_uses_fresh_connection(conn, engine):
+    conn.insert("uncommitted")
+    seen.append((engine, conn))
+    assert conn.rows() == ["uncommitted"] and isinstance(conn, Connection)
+
+
+def test_engine_shared_connection_fresh(conn, engine):
+    prev_engine, prev_conn = seen[0]
+    assert engine is prev_engine and Engine.instances == 1
+    assert conn is not prev_conn and prev_conn.closed
+    assert conn.rows() == [] and engine.store == [] and not engine.disposed
+
+
+def test_commit_persists_in_module_engine(conn):
+    conn.insert(5)
+    conn.commit()
+    assert conn.rows() == [5]
+
+
+def test_committed_rows_visible_later(conn, engine):
+    assert engine.store == [5] and conn.rows() == [5]
+    seen.append((engine, conn))
+
+
+def test_classes_directly():
+    e = Engine()
+    c = e.connect()
+    c.insert(1)
+    c.rollback()
+    c.insert(2)
+    c.commit()
+    assert e.store == [2] and c.rows() == [2]
+    c.close()
+    with pytest.raises(RuntimeError):
+        c.insert(3)
+    with pytest.raises(RuntimeError):
+        c.commit()
+    e.dispose()
+    assert e.disposed
+@@@ task parametrized_roman leaf=2 diff=2 entry=to_roman,CASES,INVALID,test_to_roman,test_invalid
+@@@ prompt
+Write `to_roman(n: int) -> str` converting 1..3999 to Roman numerals (subtractive forms such as IV, IX, XL, XC, CD, CM), raising ValueError outside that range, plus data-driven tests in the same module. Define `CASES`, a list of at least 10 `(n, expected)` tuples whose expected numerals together include each of the six subtractive pairs, and `INVALID`, a list of at least 3 out-of-range ints. Then write `test_to_roman`, decorated with `@pytest.mark.parametrize("n, expected", CASES)`, asserting `to_roman(n) == expected`, and `test_invalid`, decorated with `@pytest.mark.parametrize("n", INVALID)`, using `pytest.raises(ValueError)`. Pass the lists themselves to `parametrize` (the grader inspects the marks).
+@@@ reference
+import pytest
+
+_VALUES = [(1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"), (90, "XC"),
+           (50, "L"), (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")]
+
+
+def to_roman(n: int) -> str:
+    if not 1 <= n <= 3999:
+        raise ValueError(f"{n} out of range 1..3999")
+    out = []
+    for value, sym in _VALUES:
+        count, n = divmod(n, value)
+        out.append(sym * count)
+    return "".join(out)
+
+
+CASES = [(1, "I"), (4, "IV"), (9, "IX"), (14, "XIV"), (40, "XL"), (90, "XC"), (400, "CD"),
+         (900, "CM"), (1994, "MCMXCIV"), (2024, "MMXXIV"), (3999, "MMMCMXCIX")]
+INVALID = [0, -1, 4000]
+
+
+@pytest.mark.parametrize("n, expected", CASES)
+def test_to_roman(n, expected):
+    assert to_roman(n) == expected
+
+
+@pytest.mark.parametrize("n", INVALID)
+def test_invalid(n):
+    with pytest.raises(ValueError):
+        to_roman(n)
+@@@ tests
+import pytest
+import solution
+
+VALUES = [(1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"), (90, "XC"),
+          (50, "L"), (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")]
+
+
+def ref(n):
+    out = []
+    for v, s in VALUES:
+        c, n = divmod(n, v)
+        out.append(s * c)
+    return "".join(out)
+
+
+def additive(n):
+    out = []
+    for v, s in [(1000, "M"), (500, "D"), (100, "C"), (50, "L"), (10, "X"), (5, "V"), (1, "I")]:
+        c, n = divmod(n, v)
+        out.append(s * c)
+    return "".join(out)
+
+
+def mark(fn):
+    (m,) = [m for m in fn.pytestmark if m.name == "parametrize"]
+    return m.args[0].replace(" ", ""), m.args[1]
+
+
+def test_to_roman_itself():
+    for n in (1, 3, 4, 8, 44, 99, 444, 1666, 1994, 3888, 3999):
+        assert solution.to_roman(n) == ref(n)
+    for n in (0, 4000, -5):
+        with pytest.raises(ValueError):
+            solution.to_roman(n)
+
+
+def test_cases_correct_and_cover_subtractive():
+    cases = solution.CASES
+    assert len(cases) >= 10 and all(ref(n) == e for n, e in cases)
+    joined = " ".join(e for _, e in cases)
+    assert all(pair in joined for pair in ("IV", "IX", "XL", "XC", "CD", "CM"))
+
+
+def test_invalid_list():
+    assert len(solution.INVALID) >= 3
+    assert all(isinstance(n, int) and not 1 <= n <= 3999 for n in solution.INVALID)
+
+
+def test_marks_use_the_lists():
+    assert mark(solution.test_to_roman) == ("n,expected", solution.CASES)
+    assert mark(solution.test_invalid) == ("n", solution.INVALID)
+
+
+def test_own_tests_pass_and_catch_additive(monkeypatch):
+    for n, e in solution.CASES:
+        solution.test_to_roman(n, e)
+    for n in solution.INVALID:
+        solution.test_invalid(n)
+    monkeypatch.setattr(solution, "to_roman", additive)
+    failed = 0
+    for n, e in solution.CASES:
+        try:
+            solution.test_to_roman(n, e)
+        except AssertionError:
+            failed += 1
+    assert failed >= 6
+@@@ task raises_checker leaf=3 diff=3 entry=parse_ratio,check_parse_ratio
+@@@ prompt
+Write `parse_ratio(text: str) -> tuple[int, int]` that parses `"3:4"` into `(3, 4)` (surrounding whitespace allowed, both parts non-negative decimal integers). Non-str input raises `TypeError("ratio must be a str")`; a malformed string raises `ValueError("bad ratio format: <text>")`; a zero second part raises `ZeroDivisionError("zero denominator")`. Then write `check_parse_ratio(parse) -> None`, a reusable test helper that checks any implementation `parse` against this contract using `pytest.raises` with `match=` for each of the three errors (type, message pattern included) and plain asserts for a couple of valid inputs. It returns None for a correct implementation and must raise (an AssertionError, pytest's failure exception, or whatever unexpected exception escapes) for an implementation that gets any part wrong, for example one that raises ValueError for a zero denominator, returns None on bad input, uses a different error message, converts non-strings with `str()`, or returns the parts swapped.
+@@@ reference
+import re
+import pytest
+
+_RE = re.compile(r"(\d+):(\d+)")
+
+
+def parse_ratio(text: str) -> tuple[int, int]:
+    if not isinstance(text, str):
+        raise TypeError("ratio must be a str")
+    m = _RE.fullmatch(text.strip())
+    if not m:
+        raise ValueError(f"bad ratio format: {text}")
+    a, b = int(m.group(1)), int(m.group(2))
+    if b == 0:
+        raise ZeroDivisionError("zero denominator")
+    return a, b
+
+
+def check_parse_ratio(parse) -> None:
+    assert parse("3:4") == (3, 4)
+    assert parse(" 10:1 ") == (10, 1)
+    with pytest.raises(TypeError, match="ratio must be a str"):
+        parse(34)
+    with pytest.raises(ValueError, match="bad ratio format"):
+        parse("3/4")
+    with pytest.raises(ValueError, match="bad ratio format"):
+        parse("")
+    with pytest.raises(ZeroDivisionError, match="zero denominator"):
+        parse("3:0")
+@@@ tests
+import re
+import pytest
+from solution import parse_ratio, check_parse_ratio
+
+RE = re.compile(r"(\d+):(\d+)")
+
+
+def good(text):
+    if not isinstance(text, str):
+        raise TypeError("ratio must be a str")
+    m = RE.fullmatch(text.strip())
+    if not m:
+        raise ValueError(f"bad ratio format: {text}")
+    a, b = int(m.group(1)), int(m.group(2))
+    if b == 0:
+        raise ZeroDivisionError("zero denominator")
+    return a, b
+
+
+def zero_as_value_error(text):
+    try:
+        return good(text)
+    except ZeroDivisionError:
+        raise ValueError("zero denominator") from None
+
+
+def none_on_bad(text):
+    try:
+        return good(text)
+    except ValueError:
+        return None
+
+
+def other_message(text):
+    try:
+        return good(text)
+    except ValueError:
+        raise ValueError("invalid input") from None
+
+
+def str_converts(text):
+    return good(str(text))
+
+
+def swapped(text):
+    a, b = good(text)
+    return b, a
+
+
+def no_zero_check(text):
+    if isinstance(text, str) and RE.fullmatch(text.strip()):
+        a, b = text.strip().split(":")
+        return int(a), int(b)
+    return good(text)
+
+
+def test_parse_ratio():
+    assert parse_ratio("3:4") == (3, 4) and parse_ratio(" 16:9\n") == (16, 9)
+    with pytest.raises(TypeError, match="ratio must be a str"):
+        parse_ratio(None)
+    with pytest.raises(ValueError, match="bad ratio format: 3:x"):
+        parse_ratio("3:x")
+    with pytest.raises(ZeroDivisionError, match="zero denominator"):
+        parse_ratio("1:0")
+
+
+def test_parse_ratio_rejects_signs_and_floats():
+    for bad in ["-1:2", "1.5:2", "1:2:3", ":"]:
+        with pytest.raises(ValueError):
+            parse_ratio(bad)
+
+
+def test_checker_accepts_correct():
+    assert check_parse_ratio(parse_ratio) is None
+    assert check_parse_ratio(good) is None
+
+
+@pytest.mark.parametrize("mutant", [zero_as_value_error, none_on_bad, other_message, str_converts, swapped, no_zero_check])
+def test_checker_rejects_mutant(mutant):
+    with pytest.raises(BaseException):
+        check_parse_ratio(mutant)
+
+
+def test_checker_uses_pytest_raises():
+    import inspect
+    assert "pytest.raises" in inspect.getsource(check_parse_ratio) or "raises(" in inspect.getsource(check_parse_ratio)
+@@@ task patch_http_client leaf=4 diff=3 entry=http_get,get_temperature,test_get_temperature_builds_url,test_get_temperature_retries_once
+@@@ prompt
+Write a small weather client and its mock-based tests in one module. `http_get(url: str) -> str` stands for the real network call; in this module it just raises `RuntimeError("network disabled")`. `get_temperature(city: str) -> float` requests `"https://weather.example/api?city=" + urllib.parse.quote(city)` through the module-level `http_get`, parses the JSON body and returns `float(body["temp_c"])`; if `http_get` raises ConnectionError it retries exactly once (a second ConnectionError propagates); a body without `"temp_c"` raises ValueError. Then write two test functions in the same module that use `unittest.mock.patch("solution.http_get")` (the module is imported as `solution`): `test_get_temperature_builds_url()` checks the returned value and, for a city whose name contains a space, that `http_get` was called once with the correctly quoted URL; `test_get_temperature_retries_once()` uses `side_effect` to fail once with ConnectionError and then succeed, and checks the result and that there were exactly two calls. Neither test may reach the real `http_get`.
+@@@ reference
+import json
+import urllib.parse
+from unittest import mock
+
+
+def http_get(url: str) -> str:
+    raise RuntimeError("network disabled")
+
+
+def get_temperature(city: str) -> float:
+    url = "https://weather.example/api?city=" + urllib.parse.quote(city)
+    try:
+        text = http_get(url)
+    except ConnectionError:
+        text = http_get(url)
+    body = json.loads(text)
+    if "temp_c" not in body:
+        raise ValueError("no temperature in response")
+    return float(body["temp_c"])
+
+
+def test_get_temperature_builds_url():
+    with mock.patch("solution.http_get", return_value='{"temp_c": 21.5}') as fake:
+        assert get_temperature("New York") == 21.5
+    fake.assert_called_once_with("https://weather.example/api?city=New%20York")
+
+
+def test_get_temperature_retries_once():
+    with mock.patch("solution.http_get", side_effect=[ConnectionError("reset"), '{"temp_c": 3}']) as fake:
+        assert get_temperature("Oslo") == 3.0
+    assert fake.call_count == 2
+@@@ tests
+import json
+import urllib.parse
+from unittest import mock
+import pytest
+import solution
+
+
+def test_real_http_get_is_disabled():
+    with pytest.raises(RuntimeError):
+        solution.http_get("https://weather.example/api?city=x")
+
+
+def test_get_temperature_with_patch_object():
+    with mock.patch.object(solution, "http_get", return_value=json.dumps({"temp_c": "7.25"})) as fake:
+        assert solution.get_temperature("São Paulo") == 7.25
+    fake.assert_called_once_with("https://weather.example/api?city=S%C3%A3o%20Paulo")
+
+
+def test_retry_then_give_up():
+    with mock.patch.object(solution, "http_get", side_effect=ConnectionError("down")) as fake:
+        with pytest.raises(ConnectionError):
+            solution.get_temperature("Rome")
+    assert fake.call_count == 2
+    with mock.patch.object(solution, "http_get", side_effect=TimeoutError("slow")) as fake:
+        with pytest.raises(TimeoutError):
+            solution.get_temperature("Rome")
+    assert fake.call_count == 1
+
+
+def test_missing_field():
+    with mock.patch.object(solution, "http_get", return_value='{"humidity": 80}'):
+        with pytest.raises(ValueError):
+            solution.get_temperature("Lima")
+
+
+def test_own_tests_pass_without_network():
+    solution.test_get_temperature_builds_url()
+    solution.test_get_temperature_retries_once()
+
+
+def unquoted(city):
+    body = json.loads(solution.http_get("https://weather.example/api?city=" + city))
+    return float(body["temp_c"])
+
+
+def no_retry(city):
+    body = json.loads(solution.http_get("https://weather.example/api?city=" + urllib.parse.quote(city)))
+    return float(body["temp_c"])
+
+
+@pytest.mark.parametrize("mutant,test_name", [(unquoted, "test_get_temperature_builds_url"),
+                                               (no_retry, "test_get_temperature_retries_once")])
+def test_own_tests_catch_mutants(monkeypatch, mutant, test_name):
+    monkeypatch.setattr(solution, "get_temperature", mutant)
+    with pytest.raises(BaseException):
+        getattr(solution, test_name)()
+@@@ task fake_clock_sessions leaf=5 diff=3 entry=FakeClock,SessionStore
+@@@ prompt
+Make time-dependent code testable by injecting the clock. Write `FakeClock(start: float = 0.0)`: calling the instance returns the current fake time; `advance(seconds)` moves it forward (negative values raise ValueError). Write `SessionStore(ttl: float, clock=time.monotonic)`, which never reads the time except through `clock()`. `create(user) -> str` stores a session under a new random token (`secrets.token_hex(16)`) and returns the token. `get(token)` returns the user, or None for unknown tokens and for sessions that are expired, i.e. when `clock() - last_seen >= ttl` (an expired session is removed when found); a successful `get` refreshes `last_seen` (sliding expiry). `purge() -> int` removes all expired sessions and returns how many it removed. `len(store)` is the number of stored sessions, expired or not, that have not been removed yet.
+@@@ reference
+import secrets
+import time
+
+
+class FakeClock:
+    def __init__(self, start: float = 0.0):
+        self.now = start
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds):
+        if seconds < 0:
+            raise ValueError("time cannot go backwards")
+        self.now += seconds
+
+
+class SessionStore:
+    def __init__(self, ttl: float, clock=time.monotonic):
+        self.ttl = ttl
+        self._clock = clock
+        self._sessions = {}
+
+    def create(self, user):
+        token = secrets.token_hex(16)
+        self._sessions[token] = [user, self._clock()]
+        return token
+
+    def _expired(self, last_seen, now):
+        return now - last_seen >= self.ttl
+
+    def get(self, token):
+        entry = self._sessions.get(token)
+        if entry is None:
+            return None
+        now = self._clock()
+        if self._expired(entry[1], now):
+            del self._sessions[token]
+            return None
+        entry[1] = now
+        return entry[0]
+
+    def purge(self):
+        now = self._clock()
+        dead = [t for t, (_, seen) in self._sessions.items() if self._expired(seen, now)]
+        for t in dead:
+            del self._sessions[t]
+        return len(dead)
+
+    def __len__(self):
+        return len(self._sessions)
+@@@ tests
+import inspect
+import time
+import pytest
+from solution import FakeClock, SessionStore
+
+
+def test_fake_clock():
+    c = FakeClock(100.0)
+    assert c() == 100.0
+    c.advance(2.5)
+    assert c() == 102.5 and FakeClock()() == 0.0
+    with pytest.raises(ValueError):
+        c.advance(-1)
+
+
+def test_default_clock_is_monotonic():
+    assert inspect.signature(SessionStore).parameters["clock"].default is time.monotonic
+
+
+def test_expiry_boundary():
+    clock = FakeClock()
+    s = SessionStore(ttl=10, clock=clock)
+    tok = s.create("ann")
+    clock.advance(9.999)
+    assert s.get(tok) == "ann"
+    clock.advance(10)
+    assert s.get(tok) is None and len(s) == 0
+
+
+def test_exactly_ttl_is_expired():
+    clock = FakeClock()
+    s = SessionStore(ttl=5, clock=clock)
+    tok = s.create("bob")
+    clock.advance(5)
+    assert s.get(tok) is None
+
+
+def test_sliding_expiry():
+    clock = FakeClock()
+    s = SessionStore(ttl=10, clock=clock)
+    tok = s.create("cy")
+    for _ in range(5):
+        clock.advance(8)
+        assert s.get(tok) == "cy"
+    assert s.get("nope") is None
+
+
+def test_purge_and_tokens():
+    clock = FakeClock()
+    s = SessionStore(ttl=10, clock=clock)
+    old = [s.create(f"u{i}") for i in range(3)]
+    clock.advance(6)
+    new = s.create("fresh")
+    clock.advance(5)
+    assert len(s) == 4 and s.purge() == 3 and len(s) == 1
+    assert s.get(new) == "fresh" and all(s.get(t) is None for t in old)
+    assert len(set(old)) == 3 and all(len(t) == 32 for t in old)
+@@@ task tmp_path_rotation leaf=6 diff=3 entry=rotate_logs,make_files
+@@@ prompt
+Write `rotate_logs(directory: Path, name: str, keep: int) -> list[str]`, which rotates a log file the way logrotate does: delete `name.<keep>` if present, rename `name.<i>` to `name.<i+1>` for i from keep-1 down to 1, rename `name` to `name.1`, then create a new empty `name`. A missing file at any step is simply skipped. `keep < 1` raises ValueError. It returns the sorted names of the files in `directory` that are `name` or `name.<digits>`. Also write a pytest fixture `make_files(tmp_path)` (a factory fixture) that returns a function `make(files: dict[str, str]) -> Path` writing each relative path with the given text content under `tmp_path`, creating parent directories, and returning `tmp_path`; an absolute path or one containing `..` raises ValueError. Test modules use it via `from solution import make_files`.
+@@@ reference
+import re
+from pathlib import Path, PurePosixPath
+
+import pytest
+
+
+def rotate_logs(directory: Path, name: str, keep: int) -> list[str]:
+    if keep < 1:
+        raise ValueError("keep must be at least 1")
+    directory = Path(directory)
+    oldest = directory / f"{name}.{keep}"
+    if oldest.exists():
+        oldest.unlink()
+    for i in range(keep - 1, 0, -1):
+        src = directory / f"{name}.{i}"
+        if src.exists():
+            src.rename(directory / f"{name}.{i + 1}")
+    base = directory / name
+    if base.exists():
+        base.rename(directory / f"{name}.1")
+    base.touch()
+    pat = re.compile(re.escape(name) + r"(\.\d+)?")
+    return sorted(p.name for p in directory.iterdir() if pat.fullmatch(p.name))
+
+
+@pytest.fixture
+def make_files(tmp_path):
+    def make(files: dict[str, str]) -> Path:
+        for rel, text in files.items():
+            p = PurePosixPath(rel)
+            if p.is_absolute() or ".." in p.parts:
+                raise ValueError(f"unsafe path {rel!r}")
+            target = tmp_path / p
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text)
+        return tmp_path
+    return make
+@@@ tests
+import pytest
+from solution import rotate_logs, make_files
+
+
+def test_make_files_fixture(make_files, tmp_path):
+    root = make_files({"a.txt": "A", "sub/dir/b.txt": "B"})
+    assert root == tmp_path
+    assert (tmp_path / "a.txt").read_text() == "A" and (tmp_path / "sub/dir/b.txt").read_text() == "B"
+
+
+def test_make_files_rejects_escapes(make_files):
+    for bad in ["/etc/passwd", "../x", "a/../../y"]:
+        with pytest.raises(ValueError):
+            make_files({bad: "x"})
+
+
+def test_first_rotation(make_files):
+    d = make_files({"app.log": "current", "other.txt": "keep me"})
+    assert rotate_logs(d, "app.log", 3) == ["app.log", "app.log.1"]
+    assert (d / "app.log").read_text() == "" and (d / "app.log.1").read_text() == "current"
+    assert (d / "other.txt").read_text() == "keep me"
+
+
+def test_shift_and_drop_oldest(make_files):
+    d = make_files({"app.log": "0", "app.log.1": "1", "app.log.2": "2", "app.log.3": "3"})
+    assert rotate_logs(d, "app.log", 3) == ["app.log", "app.log.1", "app.log.2", "app.log.3"]
+    assert [(d / f"app.log.{i}").read_text() for i in (1, 2, 3)] == ["0", "1", "2"]
+
+
+def test_gaps_and_missing_base(make_files):
+    d = make_files({"app.log.2": "two"})
+    assert rotate_logs(d, "app.log", 5) == ["app.log", "app.log.3"]
+    assert (d / "app.log.3").read_text() == "two"
+
+
+def test_keep_validation(tmp_path):
+    with pytest.raises(ValueError):
+        rotate_logs(tmp_path, "x.log", 0)
+    assert rotate_logs(tmp_path, "x.log", 1) == ["x.log"]
+    (tmp_path / "x.log").write_text("data")
+    assert rotate_logs(tmp_path, "x.log", 1) == ["x.log", "x.log.1"]
+    assert (tmp_path / "x.log.1").read_text() == "data"
+@@@ task tiny_property_testing leaf=7 diff=4 entry=rle_encode,rle_decode,random_strings,shrink,for_all
+@@@ prompt
+Write a miniature property-based testing toolkit without any library, and use it on a run-length encoder. `rle_encode(s: str) -> list[tuple[str, int]]` groups consecutive equal characters (`"aaab"` -> `[("a", 3), ("b", 1)]`, `""` -> `[]`); `rle_decode(pairs) -> str` reverses it. `random_strings(rng: random.Random, n: int, alphabet: str = "ab", max_len: int = 12)` yields `n` strings, each of a random length from 0 to `max_len` made of random characters from `alphabet`, using only `rng` for randomness (so the same seed gives the same strings). `shrink(value: str, prop) -> str` takes a string on which `prop` fails and repeatedly tries deleting single characters, keeping any shorter string on which `prop` still fails, until no single deletion fails; it returns that minimal string. A property fails when calling it raises AssertionError or returns exactly `False` (returning None passes). `for_all(prop, inputs) -> None` checks every input; at the first failure it shrinks the input and raises `AssertionError(f"falsified by {shrunk!r} (original {value!r})")`.
+@@@ reference
+import itertools
+
+
+def rle_encode(s: str) -> list[tuple[str, int]]:
+    return [(ch, len(list(group))) for ch, group in itertools.groupby(s)]
+
+
+def rle_decode(pairs) -> str:
+    return "".join(ch * n for ch, n in pairs)
+
+
+def random_strings(rng, n, alphabet="ab", max_len=12):
+    for _ in range(n):
+        yield "".join(rng.choice(alphabet) for _ in range(rng.randint(0, max_len)))
+
+
+def _fails(prop, value):
+    try:
+        return prop(value) is False
+    except AssertionError:
+        return True
+
+
+def shrink(value, prop):
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(value)):
+            candidate = value[:i] + value[i + 1:]
+            if _fails(prop, candidate):
+                value, changed = candidate, True
+                break
+    return value
+
+
+def for_all(prop, inputs):
+    for value in inputs:
+        if _fails(prop, value):
+            shrunk = shrink(value, prop)
+            raise AssertionError(f"falsified by {shrunk!r} (original {value!r})")
+@@@ tests
+import random
+import re
+import pytest
+from solution import rle_encode, rle_decode, random_strings, shrink, for_all
+
+
+def test_rle():
+    assert rle_encode("aaab") == [("a", 3), ("b", 1)] and rle_encode("") == []
+    assert rle_encode("abba") == [("a", 1), ("b", 2), ("a", 1)]
+    assert rle_decode([("x", 2), ("y", 1)]) == "xxy"
+
+
+def test_random_strings_deterministic_and_bounded():
+    a = list(random_strings(random.Random(42), 200, alphabet="xyz", max_len=7))
+    b = list(random_strings(random.Random(42), 200, alphabet="xyz", max_len=7))
+    assert a == b and len(a) == 200
+    assert all(len(s) <= 7 and set(s) <= set("xyz") for s in a)
+    assert len({len(s) for s in a}) > 4
+    assert a != list(random_strings(random.Random(43), 200, alphabet="xyz", max_len=7))
+
+
+def test_roundtrip_property_holds():
+    def prop(s):
+        assert rle_decode(rle_encode(s)) == s
+    for_all(prop, random_strings(random.Random(0), 300))
+    for_all(lambda s: all(n >= 1 for _, n in rle_encode(s)), random_strings(random.Random(1), 300))
+
+
+def test_failure_is_shrunk():
+    with pytest.raises(AssertionError) as e:
+        for_all(lambda s: len(s) < 5, random_strings(random.Random(3), 500, max_len=20))
+    m = re.search(r"falsified by '([ab]*)' \(original '([ab]*)'\)", str(e.value))
+    assert m and len(m.group(1)) == 5 and len(m.group(2)) >= 5
+
+
+def test_shrink():
+    assert shrink("abcabc", lambda s: "c" not in s) == "c"
+
+    def prop(s):
+        assert "aa" not in s
+    assert shrink("babaab", prop) == "aa"
+
+
+def test_none_return_passes():
+    for_all(lambda s: None, ["", "abc"])
+    with pytest.raises(AssertionError, match="falsified by ''"):
+        for_all(lambda s: False, ["xyz"])
+@@@ task fakes_stubs_spies leaf=8 diff=3 entry=Spy,FakeMailer,StubCalendar,send_reminders
+@@@ prompt
+Write three kinds of test doubles and the code they help test. `Spy(fn=None)` is a callable that records every call in `calls` as `(args, kwargs)` tuples (args a tuple, kwargs a dict), returns `fn(*args, **kwargs)` (or None when there is no `fn`), and offers `call_count` (a property) and `called_with(*args, **kwargs) -> bool` (whether any recorded call matched exactly). `FakeMailer(fail_for=())` is a working in-memory fake: `send(to, subject, body)` appends `(to, subject, body)` to its list `outbox`, except that addresses in `fail_for` raise ConnectionError. `StubCalendar(today)` is a stub whose `today()` returns the canned `datetime.date`. Then write `send_reminders(invoices, mailer, calendar) -> list[str]`: for each invoice (a dict with `id`, `email`, `due` (a date) and `paid`), in order, if it is unpaid and `due` is before `calendar.today()`, call `mailer.send(email, f"Invoice {id} overdue", f"Invoice {id} was due on {due.isoformat()}.")`. A ConnectionError for one invoice must not stop the others; return the ids whose sending failed.
+@@@ reference
+class Spy:
+    def __init__(self, fn=None):
+        self._fn = fn
+        self.calls = []
+
+    def __call__(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+        return self._fn(*args, **kwargs) if self._fn is not None else None
+
+    @property
+    def call_count(self):
+        return len(self.calls)
+
+    def called_with(self, *args, **kwargs):
+        return (args, kwargs) in self.calls
+
+
+class FakeMailer:
+    def __init__(self, fail_for=()):
+        self.fail_for = set(fail_for)
+        self.outbox = []
+
+    def send(self, to, subject, body):
+        if to in self.fail_for:
+            raise ConnectionError(f"cannot reach {to}")
+        self.outbox.append((to, subject, body))
+
+
+class StubCalendar:
+    def __init__(self, today):
+        self._today = today
+
+    def today(self):
+        return self._today
+
+
+def send_reminders(invoices, mailer, calendar):
+    today = calendar.today()
+    failed = []
+    for inv in invoices:
+        if inv["paid"] or not inv["due"] < today:
+            continue
+        try:
+            mailer.send(inv["email"], f"Invoice {inv['id']} overdue",
+                        f"Invoice {inv['id']} was due on {inv['due'].isoformat()}.")
+        except ConnectionError:
+            failed.append(inv["id"])
+    return failed
+@@@ tests
+import datetime as dt
+import pytest
+from solution import Spy, FakeMailer, StubCalendar, send_reminders
+
+TODAY = dt.date(2026, 3, 10)
+INVOICES = [
+    {"id": "A1", "email": "a@x.org", "due": dt.date(2026, 3, 1), "paid": False},
+    {"id": "B2", "email": "b@x.org", "due": dt.date(2026, 3, 10), "paid": False},
+    {"id": "C3", "email": "c@x.org", "due": dt.date(2026, 2, 1), "paid": True},
+    {"id": "D4", "email": "d@x.org", "due": dt.date(2026, 3, 9), "paid": False},
+]
+
+
+def test_spy_records_and_forwards():
+    spy = Spy(lambda a, b=0: a + b)
+    assert spy(1, b=2) == 3 and spy(5) == 5
+    assert spy.calls == [((1,), {"b": 2}), ((5,), {})] and spy.call_count == 2
+    assert spy.called_with(1, b=2) and not spy.called_with(1, 2)
+    assert Spy()("anything") is None
+
+
+def test_fake_mailer():
+    m = FakeMailer(fail_for={"bad@x.org"})
+    m.send("ok@x.org", "s", "b")
+    with pytest.raises(ConnectionError):
+        m.send("bad@x.org", "s", "b")
+    assert m.outbox == [("ok@x.org", "s", "b")]
+
+
+def test_stub_calendar():
+    assert StubCalendar(TODAY).today() == TODAY
+
+
+def test_send_reminders_with_fake():
+    mailer = FakeMailer()
+    assert send_reminders(INVOICES, mailer, StubCalendar(TODAY)) == []
+    assert mailer.outbox == [("a@x.org", "Invoice A1 overdue", "Invoice A1 was due on 2026-03-01."),
+                             ("d@x.org", "Invoice D4 overdue", "Invoice D4 was due on 2026-03-09.")]
+
+
+def test_failures_do_not_stop_others():
+    mailer = FakeMailer(fail_for={"a@x.org"})
+    assert send_reminders(INVOICES, mailer, StubCalendar(TODAY)) == ["A1"]
+    assert [m[0] for m in mailer.outbox] == ["d@x.org"]
+
+
+def test_spy_on_collaborator():
+    mailer = FakeMailer()
+    mailer.send = Spy(mailer.send)
+    send_reminders(INVOICES, mailer, StubCalendar(dt.date(2026, 3, 11)))
+    assert mailer.send.call_count == 3
+    assert mailer.send.called_with("b@x.org", "Invoice B2 overdue", "Invoice B2 was due on 2026-03-10.")
+    assert len(mailer.outbox) == 3
+@@@ task async_test_helper leaf=9 diff=3 entry=async_test,gather_limited
+@@@ prompt
+Without pytest-asyncio, make async code testable. Write a decorator `async_test(fn)` that turns an `async def` test function into an ordinary function which runs the coroutine to completion with `asyncio.run` (a fresh event loop per call) and returns its result. It must keep the function's name and signature (`functools.wraps`), so pytest still injects fixtures such as `tmp_path`; decorating a function that is not a coroutine function raises TypeError immediately. Also write the code under test: `async def gather_limited(factories, limit: int) -> list`, which calls each zero-argument async callable in `factories`, runs the resulting coroutines with at most `limit` running at once (use `asyncio.Semaphore`), and returns their results in input order; the first exception propagates. `limit < 1` raises ValueError.
+@@@ reference
+import asyncio
+import functools
+import inspect
+
+
+def async_test(fn):
+    if not inspect.iscoroutinefunction(fn):
+        raise TypeError(f"{fn.__name__} is not an async function")
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        return asyncio.run(fn(*args, **kwargs))
+    return wrapper
+
+
+async def gather_limited(factories, limit: int) -> list:
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    sem = asyncio.Semaphore(limit)
+
+    async def run(factory):
+        async with sem:
+            return await factory()
+    return list(await asyncio.gather(*(run(f) for f in factories)))
+@@@ tests
+import asyncio
+import inspect
+import pytest
+from solution import async_test, gather_limited
+
+
+def tracker():
+    state = {"now": 0, "max": 0}
+
+    def make(i, delay=0.01):
+        async def job():
+            state["now"] += 1
+            state["max"] = max(state["max"], state["now"])
+            await asyncio.sleep(delay)
+            state["now"] -= 1
+            return i * i
+        return job
+    return state, make
+
+
+@async_test
+async def test_runs_as_plain_function():
+    await asyncio.sleep(0)
+    assert asyncio.get_running_loop() is not None
+
+
+@async_test
+async def test_fixture_injection_still_works(tmp_path):
+    (tmp_path / "f.txt").write_text("hi")
+    await asyncio.sleep(0)
+    assert (tmp_path / "f.txt").read_text() == "hi"
+
+
+def test_decorator_contract():
+    async def sample(a, b=1):
+        return a + b
+    wrapped = async_test(sample)
+    assert not inspect.iscoroutinefunction(wrapped) and wrapped.__name__ == "sample"
+    assert wrapped(2, b=3) == 5 and str(inspect.signature(wrapped)) == "(a, b=1)"
+    with pytest.raises(TypeError):
+        async_test(lambda: None)
+
+
+@async_test
+async def test_limit_respected():
+    state, make = tracker()
+    results = await gather_limited([make(i) for i in range(8)], 3)
+    assert results == [i * i for i in range(8)] and state["max"] == 3
+
+
+@async_test
+async def test_order_and_errors():
+    state, make = tracker()
+    fs = [make(3, 0.02), make(1, 0.0), make(2, 0.01)]
+    assert await gather_limited(fs, 5) == [9, 1, 4]
+
+    async def bad():
+        raise KeyError("x")
+    with pytest.raises(KeyError):
+        await gather_limited([make(1), bad], 2)
+    with pytest.raises(ValueError):
+        await gather_limited([], 0)
+@@@ task aaa_order_builder leaf=10 diff=2 entry=Item,Order,OrderBuilder,order_total
+@@@ prompt
+Write pricing code plus a test-data builder that keeps tests short and readable in the arrange-act-assert style. `Item(sku: str, price_cents: int, qty: int = 1)` and `Order(tier: str, items: list[Item], coupon: str | None)` are dataclasses. `order_total(order) -> int` returns cents: the subtotal of `price_cents * qty`; the `"gold"` tier then gets 10% off (integer division, i.e. `subtotal - subtotal // 10`); then coupon `"SAVE5"` takes 500 cents off if the subtotal before discounts was at least 2000; unknown coupons are ignored; the total never goes below 0. `OrderBuilder()` starts from sensible defaults (tier `"standard"`, no items, no coupon) and has chainable `with_item(sku, price_cents, qty=1)`, `for_tier(tier)` and `with_coupon(code)` methods (each returns the builder) and `build() -> Order`, which can be called repeatedly and returns independent orders (separate item lists). Finally, in the same module, write at least three test functions named `test_order_total_<something>` that use `OrderBuilder` and contain the comments `# Arrange`, `# Act` and `# Assert`, in that order, separating the three phases; between them they must catch a missing gold discount and a coupon applied below the threshold.
+@@@ reference
+from dataclasses import dataclass, field
+
+
+@dataclass
+class Item:
+    sku: str
+    price_cents: int
+    qty: int = 1
+
+
+@dataclass
+class Order:
+    tier: str
+    items: list[Item] = field(default_factory=list)
+    coupon: str | None = None
+
+
+def order_total(order) -> int:
+    subtotal = sum(i.price_cents * i.qty for i in order.items)
+    total = subtotal - subtotal // 10 if order.tier == "gold" else subtotal
+    if order.coupon == "SAVE5" and subtotal >= 2000:
+        total -= 500
+    return max(total, 0)
+
+
+class OrderBuilder:
+    def __init__(self):
+        self._tier = "standard"
+        self._items = []
+        self._coupon = None
+
+    def with_item(self, sku, price_cents, qty=1):
+        self._items.append(Item(sku, price_cents, qty))
+        return self
+
+    def for_tier(self, tier):
+        self._tier = tier
+        return self
+
+    def with_coupon(self, code):
+        self._coupon = code
+        return self
+
+    def build(self) -> Order:
+        return Order(self._tier, [Item(i.sku, i.price_cents, i.qty) for i in self._items], self._coupon)
+
+
+def test_order_total_gold_discount():
+    # Arrange
+    order = OrderBuilder().for_tier("gold").with_item("pen", 1000, qty=2).build()
+    # Act
+    total = order_total(order)
+    # Assert
+    assert total == 1800
+
+
+def test_order_total_coupon_threshold():
+    # Arrange
+    small = OrderBuilder().with_item("pen", 1999).with_coupon("SAVE5").build()
+    big = OrderBuilder().with_item("pen", 2000).with_coupon("SAVE5").build()
+    # Act
+    totals = (order_total(small), order_total(big))
+    # Assert
+    assert totals == (1999, 1500)
+
+
+def test_order_total_never_negative():
+    # Arrange
+    order = OrderBuilder().for_tier("gold").with_item("x", 2000).with_coupon("SAVE5").build()
+    order.items[0].price_cents = 0
+    # Act
+    total = order_total(order)
+    # Assert
+    assert total == 0
+@@@ tests
+import dataclasses
+import inspect
+import solution
+from solution import Item, Order, OrderBuilder, order_total
+
+
+def own_tests():
+    return [getattr(solution, n) for n in dir(solution) if n.startswith("test_order_total_")]
+
+
+def test_dataclasses_and_totals():
+    assert dataclasses.is_dataclass(Item) and dataclasses.is_dataclass(Order)
+    o = Order("gold", [Item("a", 1500), Item("b", 250, 2)], "SAVE5")
+    assert order_total(o) == 2000 - 200 - 500
+    assert order_total(Order("standard", [Item("a", 100, 3)], "BOGUS")) == 300
+    assert order_total(Order("standard", [Item("a", 2000)], "SAVE5")) == 1500
+    assert order_total(Order("gold", [Item("a", 999)], None)) == 999 - 99
+
+
+def test_builder_defaults_and_independence():
+    b = OrderBuilder().with_item("x", 100)
+    first = b.build()
+    second = b.with_item("y", 50, qty=2).build()
+    assert first == Order("standard", [Item("x", 100)], None)
+    assert second.items == [Item("x", 100), Item("y", 50, 2)] and first.items is not second.items
+    assert OrderBuilder().for_tier("gold").with_coupon("SAVE5").build().tier == "gold"
+
+
+def test_own_tests_are_aaa():
+    tests = own_tests()
+    assert len(tests) >= 3
+    for t in tests:
+        src = inspect.getsource(t)
+        a, b, c = src.find("# Arrange"), src.find("# Act"), src.find("# Assert")
+        assert -1 < a < b < c, t.__name__
+        assert "OrderBuilder" in src
+
+
+def test_own_tests_pass():
+    for t in own_tests():
+        t()
+
+
+def no_gold(order):
+    subtotal = sum(i.price_cents * i.qty for i in order.items)
+    total = subtotal - (500 if order.coupon == "SAVE5" and subtotal >= 2000 else 0)
+    return max(total, 0)
+
+
+def coupon_always(order):
+    subtotal = sum(i.price_cents * i.qty for i in order.items)
+    total = subtotal - subtotal // 10 if order.tier == "gold" else subtotal
+    return max(total - (500 if order.coupon == "SAVE5" else 0), 0)
+
+
+def test_own_tests_catch_mutants(monkeypatch):
+    for mutant in (no_gold, coupon_always):
+        monkeypatch.setattr(solution, "order_total", mutant)
+        failed = 0
+        for t in own_tests():
+            try:
+                t()
+            except AssertionError:
+                failed += 1
+        assert failed >= 1, mutant.__name__
+@@@ task regression_paginate leaf=11 diff=2 entry=paginate,test_regression_142_first_page,test_regression_142_exact_multiple
+@@@ prompt
+Bug report #142 against this function: "page 1 skips the first items, and when the number of items is an exact multiple of per_page an extra, empty last page is reported."
+
+```python
+def paginate(items, page, per_page):
+    total_pages = len(items) // per_page + 1
+    if page < 1 or page > total_pages:
+        raise ValueError("page out of range")
+    start = page * per_page
+    return items[start:start + per_page], total_pages
+```
+
+Write the fixed `paginate(items, page, per_page)` returning `(page_items, total_pages)`, where pages are numbered from 1, `total_pages` is `ceil(len(items) / per_page)` but at least 1 (an empty list has one empty page), a page outside 1..total_pages raises ValueError, and `per_page < 1` raises ValueError. Then add two regression tests to the same module, each pinning one half of the report: `test_regression_142_first_page()` (fails on any version where page 1 does not start with the first item) and `test_regression_142_exact_multiple()` (fails on any version that reports or serves an extra page when the length is an exact multiple of `per_page`). Each must pass on your fix and fail on the original code above.
+@@@ reference
+import math
+
+
+def paginate(items, page, per_page):
+    if per_page < 1:
+        raise ValueError("per_page must be at least 1")
+    total_pages = max(1, math.ceil(len(items) / per_page))
+    if page < 1 or page > total_pages:
+        raise ValueError("page out of range")
+    start = (page - 1) * per_page
+    return items[start:start + per_page], total_pages
+
+
+def test_regression_142_first_page():
+    assert paginate([1, 2, 3, 4, 5], 1, 2) == ([1, 2], 3)
+
+
+def test_regression_142_exact_multiple():
+    items = list(range(10))
+    assert paginate(items, 2, 5) == ([5, 6, 7, 8, 9], 2)
+    try:
+        paginate(items, 3, 5)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("page 3 of 10 items at 5 per page must not exist")
+@@@ tests
+import math
+import pytest
+import solution
+
+
+def buggy(items, page, per_page):
+    total_pages = len(items) // per_page + 1
+    if page < 1 or page > total_pages:
+        raise ValueError("page out of range")
+    start = page * per_page
+    return items[start:start + per_page], total_pages
+
+
+def start_fixed_only(items, page, per_page):
+    total_pages = len(items) // per_page + 1
+    if page < 1 or page > total_pages:
+        raise ValueError("page out of range")
+    start = (page - 1) * per_page
+    return items[start:start + per_page], total_pages
+
+
+def count_fixed_only(items, page, per_page):
+    total_pages = max(1, math.ceil(len(items) / per_page))
+    if page < 1 or page > total_pages:
+        raise ValueError("page out of range")
+    start = page * per_page
+    return items[start:start + per_page], total_pages
+
+
+def run(name):
+    try:
+        getattr(solution, name)()
+        return True
+    except Exception:
+        return False
+
+
+def test_fixed_paginate():
+    items = list("abcdefg")
+    assert solution.paginate(items, 1, 3) == (["a", "b", "c"], 3)
+    assert solution.paginate(items, 3, 3) == (["g"], 3)
+    assert solution.paginate(list(range(6)), 2, 3) == ([3, 4, 5], 2)
+    assert solution.paginate([], 1, 10) == ([], 1)
+
+
+def test_out_of_range():
+    for args in [([1, 2, 3], 0, 2), ([1, 2, 3], 3, 2), (list(range(4)), 3, 2), ([], 2, 5), ([1], 1, 0)]:
+        with pytest.raises(ValueError):
+            solution.paginate(*args)
+
+
+def test_regression_tests_pass_on_fix():
+    assert run("test_regression_142_first_page") and run("test_regression_142_exact_multiple")
+
+
+def test_regression_tests_fail_on_original(monkeypatch):
+    monkeypatch.setattr(solution, "paginate", buggy)
+    assert not run("test_regression_142_first_page")
+    assert not run("test_regression_142_exact_multiple")
+
+
+def test_each_test_pins_its_half(monkeypatch):
+    monkeypatch.setattr(solution, "paginate", start_fixed_only)
+    assert not run("test_regression_142_exact_multiple")
+    monkeypatch.setattr(solution, "paginate", count_fixed_only)
+    assert not run("test_regression_142_first_page")
+@@@ task doctested_temperatures leaf=12 diff=2 entry=c_to_f,f_to_c,parse_temp
+@@@ prompt
+Write a temperature module documented with doctests. `c_to_f(c: float) -> float` and `f_to_c(f: float) -> float` convert between Celsius and Fahrenheit, rounded to 2 decimals. `parse_temp(text: str) -> float` reads strings such as `"21.5C"`, `"70F"` or `"-3 c"` (a number, optional whitespace, then a unit letter in either case, surrounding whitespace allowed) and returns the temperature in Celsius rounded to 2 decimals; anything else raises `ValueError`. Give each of the three functions a docstring with at least two doctest examples, and include in `parse_temp`'s docstring an example showing the ValueError traceback for bad input. All examples must pass under `doctest.testmod`, and there must be at least 7 examples in total.
+@@@ reference
+import re
+
+_TEMP = re.compile(r"\s*(-?\d+(?:\.\d+)?)\s*([cCfF])\s*")
+
+
+def c_to_f(c: float) -> float:
+    """Convert Celsius to Fahrenheit.
+
+    >>> c_to_f(100)
+    212.0
+    >>> c_to_f(-40)
+    -40.0
+    >>> c_to_f(36.6)
+    97.88
+    """
+    return round(c * 9 / 5 + 32, 2)
+
+
+def f_to_c(f: float) -> float:
+    """Convert Fahrenheit to Celsius.
+
+    >>> f_to_c(32)
+    0.0
+    >>> f_to_c(98.6)
+    37.0
+    """
+    return round((f - 32) * 5 / 9, 2)
+
+
+def parse_temp(text: str) -> float:
+    """Parse a temperature with a unit and return Celsius.
+
+    >>> parse_temp("21.5C")
+    21.5
+    >>> parse_temp(" 70F ")
+    21.11
+    >>> parse_temp("-3 c")
+    -3.0
+    >>> parse_temp("warm")
+    Traceback (most recent call last):
+        ...
+    ValueError: not a temperature: 'warm'
+    """
+    m = _TEMP.fullmatch(text)
+    if not m:
+        raise ValueError(f"not a temperature: {text!r}")
+    value = float(m.group(1))
+    return round(value, 2) if m.group(2) in "cC" else f_to_c(value)
+@@@ tests
+import doctest
+import pytest
+import solution
+from solution import c_to_f, f_to_c, parse_temp
+
+
+def test_doctests_pass():
+    result = doctest.testmod(solution)
+    assert result.failed == 0 and result.attempted >= 7
+
+
+@pytest.mark.parametrize("fn", [c_to_f, f_to_c, parse_temp])
+def test_each_function_has_examples(fn):
+    (test,) = doctest.DocTestFinder().find(fn)
+    assert len(test.examples) >= 2
+
+
+def test_error_example_documented():
+    doc = parse_temp.__doc__
+    assert "Traceback (most recent call last)" in doc and "ValueError" in doc
+
+
+def test_conversions():
+    assert c_to_f(0) == 32.0 and c_to_f(37) == 98.6 and f_to_c(212) == 100.0
+    assert f_to_c(0) == -17.78
+
+
+def test_parse_temp():
+    assert parse_temp("21.5C") == 21.5 and parse_temp("212f") == 100.0 and parse_temp(" -3 c ") == -3.0
+    for bad in ["", "21", "C", "21.5K", "1e3C", "--3C"]:
+        with pytest.raises(ValueError):
+            parse_temp(bad)

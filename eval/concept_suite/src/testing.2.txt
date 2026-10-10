@@ -1,0 +1,353 @@
+@@@ task autospec_gateway leaf=4 diff=3 entry=PaymentGateway,checkout,test_checkout_charges_once,test_checkout_rejects_empty_cart
+@@@ prompt
+Write a checkout function and tests for it that use autospec mocks, so a call that does not match the real method's signature fails the test. `PaymentGateway` has `charge(self, account: str, cents: int, *, idempotency_key: str) -> str` and `refund(self, charge_id: str) -> None`; both just raise `RuntimeError("real gateway")` here. `checkout(gateway, account: str, cart: list[tuple[int, int]], order_id: str) -> str` totals the cart's `(price_cents, qty)` lines; if the total is not positive it raises ValueError without charging; otherwise it calls `gateway.charge(account, total, idempotency_key=f"order-{order_id}")` exactly once and returns the charge id. In the same module write `test_checkout_charges_once()`, which builds the gateway with `unittest.mock.create_autospec(PaymentGateway, instance=True)`, checks the returned id and asserts the exact single call, and `test_checkout_rejects_empty_cart()`, which checks the ValueError and that nothing was charged. The grader runs your tests against broken versions of `checkout` (wrong keyword name, charging twice, charging an empty cart, ignoring quantities) and expects each to be caught.
+@@@ reference
+from unittest import mock
+
+import pytest
+
+
+class PaymentGateway:
+    def charge(self, account: str, cents: int, *, idempotency_key: str) -> str:
+        raise RuntimeError("real gateway")
+
+    def refund(self, charge_id: str) -> None:
+        raise RuntimeError("real gateway")
+
+
+def checkout(gateway, account: str, cart: list[tuple[int, int]], order_id: str) -> str:
+    total = sum(price * qty for price, qty in cart)
+    if total <= 0:
+        raise ValueError("nothing to charge")
+    return gateway.charge(account, total, idempotency_key=f"order-{order_id}")
+
+
+def test_checkout_charges_once():
+    gw = mock.create_autospec(PaymentGateway, instance=True)
+    gw.charge.return_value = "ch_1"
+    assert checkout(gw, "acct", [(500, 2), (250, 1)], "42") == "ch_1"
+    gw.charge.assert_called_once_with("acct", 1250, idempotency_key="order-42")
+
+
+def test_checkout_rejects_empty_cart():
+    gw = mock.create_autospec(PaymentGateway, instance=True)
+    with pytest.raises(ValueError):
+        checkout(gw, "acct", [], "1")
+    gw.charge.assert_not_called()
+@@@ tests
+import inspect
+from unittest import mock
+import pytest
+import solution
+from solution import PaymentGateway, checkout
+
+
+def test_real_gateway_unavailable():
+    with pytest.raises(RuntimeError):
+        PaymentGateway().charge("a", 1, idempotency_key="k")
+
+
+def test_checkout_behaviour():
+    gw = mock.create_autospec(PaymentGateway, instance=True)
+    gw.charge.return_value = "ch_9"
+    assert checkout(gw, "acc", [(100, 3)], "A7") == "ch_9"
+    gw.charge.assert_called_once_with("acc", 300, idempotency_key="order-A7")
+    gw.refund.assert_not_called()
+    with pytest.raises(ValueError):
+        checkout(gw, "acc", [(0, 5)], "x")
+    assert gw.charge.call_count == 1
+
+
+def test_autospec_catches_bad_signature():
+    gw = mock.create_autospec(PaymentGateway, instance=True)
+    with pytest.raises(TypeError):
+        gw.charge("a", 1, key="k")
+
+
+def test_own_tests_pass_and_use_autospec():
+    solution.test_checkout_charges_once()
+    solution.test_checkout_rejects_empty_cart()
+    src = inspect.getsource(solution.test_checkout_charges_once)
+    assert "autospec" in src
+
+
+def wrong_keyword(gateway, account, cart, order_id):
+    return gateway.charge(account, sum(p * q for p, q in cart), key=f"order-{order_id}")
+
+
+def charges_twice(gateway, account, cart, order_id):
+    total = sum(p * q for p, q in cart)
+    if total <= 0:
+        raise ValueError("nothing")
+    gateway.charge(account, total, idempotency_key=f"order-{order_id}")
+    return gateway.charge(account, total, idempotency_key=f"order-{order_id}")
+
+
+def charges_empty(gateway, account, cart, order_id):
+    total = sum(p * q for p, q in cart)
+    cid = gateway.charge(account, total, idempotency_key=f"order-{order_id}")
+    if total <= 0:
+        raise ValueError("nothing")
+    return cid
+
+
+def ignores_qty(gateway, account, cart, order_id):
+    total = sum(p for p, _ in cart)
+    if total <= 0:
+        raise ValueError("nothing")
+    return gateway.charge(account, total, idempotency_key=f"order-{order_id}")
+
+
+@pytest.mark.parametrize("mutant", [wrong_keyword, charges_twice, charges_empty, ignores_qty])
+def test_own_tests_catch_mutants(monkeypatch, mutant):
+    monkeypatch.setattr(solution, "checkout", mutant)
+    failed = 0
+    for t in (solution.test_checkout_charges_once, solution.test_checkout_rejects_empty_cart):
+        try:
+            t()
+        except BaseException:
+            failed += 1
+    assert failed >= 1
+@@@ task param_ids_phone leaf=2 diff=3 entry=normalize_phone,CASES,BAD,test_normalize_phone,test_rejects_bad_phone
+@@@ prompt
+Write `normalize_phone(raw: str) -> str` and table-driven tests with readable ids. Normalisation: remove spaces, dashes, dots and parentheses; a leading `"00"` becomes `"+"`; a number starting with a single `"0"` is a UK national number and becomes `"+44"` followed by the digits after the 0; the result must be `"+"` followed by 8 to 15 digits, otherwise raise ValueError (so a number with no prefix at all is rejected). In the same module define `CASES`, a list of at least 6 `pytest.param(raw, expected, id="...")` entries with unique, non-empty ids, covering a `00` prefix, a national `0` number and punctuation removal; and `BAD`, a list of at least 3 `pytest.param(raw, id="...")` entries that must be rejected, with unique ids. Write `test_normalize_phone(raw, expected)` decorated with `@pytest.mark.parametrize("raw, expected", CASES)` and `test_rejects_bad_phone(raw)` decorated with `@pytest.mark.parametrize("raw", BAD)` using `pytest.raises(ValueError)`.
+@@@ reference
+import re
+
+import pytest
+
+
+def normalize_phone(raw: str) -> str:
+    s = re.sub(r"[\s\-.()]", "", raw)
+    if s.startswith("00"):
+        s = "+" + s[2:]
+    elif s.startswith("0"):
+        s = "+44" + s[1:]
+    if not re.fullmatch(r"\+\d{8,15}", s):
+        raise ValueError(f"not a phone number: {raw!r}")
+    return s
+
+
+CASES = [
+    pytest.param("+44 20 7946 0958", "+442079460958", id="international-spaces"),
+    pytest.param("0049 30 1234567", "+49301234567", id="double-zero-prefix"),
+    pytest.param("020 7946 0958", "+442079460958", id="uk-national"),
+    pytest.param("(020) 7946-0958", "+442079460958", id="parentheses-dash"),
+    pytest.param("+1.415.555.2671", "+14155552671", id="dots"),
+    pytest.param("+12345678", "+12345678", id="shortest-allowed"),
+]
+BAD = [
+    pytest.param("12345678", id="no-prefix"),
+    pytest.param("+12 34", id="too-short"),
+    pytest.param("+44 20 7946 0958 ext 1", id="letters"),
+    pytest.param("+1234567890123456", id="too-long"),
+]
+
+
+@pytest.mark.parametrize("raw, expected", CASES)
+def test_normalize_phone(raw, expected):
+    assert normalize_phone(raw) == expected
+
+
+@pytest.mark.parametrize("raw", BAD)
+def test_rejects_bad_phone(raw):
+    with pytest.raises(ValueError):
+        normalize_phone(raw)
+@@@ tests
+import re
+import pytest
+import solution
+
+ParameterSet = type(pytest.param(1))
+
+
+def ref(raw):
+    s = re.sub(r"[\s\-.()]", "", raw)
+    if s.startswith("00"):
+        s = "+" + s[2:]
+    elif s.startswith("0"):
+        s = "+44" + s[1:]
+    if not re.fullmatch(r"\+\d{8,15}", s):
+        raise ValueError(raw)
+    return s
+
+
+def ref_ok(raw):
+    try:
+        ref(raw)
+        return True
+    except ValueError:
+        return False
+
+
+def test_normalize_phone_itself():
+    assert solution.normalize_phone("0044 20 7946 0958") == "+442079460958"
+    assert solution.normalize_phone("07700 900123") == "+447700900123"
+    for bad in ["", "+", "0", "+44 abc 1234", "44 20 7946 0958"]:
+        with pytest.raises(ValueError):
+            solution.normalize_phone(bad)
+
+
+def test_params_have_unique_ids():
+    for table, width in ((solution.CASES, 2), (solution.BAD, 1)):
+        assert all(isinstance(p, ParameterSet) and len(p.values) == width for p in table)
+        ids = [p.id for p in table]
+        assert all(isinstance(i, str) and i for i in ids) and len(set(ids)) == len(ids)
+    assert len(solution.CASES) >= 6 and len(solution.BAD) >= 3
+
+
+def test_tables_are_correct_and_cover_rules():
+    raws = [p.values[0] for p in solution.CASES]
+    assert all(ref(raw) == exp for raw, exp in (p.values for p in solution.CASES))
+    assert all(not ref_ok(p.values[0]) for p in solution.BAD)
+    stripped = [re.sub(r"[\s\-.()]", "", r) for r in raws]
+    assert any(s.startswith("00") for s in stripped)
+    assert any(s.startswith("0") and not s.startswith("00") for s in stripped)
+    assert any(re.search(r"[\s\-.()]", r) for r in raws)
+
+
+def test_marks_use_tables():
+    (m1,) = [m for m in solution.test_normalize_phone.pytestmark if m.name == "parametrize"]
+    (m2,) = [m for m in solution.test_rejects_bad_phone.pytestmark if m.name == "parametrize"]
+    assert m1.args[1] is solution.CASES and m2.args[1] is solution.BAD
+
+
+def no_double_zero(raw):
+    s = re.sub(r"[\s\-.()]", "", raw)
+    if s.startswith("0"):
+        s = "+44" + s[1:]
+    if not re.fullmatch(r"\+\d{8,15}", s):
+        raise ValueError(raw)
+    return s
+
+
+def no_national(raw):
+    s = re.sub(r"[\s\-.()]", "", raw)
+    if s.startswith("00"):
+        s = "+" + s[2:]
+    if not re.fullmatch(r"\+\d{8,15}", s):
+        raise ValueError(raw)
+    return s
+
+
+@pytest.mark.parametrize("mutant", [no_double_zero, no_national])
+def test_own_tests_catch_mutants(monkeypatch, mutant):
+    for p in solution.CASES:
+        solution.test_normalize_phone(*p.values)
+    monkeypatch.setattr(solution, "normalize_phone", mutant)
+    failed = 0
+    for p in solution.CASES:
+        try:
+            solution.test_normalize_phone(*p.values)
+        except Exception:
+            failed += 1
+    assert failed >= 1
+@@@ task yield_fixture_teardown leaf=1 diff=3 entry=EVENTS,FakeServer,Client,server,client
+@@@ prompt
+Write yield fixtures whose teardown runs in the right order. In one module define `EVENTS: list[str] = []` and two classes that log to it. `FakeServer(port: int = 8000)` has `start()` (logs `"server.start"`, raises RuntimeError if already running), `stop()` (logs `"server.stop"`, raises RuntimeError if not running), `running` and `url` (`"http://127.0.0.1:<port>"`). `Client(url)` logs `"client.open"` when created and has `close()` logging `"client.close"` (closing twice raises RuntimeError) and `get(path) -> str` returning `url + path` (RuntimeError after close). Then write two function-scoped pytest fixtures with `yield`: `server` starts a `FakeServer`, yields it and stops it afterwards; `client` depends on `server`, yields `Client(server.url)` and closes it afterwards. pytest tears fixtures down in reverse order of setup, so each test logs `server.start, client.open` before it runs and `client.close, server.stop` after it. Test modules use them via `from solution import server, client`.
+@@@ reference
+import pytest
+
+EVENTS: list[str] = []
+
+
+class FakeServer:
+    def __init__(self, port: int = 8000):
+        self.port = port
+        self.running = False
+
+    @property
+    def url(self):
+        return f"http://127.0.0.1:{self.port}"
+
+    def start(self):
+        if self.running:
+            raise RuntimeError("already running")
+        self.running = True
+        EVENTS.append("server.start")
+
+    def stop(self):
+        if not self.running:
+            raise RuntimeError("not running")
+        self.running = False
+        EVENTS.append("server.stop")
+
+
+class Client:
+    def __init__(self, url):
+        self.url = url
+        self.closed = False
+        EVENTS.append("client.open")
+
+    def get(self, path):
+        if self.closed:
+            raise RuntimeError("client closed")
+        return self.url + path
+
+    def close(self):
+        if self.closed:
+            raise RuntimeError("already closed")
+        self.closed = True
+        EVENTS.append("client.close")
+
+
+@pytest.fixture
+def server():
+    srv = FakeServer()
+    srv.start()
+    yield srv
+    srv.stop()
+
+
+@pytest.fixture
+def client(server):
+    c = Client(server.url)
+    yield c
+    c.close()
+@@@ tests
+import pytest
+from solution import EVENTS, FakeServer, Client, server, client
+
+UP = ["server.start", "client.open"]
+DOWN = ["client.close", "server.stop"]
+kept = []
+
+
+def test_setup_order(client, server):
+    assert EVENTS == UP and server.running
+    assert client.get("/health") == "http://127.0.0.1:8000/health"
+    kept.append((client, server))
+
+
+def test_teardown_reverse_order(client):
+    assert EVENTS == UP + DOWN + UP
+    old_client, old_server = kept[0]
+    assert old_client.closed and not old_server.running and old_client is not client
+
+
+def test_server_alone(server):
+    assert EVENTS[-1] == "server.start" and EVENTS[-3:-1] == DOWN
+
+
+def test_after_server_only():
+    assert EVENTS[-2:] == ["server.start", "server.stop"]
+    assert EVENTS.count("client.open") == EVENTS.count("client.close") == 2
+
+
+def test_classes_directly():
+    before = len(EVENTS)
+    s = FakeServer(9001)
+    with pytest.raises(RuntimeError):
+        s.stop()
+    s.start()
+    with pytest.raises(RuntimeError):
+        s.start()
+    c = Client(s.url)
+    c.close()
+    with pytest.raises(RuntimeError):
+        c.close()
+    with pytest.raises(RuntimeError):
+        c.get("/")
+    s.stop()
+    assert EVENTS[before:] == ["server.start", "client.open", "client.close", "server.stop"]
+    assert s.url == "http://127.0.0.1:9001"

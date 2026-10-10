@@ -1,0 +1,563 @@
+@@@ task talk_lineup_knapsack leaf=7 diff=3 entry=best_lineup
+@@@ prompt
+A conference track has `minutes` of stage time, and `talks` is a list of `(duration, score)` pairs (positive int durations, non-negative scores). Write `best_lineup(talks, minutes) -> tuple[int, list[int]]`, which picks each talk at most once to maximise the total score with total duration at most `minutes`. It returns `(best_score, indexes)` with the chosen talks' indexes sorted. Use a 0/1 knapsack table over capacities `0..minutes`. Iterate capacities downwards so each talk is used once, record which talk improved which capacity, and reconstruct the chosen set by walking back over those records. Enumerating subsets is exponential and must not be used, since 120 talks with 5 000 minutes must finish in about a second. A negative `minutes` or a non-positive duration raises `ValueError`. No talks, or no talk that fits, gives `(0, [])`.
+@@@ reference
+def best_lineup(talks, minutes):
+    if minutes < 0 or any(d <= 0 for d, _ in talks):
+        raise ValueError("minutes must be >= 0 and durations positive")
+    best = [0] * (minutes + 1)
+    took = []
+    for duration, score in talks:
+        row = bytearray(minutes + 1)
+        for t in range(minutes, duration - 1, -1):
+            cand = best[t - duration] + score
+            if cand > best[t]:
+                best[t] = cand
+                row[t] = 1
+        took.append(row)
+    chosen, t = [], minutes
+    for i in range(len(talks) - 1, -1, -1):
+        if took[i][t]:
+            chosen.append(i)
+            t -= talks[i][0]
+    return best[minutes], sorted(chosen)
+@@@ tests
+import itertools
+import random
+import time
+import pytest
+from solution import best_lineup
+
+
+def brute(talks, minutes):
+    best = 0
+    for k in range(len(talks) + 1):
+        for combo in itertools.combinations(range(len(talks)), k):
+            if sum(talks[i][0] for i in combo) <= minutes:
+                best = max(best, sum(talks[i][1] for i in combo))
+    return best
+
+
+def check(talks, minutes, result):
+    score, idx = result
+    assert idx == sorted(set(idx))
+    assert sum(talks[i][0] for i in idx) <= minutes and sum(talks[i][1] for i in idx) == score
+
+
+def test_example():
+    talks = [(30, 50), (45, 60), (20, 35), (25, 40)]
+    res = best_lineup(talks, 75)
+    check(talks, 75, res)
+    assert res == (125, [0, 2, 3])
+
+
+def test_each_talk_once():
+    assert best_lineup([(10, 7)], 100) == (7, [0])
+    assert best_lineup([(10, 7), (10, 1)], 100) == (8, [0, 1])
+
+
+def test_edge_cases():
+    assert best_lineup([], 60) == (0, [])
+    assert best_lineup([(90, 10)], 60) == (0, [])
+    assert best_lineup([(5, 0), (5, 3)], 0) == (0, [])
+    with pytest.raises(ValueError):
+        best_lineup([(0, 5)], 10)
+    with pytest.raises(ValueError):
+        best_lineup([(1, 1)], -1)
+
+
+def test_against_brute():
+    rng = random.Random(30)
+    for _ in range(200):
+        talks = [(rng.randrange(1, 12), rng.randrange(0, 20)) for _ in range(rng.randrange(0, 9))]
+        minutes = rng.randrange(0, 40)
+        res = best_lineup(talks, minutes)
+        check(talks, minutes, res)
+        assert res[0] == brute(talks, minutes)
+
+
+def test_scales():
+    rng = random.Random(31)
+    talks = [(rng.randrange(10, 90), rng.randrange(1, 100)) for _ in range(120)]
+    t = time.perf_counter()
+    res = best_lineup(talks, 5000)
+    assert time.perf_counter() - t < 2.5
+    check(talks, 5000, res)
+    assert res[0] > 0
+@@@ task tie_broken_routes leaf=8 diff=4 entry=best_route
+@@@ prompt
+Write `best_route(roads, start, goal)` for a courier app that needs fully deterministic answers. `roads` is an iterable of directed `(from, to, cost)` triples with string place names and non-negative costs; a negative cost raises `ValueError`. Among all routes from `start` to `goal`, pick the cheapest. Among equally cheap routes, pick the one with the fewest roads. Among those, pick the lexicographically smallest list of place names. Return `(cost, path)`, or None if `goal` can't be reached (`start == goal` gives `(0, [start])`). Use Dijkstra with the whole label `(cost, hops, path_tuple)` as the heap priority and settle each place the first time it is popped. This is correct because extending a route always increases its label. Do not enumerate all paths.
+@@@ reference
+import heapq
+
+
+def best_route(roads, start, goal):
+    graph = {}
+    for a, b, cost in roads:
+        if cost < 0:
+            raise ValueError(f"negative cost on {a} -> {b}")
+        graph.setdefault(a, []).append((b, cost))
+    heap = [(0, 0, (start,))]
+    settled = set()
+    while heap:
+        cost, hops, path = heapq.heappop(heap)
+        node = path[-1]
+        if node in settled:
+            continue
+        settled.add(node)
+        if node == goal:
+            return cost, list(path)
+        for nxt, w in graph.get(node, ()):
+            if nxt not in settled:
+                heapq.heappush(heap, (cost + w, hops + 1, path + (nxt,)))
+    return None
+@@@ tests
+import random
+import time
+import pytest
+from solution import best_route
+
+
+def brute(roads, start, goal):
+    graph = {}
+    for a, b, w in roads:
+        graph.setdefault(a, []).append((b, w))
+    best = None
+
+    def dfs(path, cost):
+        nonlocal best
+        node = path[-1]
+        if node == goal:
+            key = (cost, len(path), path)
+            if best is None or key < best:
+                best = key
+            return
+        for nxt, w in graph.get(node, ()):
+            if nxt not in path:
+                dfs(path + [nxt], cost + w)
+    dfs([start], 0)
+    return None if best is None else (best[0], best[2])
+
+
+def test_cost_then_hops_then_names():
+    roads = [("A", "D", 4), ("A", "B", 2), ("B", "D", 2), ("A", "C", 1), ("C", "E", 1), ("E", "D", 2)]
+    assert best_route(roads, "A", "D") == (4, ["A", "D"])
+    roads2 = [("A", "C", 1), ("C", "D", 1), ("A", "B", 1), ("B", "D", 1)]
+    assert best_route(roads2, "A", "D") == (2, ["A", "B", "D"])
+
+
+def test_zero_cost_roads_prefer_fewer_hops():
+    roads = [("s", "x", 0), ("x", "y", 0), ("y", "t", 0), ("s", "t", 0)]
+    assert best_route(roads, "s", "t") == (0, ["s", "t"])
+
+
+def test_unreachable_same_and_negative():
+    assert best_route([("a", "b", 1)], "b", "a") is None
+    assert best_route([], "a", "a") == (0, ["a"])
+    with pytest.raises(ValueError):
+        best_route([("a", "b", -2)], "a", "b")
+
+
+def test_against_brute():
+    rng = random.Random(32)
+    names = list("pqrstu")
+    for _ in range(300):
+        roads = [(rng.choice(names), rng.choice(names), rng.randrange(0, 4)) for _ in range(rng.randrange(0, 14))]
+        s, g = rng.choice(names), rng.choice(names)
+        assert best_route(roads, s, g) == brute(roads, s, g)
+
+
+def test_scales():
+    rng = random.Random(33)
+    n = 3000
+    roads = [(f"n{i:04d}", f"n{i + 1:04d}", 5) for i in range(n - 1)]
+    roads += [(f"n{rng.randrange(n):04d}", f"n{rng.randrange(n):04d}", rng.randrange(1, 50)) for _ in range(15_000)]
+    t = time.perf_counter()
+    cost, path = best_route(roads, "n0000", f"n{n - 1:04d}")
+    assert time.perf_counter() - t < 2.0
+    assert path[0] == "n0000" and path[-1] == f"n{n - 1:04d}" and cost <= 5 * (n - 1)
+@@@ task timed_union_find leaf=10 diff=4 entry=connection_times
+@@@ prompt
+Offices `0..n-1` get network cables in order (`cables[i] = (a, b)`). After all cables are in, answer historical questions. Write `connection_times(n, cables, queries) -> list`, which for each query `(a, b)` returns the index of the first cable after whose installation `a` and `b` were connected, None if they never were, and -1 if `a == b`. Do it with a timestamped union-find. Use union by size and no path compression, because compression would rewrite history. When a root is attached under another root by cable `i`, record `i` on it. Two offices became connected at the largest timestamp on the tree path between them (up to their lowest common ancestor in the union forest). Union by size keeps that path O(log n) long, so 100 000 offices, 200 000 cables and 100 000 queries take a couple of seconds at most. Do not replay the cables per query.
+@@@ reference
+def connection_times(n, cables, queries):
+    parent = list(range(n))
+    size = [1] * n
+    stamp = [-1] * n
+
+    def root(x):
+        while parent[x] != x:
+            x = parent[x]
+        return x
+
+    for i, (a, b) in enumerate(cables):
+        ra, rb = root(a), root(b)
+        if ra == rb:
+            continue
+        if size[ra] < size[rb]:
+            ra, rb = rb, ra
+        parent[rb] = ra
+        size[ra] += size[rb]
+        stamp[rb] = i
+
+    def chain(x):
+        out = [x]
+        while parent[x] != x:
+            x = parent[x]
+            out.append(x)
+        return out
+
+    answers = []
+    for a, b in queries:
+        if a == b:
+            answers.append(-1)
+            continue
+        pa, pb = chain(a), chain(b)
+        if pa[-1] != pb[-1]:
+            answers.append(None)
+            continue
+        on_b = set(pb)
+        best = -1
+        for x in pa:
+            if x in on_b:
+                lca = x
+                break
+            best = max(best, stamp[x])
+        for x in pb:
+            if x == lca:
+                break
+            best = max(best, stamp[x])
+        answers.append(best)
+    return answers
+@@@ tests
+import random
+import time
+from solution import connection_times
+
+
+def brute(n, cables, queries):
+    out = []
+    for a, b in queries:
+        if a == b:
+            out.append(-1)
+            continue
+        comp = list(range(n))
+        ans = None
+        for i, (x, y) in enumerate(cables):
+            cx, cy = comp[x], comp[y]
+            if cx != cy:
+                comp = [cx if c == cy else c for c in comp]
+            if comp[a] == comp[b]:
+                ans = i
+                break
+        out.append(ans)
+    return out
+
+
+def test_example():
+    cables = [(0, 1), (2, 3), (1, 2), (0, 3), (4, 5)]
+    qs = [(0, 1), (0, 3), (3, 1), (4, 5), (0, 4), (2, 2), (5, 4)]
+    assert connection_times(6, cables, qs) == [0, 2, 2, 4, None, -1, 4]
+
+
+def test_redundant_cables_do_not_count():
+    assert connection_times(3, [(0, 1), (1, 0), (0, 1), (1, 2)], [(0, 2), (2, 1)]) == [3, 3]
+
+
+def test_no_cables():
+    assert connection_times(3, [], [(0, 1), (1, 1)]) == [None, -1]
+
+
+def test_against_brute():
+    rng = random.Random(34)
+    for _ in range(200):
+        n = rng.randrange(1, 9)
+        cables = [(rng.randrange(n), rng.randrange(n)) for _ in range(rng.randrange(0, 12))]
+        qs = [(rng.randrange(n), rng.randrange(n)) for _ in range(6)]
+        assert connection_times(n, cables, qs) == brute(n, cables, qs)
+
+
+def test_history_not_rewritten_by_late_queries():
+    n = 64
+    cables = [(i, i + 1) for i in range(n - 1)]
+    qs = [(0, k) for k in range(1, n)]
+    assert connection_times(n, cables, qs) == list(range(n - 1))
+
+
+def test_scales():
+    rng = random.Random(35)
+    n = 100_000
+    cables = [(rng.randrange(n), rng.randrange(n)) for _ in range(200_000)]
+    qs = [(rng.randrange(n), rng.randrange(n)) for _ in range(100_000)]
+    t = time.perf_counter()
+    res = connection_times(n, cables, qs)
+    assert time.perf_counter() - t < 4.0
+    assert len(res) == 100_000 and all(r is None or 0 <= r < 200_000 for r in res)
+@@@ task project_critical_path leaf=9 diff=3 entry=critical_path
+@@@ prompt
+Write `critical_path(tasks) -> tuple[int, list[str]]` for project planning. `tasks` maps each task name to `(duration, deps)`: a positive int duration and a list of task names that must finish first. Every dependency must be a key, otherwise `ValueError`. Tasks start as soon as all their dependencies finish (a task with none starts at 0). Return the project length, which is the latest finish time, and one critical chain in execution order: the task that finishes last, preceded by a dependency that finishes exactly when it starts, and so on back to a task with no dependencies. Break ties by alphabetical order (the alphabetically smallest of the tasks finishing last, and of the dependencies that fit). Process tasks in a topological order (Kahn's algorithm), without recursion, since chains can be 50 000 tasks long. A cycle raises `ValueError`. An empty project gives `(0, [])`.
+@@@ reference
+from collections import deque
+
+
+def critical_path(tasks):
+    users = {name: [] for name in tasks}
+    indegree = {}
+    for name, (duration, deps) in tasks.items():
+        if duration <= 0:
+            raise ValueError(f"duration of {name} must be positive")
+        indegree[name] = len(set(deps))
+        for d in set(deps):
+            if d not in tasks:
+                raise ValueError(f"unknown dependency {d!r} of {name!r}")
+            users[d].append(name)
+    queue = deque(sorted(n for n, k in indegree.items() if k == 0))
+    finish, seen = {}, 0
+    while queue:
+        n = queue.popleft()
+        seen += 1
+        duration, deps = tasks[n]
+        finish[n] = duration + max((finish[d] for d in deps), default=0)
+        for u in users[n]:
+            indegree[u] -= 1
+            if indegree[u] == 0:
+                queue.append(u)
+    if seen < len(tasks):
+        raise ValueError("dependency cycle")
+    if not tasks:
+        return 0, []
+    length = max(finish.values())
+    cur = min(n for n, f in finish.items() if f == length)
+    chain = [cur]
+    while tasks[cur][1]:
+        start = finish[cur] - tasks[cur][0]
+        cur = min(d for d in tasks[cur][1] if finish[d] == start)
+        chain.append(cur)
+    return length, chain[::-1]
+@@@ tests
+import random
+import time
+import pytest
+from solution import critical_path
+
+PLAN = {
+    "design": (3, []),
+    "backend": (5, ["design"]),
+    "frontend": (4, ["design"]),
+    "infra": (2, []),
+    "deploy": (1, ["backend", "frontend", "infra"]),
+    "docs": (2, ["design"]),
+}
+
+
+def longest(tasks):
+    memo = {}
+    for _ in range(len(tasks)):
+        for n in tasks:
+            d, deps = tasks[n]
+            if all(x in memo for x in deps):
+                memo[n] = d + max((memo[x] for x in deps), default=0)
+    return max(memo.values(), default=0)
+
+
+def check_chain(tasks, length, chain):
+    assert sum(tasks[n][0] for n in chain) == length
+    assert not tasks[chain[0]][1]
+    assert all(a in tasks[b][1] for a, b in zip(chain, chain[1:]))
+
+
+def test_example():
+    assert critical_path(PLAN) == (9, ["design", "backend", "deploy"])
+
+
+def test_alphabetical_ties():
+    tasks = {"b": (2, []), "a": (2, []), "z": (1, ["a", "b"]), "y": (3, ["b"])}
+    assert critical_path(tasks) == (5, ["b", "y"])
+    tasks2 = {"b": (2, []), "a": (2, []), "z": (1, ["a", "b"])}
+    assert critical_path(tasks2) == (3, ["a", "z"])
+
+
+def test_errors_and_empty():
+    assert critical_path({}) == (0, [])
+    with pytest.raises(ValueError):
+        critical_path({"a": (1, ["ghost"])})
+    with pytest.raises(ValueError):
+        critical_path({"a": (1, ["b"]), "b": (1, ["a"])})
+    with pytest.raises(ValueError):
+        critical_path({"a": (0, [])})
+
+
+def test_random_dags():
+    rng = random.Random(36)
+    for _ in range(150):
+        names = [f"t{i}" for i in range(rng.randrange(1, 12))]
+        tasks = {n: (rng.randrange(1, 6), [m for m in names[:i] if rng.random() < 0.35]) for i, n in enumerate(names)}
+        length, chain = critical_path(tasks)
+        assert length == longest(tasks)
+        check_chain(tasks, length, chain)
+
+
+def test_long_chain_iterative():
+    n = 50_000
+    tasks = {f"s{i}": (1, [f"s{i - 1}"] if i else []) for i in range(n)}
+    t = time.perf_counter()
+    length, chain = critical_path(tasks)
+    assert time.perf_counter() - t < 2.0
+    assert length == n and chain[0] == "s0" and chain[-1] == f"s{n - 1}" and len(chain) == n
+@@@ task org_chart_lca leaf=15 diff=4 entry=OrgChart
+@@@ prompt
+Write `OrgChart(managers)` for answering "who is the lowest common manager" questions on a company tree. `managers` maps every employee to their manager, with None for exactly one root (the CEO). Several roots, or a manager who is not an employee, or a cycle, raise `ValueError`. Precompute depths breadth-first and a binary-lifting table (`up[k][x]` is the 2**k-th manager of x, the root mapping to itself), all iteratively; the tree can be a 100 000-deep chain. Methods: `depth(e)` (the root is 0; an unknown employee raises `KeyError`), `lowest_common_manager(a, b)` (the deepest employee who is an ancestor of both, where everyone counts as their own ancestor), answered in O(log n) by lifting the deeper one to equal depth and then jumping both up while their ancestors differ, and `chain(a, b)` (the list of employees from `a` up to the lowest common manager and back down to `b`, both ends included). Walking up one manager at a time per query is too slow for 10 000 queries on a deep tree.
+@@@ reference
+from collections import deque
+
+
+class OrgChart:
+    def __init__(self, managers):
+        roots = [e for e, m in managers.items() if m is None]
+        if len(roots) != 1:
+            raise ValueError("need exactly one root")
+        self._ids = {e: i for i, e in enumerate(managers)}
+        self._names = list(managers)
+        n = len(self._names)
+        parent = [0] * n
+        children = [[] for _ in range(n)]
+        for e, m in managers.items():
+            i = self._ids[e]
+            if m is None:
+                parent[i] = i
+                continue
+            if m not in self._ids:
+                raise ValueError(f"unknown manager {m!r}")
+            parent[i] = self._ids[m]
+            children[parent[i]].append(i)
+        root = self._ids[roots[0]]
+        self._depth = [-1] * n
+        self._depth[root] = 0
+        queue = deque([root])
+        while queue:
+            x = queue.popleft()
+            for c in children[x]:
+                self._depth[c] = self._depth[x] + 1
+                queue.append(c)
+        if -1 in self._depth:
+            raise ValueError("cycle in management chain")
+        self._parent = parent
+        self._up = [parent]
+        for _ in range(1, max(1, max(self._depth).bit_length())):
+            prev = self._up[-1]
+            self._up.append([prev[prev[i]] for i in range(n)])
+
+    def depth(self, e):
+        return self._depth[self._ids[e]]
+
+    def _lca(self, a, b):
+        if self._depth[a] < self._depth[b]:
+            a, b = b, a
+        diff, k = self._depth[a] - self._depth[b], 0
+        while diff:
+            if diff & 1:
+                a = self._up[k][a]
+            diff >>= 1
+            k += 1
+        if a == b:
+            return a
+        for row in reversed(self._up):
+            if row[a] != row[b]:
+                a, b = row[a], row[b]
+        return self._parent[a]
+
+    def lowest_common_manager(self, a, b):
+        return self._names[self._lca(self._ids[a], self._ids[b])]
+
+    def chain(self, a, b):
+        ia, ib = self._ids[a], self._ids[b]
+        top = self._lca(ia, ib)
+
+        def climb(x):
+            out = [x]
+            while x != top:
+                x = self._parent[x]
+                out.append(x)
+            return out
+        up_part, down_part = climb(ia), climb(ib)
+        return [self._names[i] for i in up_part + down_part[-2::-1]]
+@@@ tests
+import random
+import time
+import pytest
+from solution import OrgChart
+
+ORG = {"ceo": None, "cto": "ceo", "cfo": "ceo", "dev1": "cto", "dev2": "cto", "intern": "dev1", "acct": "cfo"}
+
+
+def ancestors(managers, e):
+    out = [e]
+    while managers[e] is not None:
+        e = managers[e]
+        out.append(e)
+    return out
+
+
+def brute_lca(managers, a, b):
+    anc_b = set(ancestors(managers, b))
+    return next(x for x in ancestors(managers, a) if x in anc_b)
+
+
+def test_depth_and_lca():
+    org = OrgChart(ORG)
+    assert org.depth("ceo") == 0 and org.depth("intern") == 3
+    assert org.lowest_common_manager("intern", "dev2") == "cto"
+    assert org.lowest_common_manager("intern", "acct") == "ceo"
+    assert org.lowest_common_manager("dev1", "intern") == "dev1"
+    assert org.lowest_common_manager("cfo", "cfo") == "cfo"
+    with pytest.raises(KeyError):
+        org.depth("nobody")
+
+
+def test_chain():
+    org = OrgChart(ORG)
+    assert org.chain("intern", "acct") == ["intern", "dev1", "cto", "ceo", "cfo", "acct"]
+    assert org.chain("cto", "intern") == ["cto", "dev1", "intern"]
+    assert org.chain("dev2", "dev2") == ["dev2"]
+
+
+def test_validation():
+    with pytest.raises(ValueError):
+        OrgChart({"a": None, "b": None})
+    with pytest.raises(ValueError):
+        OrgChart({"a": None, "b": "ghost"})
+    with pytest.raises(ValueError):
+        OrgChart({"a": None, "b": "c", "c": "b"})
+
+
+def test_against_brute():
+    rng = random.Random(37)
+    for _ in range(60):
+        n = rng.randrange(1, 40)
+        names = [f"e{i}" for i in range(n)]
+        managers = {names[0]: None}
+        for i in range(1, n):
+            managers[names[i]] = names[rng.randrange(i)]
+        items = list(managers.items())
+        rng.shuffle(items)
+        managers = dict(items)
+        org = OrgChart(managers)
+        for _ in range(30):
+            a, b = rng.choice(names), rng.choice(names)
+            assert org.lowest_common_manager(a, b) == brute_lca(managers, a, b)
+            assert org.depth(a) == len(ancestors(managers, a)) - 1
+
+
+def test_deep_chain_fast_queries():
+    n = 100_000
+    managers = {"m0": None, **{f"m{i}": f"m{i - 1}" for i in range(1, n)}}
+    managers["side"] = "m50000"
+    t = time.perf_counter()
+    org = OrgChart(managers)
+    rng = random.Random(38)
+    for _ in range(10_000):
+        a, b = rng.randrange(n), rng.randrange(n)
+        assert org.lowest_common_manager(f"m{a}", f"m{b}") == f"m{min(a, b)}"
+    assert org.lowest_common_manager("side", f"m{n - 1}") == "m50000"
+    assert time.perf_counter() - t < 4.0
+    assert org.depth(f"m{n - 1}") == n - 1
