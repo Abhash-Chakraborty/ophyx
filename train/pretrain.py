@@ -390,6 +390,8 @@ def save_ckpt(state, step, extra):
     np.savez(os.path.join(tmp, "opt.npz"), **flat(state[1]))
     with open(os.path.join(tmp, "meta.json"), "w") as f:
         json.dump({"step": step, "config": CONFIG, **extra}, f, indent=1)
+    if os.path.isdir(d):  # same step saved before (e.g. a finished run re-launched): replace it
+        shutil.rmtree(d)
     os.replace(tmp, d)
     for old in sorted(glob.glob(os.path.join(out_dir(), "ckpt-*")))[:-2]:  # keep the latest two
         if not old.endswith(".tmp"):
@@ -588,6 +590,10 @@ def train(data=None):
         params, opt_state = jax.device_put(p, repl), jax.device_put(o, repl)
         log(f"resumed from {path} at step {start}")
     log(f"{n_params / 1e6:.1f}M parameters")
+    if start >= total_steps:  # already finished: nothing to train, don't re-save or re-export
+        log(f"run already finished at step {start}; skipping")
+        return params, {"step": start, "total_steps": total_steps, "finished": True, "reason": "already_done",
+                        "hours": 0.0, "tokens_per_s": None, "n_params": n_params, "final_loss": None}
 
     use_wandb = bool(cfg("wandb", None)) and KEYS.get("WANDB_API_KEY")
     if use_wandb:
