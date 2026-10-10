@@ -296,111 +296,163 @@ def bucket_of(source, kind, quality, stack_cut, github_cut=99.0):
     return source
 
 
+def _load_sigs(paths):
+    """Signature parts -> numpy arrays, no per-document Python objects (10.9M docs as Python lists OOM'd 31 GB)."""
+    import pyarrow.parquet as pq
+
+    src_names, part_names = [], []
+    code_src, code_part = {}, {}
+    acc = collections.defaultdict(list)
+    contam = {}
+    base = 0
+    for p in paths:
+        t = pq.read_table(p, columns=["id", "source", "kind", "quality", "n_chars", "sig", "contam", "part"])
+        n = t.num_rows
+        acc["id"].append(np.array(t["id"].to_pylist(), dtype="S40"))
+        srcs = t["source"].to_pylist()
+        for x in set(srcs):
+            if x not in code_src:
+                code_src[x] = len(src_names)
+                src_names.append(x)
+        acc["src"].append(np.array([code_src[x] for x in srcs], dtype=np.int16))
+        acc["mixed"].append(np.array([k == "mixed" for k in t["kind"].to_pylist()], dtype=bool))
+        acc["qual"].append(np.nan_to_num(t["quality"].to_numpy(zero_copy_only=False).astype(np.float64), nan=0.0))
+        acc["nch"].append(t["n_chars"].to_numpy().astype(np.int64))
+        sig = t["sig"].combine_chunks()
+        offs = np.frombuffer(sig.buffers()[1], dtype=np.int32)[sig.offset: sig.offset + n + 1]
+        data = np.frombuffer(sig.buffers()[2], dtype=np.uint8)
+        assert np.all(np.diff(offs) == PERMS * 4), "unexpected signature length"
+        acc["sig"].append(data[offs[0]: offs[-1]].view(np.uint32).reshape(n, PERMS).copy())
+        for i, c in enumerate(t["contam"].to_pylist()):
+            if c:
+                contam[base + i] = c
+        parts = t["part"].to_pylist()
+        for x in set(parts):
+            if x not in code_part:
+                code_part[x] = len(part_names)
+                part_names.append(x)
+        acc["part"].append(np.array([code_part[x] for x in parts], dtype=np.int32))
+        base += n
+        os.remove(p)
+    arr = {k: np.concatenate(v) for k, v in acc.items()}
+    return arr, contam, src_names, part_names
+
+
 def job_dedup():
     import pyarrow as pa
     import pyarrow.parquet as pq
+    from huggingface_hub import snapshot_download
 
     fs = hf().list_repo_files(REPO, repo_type="dataset")
-    sig_parts = sorted(f for f in fs if f.startswith(f"{OV}/sig/") and f.endswith(".parquet"))
+    sig_from = CONFIG.get("sig_from", OV)
+    sig_parts = sorted(f for f in fs if f.startswith(f"{sig_from}/sig/") and f.endswith(".parquet"))
     raw = [f for f in fs if f.startswith(f"{V}/raw/") and f.endswith(".parquet") and "/_manifests/" not in f]
     if len(sig_parts) < len(raw) and not SMOKE:
         raise RuntimeError(f"only {len(sig_parts)} of {len(raw)} signature parts exist")
-    cols = collections.defaultdict(list)
-    for p in sig_parts:
-        t = pq.read_table(download(p)).to_pydict()
-        for k, v in t.items():
-            cols[k].extend(v)
-        os.remove(download(p))
-    n = len(cols["id"])
-    log(f"loaded {n:,} signatures from {len(sig_parts)} parts")
+    if SMOKE:
+        sig_parts = sig_parts[: CONFIG.get("smoke_sig_parts", 3)]
+    t0 = time.time()
+    snapshot_download(REPO, repo_type="dataset", token=KEYS["HF_TOKEN"], local_dir=os.path.join(WORK, "dl"),
+                      allow_patterns=sig_parts, max_workers=16)  # parallel; one by one took 43 min
+    arr, contam, src_names, part_names = _load_sigs([os.path.join(WORK, "dl", p) for p in sig_parts])
+    n = len(arr["id"])
+    log(f"loaded {n:,} signatures from {len(sig_parts)} parts in {time.time() - t0:.0f}s; sig matrix {arr['sig'].nbytes / 1e9:.1f} GB")
 
     # benchmark items join the pool with the best rank, so documents that near-duplicate them are caught
     global BENCH
     BENCH, items = build_bench_index()
-    for pid, text in items:
-        cols["id"].append("bench:" + pid)
-        cols["source"].append("benchmark")
-        cols["kind"].append("bench")
-        cols["quality"].append(None)
-        cols["n_chars"].append(len(text))
-        cols["repo"].append(None)
-        cols["sig"].append(minhash(text).tobytes())
-        cols["contam"].append(None)
-        cols["contam_hits"].append(0)
-        cols["part"].append(None)
-    N = len(cols["id"])
-    src = np.array(cols["source"])
-    rank = np.array([-1 if s == "benchmark" else (1 if s.startswith("synth_") else SOURCE_RANK.get(s, 5))
-                     for s in cols["source"]])
-    qual = np.array([q if q is not None else 0.0 for q in cols["quality"]], dtype=np.float64)
-    nch = np.array(cols["n_chars"], dtype=np.int64)
+    nb = len(items)
+    bench_code = len(src_names)
+    src_names.append("benchmark")
+    ids = np.concatenate([arr.pop("id"), np.array([f"bench{i:011d}".encode() for i in range(nb)], dtype="S40")])
+    src = np.concatenate([arr.pop("src"), np.full(nb, bench_code, np.int16)])
+    mixed = np.concatenate([arr.pop("mixed"), np.zeros(nb, bool)])
+    qual = np.concatenate([arr.pop("qual"), np.zeros(nb)])
+    nch = np.concatenate([arr.pop("nch"), np.array([len(t) for _, t in items], np.int64)])
+    part = np.concatenate([arr.pop("part"), np.full(nb, -1, np.int32)])
+    sig = np.concatenate([arr.pop("sig"), np.stack([minhash(t) for _, t in items]) if nb else np.zeros((0, PERMS), np.uint32)])
+    del arr
+    N = len(ids)
+    src_rank = np.array([-1 if x == "benchmark" else (1 if x.startswith("synth_") else SOURCE_RANK.get(x, 5)) for x in src_names])
+    rank = src_rank[src]
     order = np.lexsort((-nch, -qual, rank))  # best first
     inv = np.empty(N, np.int64)
     inv[order] = np.arange(N)  # position in priority order; lower is better
-    sig = np.frombuffer(b"".join(cols["sig"]), dtype=np.uint32).reshape(N, PERMS)
 
     status = np.zeros(N, np.int8)  # 0 keep, 1 exact dup, 2 near dup, 3 bench n-gram, 4 bench near-dup
-    # exact dup by content id
-    ids = np.array(cols["id"])
     o = np.lexsort((inv, ids))
     same = np.r_[False, ids[o][1:] == ids[o][:-1]]
     status[o[same]] = 1
-    # n-gram contamination
-    for i, c in enumerate(cols["contam"]):
-        if c and status[i] == 0:
+    for i in contam:
+        if status[i] == 0:
             status[i] = 3
-    # LSH: in each band, a doc colliding with a better doc (and estimated Jaccard >= 0.7) is a near dup
-    best = np.full(N, np.iinfo(np.int64).max, np.int64)  # priority position of the best near-dup partner
+    best = np.full(N, np.iinfo(np.int64).max, np.int64)
     mult = np.random.default_rng(7).integers(1, 2 ** 63 - 1, ROWS, dtype=np.uint64) | np.uint64(1)
     for b in range(BANDS):
         key = (sig[:, b * ROWS:(b + 1) * ROWS].astype(np.uint64) * mult).sum(axis=1)
         o = np.lexsort((inv, key))
         k = key[o]
-        start = np.r_[True, k[1:] != k[:-1]]
-        grp_first = o[np.maximum.accumulate(np.where(start, np.arange(N), 0))]
-        cand = ~start
+        start_ = np.r_[True, k[1:] != k[:-1]]
+        grp_first = o[np.maximum.accumulate(np.where(start_, np.arange(N), 0))]
+        cand = ~start_
         a, f = o[cand], grp_first[cand]
-        sim = (sig[a] == sig[f]).mean(axis=1)
-        hit = sim >= 0.7
+        hit = np.zeros(len(a), bool)
+        for c0 in range(0, len(a), 2_000_000):  # bounded memory for the comparison
+            sl = slice(c0, c0 + 2_000_000)
+            hit[sl] = (sig[a[sl]] == sig[f[sl]]).mean(axis=1) >= 0.7
         np.minimum.at(best, a[hit], inv[f[hit]])
         log(f"band {b + 1}/{BANDS}: {int(hit.sum()):,} near-dup links")
+        del key, o, k, start_, grp_first, cand, a, f, hit
     has = best < np.iinfo(np.int64).max
     leader = np.where(has, order[np.minimum(best, N - 1)], -1)
     nd = has & (status == 0)
-    bench_lead = nd & (src[np.maximum(leader, 0)] == "benchmark")
+    bench_lead = nd & (src[np.maximum(leader, 0)] == bench_code)
     status[bench_lead] = 4
     status[nd & ~bench_lead] = 2
-    status[src == "benchmark"] = 9
+    status[src == bench_code] = 9
 
-    stack_q = qual[(src == "stack_edu") & (status == 0)]
-    stack_cut = float(np.quantile(stack_q, 0.75)) if len(stack_q) else 99.0
-    gh_q = qual[(src == "github") & (status == 0)]
-    github_cut = float(np.quantile(gh_q, 0.70)) if len(gh_q) else 99.0
+    code = {x: i for i, x in enumerate(src_names)}
+    m_stack = (src == code.get("stack_edu", -9)) & (status == 0)
+    stack_cut = float(np.quantile(qual[m_stack], 0.75)) if m_stack.any() else 99.0
+    m_gh = (src == code.get("github", -9)) & (status == 0)
+    github_cut = float(np.quantile(qual[m_gh], 0.70)) if m_gh.any() else 99.0
     keep = np.where(status == 0)[0]
-    buckets = [bucket_of(cols["source"][i], cols["kind"][i], cols["quality"][i], stack_cut, github_cut) for i in keep]
-    keep_tab = pa.table({"id": ids[keep].tolist(), "bucket": buckets, "part": [cols["part"][i] for i in keep]})
+    bucket_names, bcode = [], {}
+    kb = np.empty(len(keep), np.int16)
+    for j, i in enumerate(keep):
+        b = bucket_of(src_names[src[i]], "mixed" if mixed[i] else "code", qual[i], stack_cut, github_cut)
+        if b not in bcode:
+            bcode[b] = len(bucket_names)
+            bucket_names.append(b)
+        kb[j] = bcode[b]
+    part_arr = np.array(part_names + [None], dtype=object)
+    keep_tab = pa.table({"id": [x.decode() for x in ids[keep]], "bucket": [bucket_names[c] for c in kb],
+                         "part": part_arr[part[keep]].tolist()})
     kp = os.path.join(WORK, "keep.parquet")
     pq.write_table(keep_tab, kp, compression="zstd")
 
     names = {0: "kept", 1: "exact_dup", 2: "near_dup", 3: "bench_ngram", 4: "bench_minhash"}
-    report = {"stack_edu_tier_a_quality_cut": stack_cut, "github_tier_a_quality_cut": github_cut, "benchmarks": getattr(bench_items, "report", {}), "by_source": {}}
-    for s in sorted(set(cols["source"]) - {"benchmark"}):
-        m = src == s
+    report = {"stack_edu_tier_a_quality_cut": stack_cut, "github_tier_a_quality_cut": github_cut,
+              "benchmarks": getattr(bench_items, "report", {}), "by_source": {}}
+    for x, c in code.items():
+        if x == "benchmark":
+            continue
+        m = src == c
         r = {names[k]: int(((status == k) & m).sum()) for k in names}
         r["kept_chars"] = int(nch[m & (status == 0)].sum())
-        report["by_source"][s] = r
-    bc = collections.Counter(buckets)
-    report["by_bucket"] = {b: {"docs": c, "chars": int(sum(nch[i] for i, bb in zip(keep, buckets) if bb == b))} for b, c in bc.items()}
-    flagged = collections.Counter(c.split("/")[0] for c in cols["contam"] if c)
-    report["bench_ngram_hits_by_benchmark"] = dict(flagged)
+        report["by_source"][x] = r
+    report["by_bucket"] = {b: {"docs": int((kb == c).sum()), "chars": int(nch[keep][kb == c].sum())} for b, c in bcode.items()}
+    report["bench_ngram_hits_by_benchmark"] = dict(collections.Counter(c.split("/")[0] for c in contam.values()))
+    pid_of = [pid for pid, _ in items]
     report["bench_minhash_hits_by_benchmark"] = dict(collections.Counter(
-        cols["id"][leader[i]].split(":", 1)[1].split("/")[0] for i in np.where(status == 4)[0]))
+        pid_of[leader[i] - (N - nb)].split("/")[0] for i in np.where(status == 4)[0]))
     rp = os.path.join(WORK, "dedup_report.json")
     json.dump(report, open(rp, "w"), indent=1)
-    commit([(kp, f"{OV}/dedup/keep.parquet"), (rp, f"{OV}/dedup/report.json")], "dedup keep-list and report")
+    if not SMOKE or CONFIG.get("smoke_upload"):
+        commit([(kp, f"{OV}/dedup/keep.parquet"), (rp, f"{OV}/dedup/report.json")], "dedup keep-list and report")
     json.dump(report, open(os.path.join(OUTW, "dedup_report.json"), "w"), indent=1)
     log(json.dumps(report["by_bucket"]))
-    return {"kept": int(len(keep)), "kept_chars": int(nch[keep].sum()), "of": int((src != "benchmark").sum())}
+    return {"kept": int(len(keep)), "kept_chars": int(nch[keep].sum()), "of": int(N - nb)}
 
 
 # ---------------------------------------------------------------- job: tokenizer
