@@ -337,6 +337,7 @@ Measured 10 October 2026 (these replace the estimates below where they differ):
 | Cerebras free tier (Qwen3.8-27B) | ~3.7M tokens, then HTTP 402 | The 216M tokens/day in its headers is a rate limit, not a free allowance. Not used further |
 | Groq free tier (gpt-oss-120b, Qwen3.8-27B) | ~1,800 samples/day | 1,000 requests/day and 8k tokens/min per model. Runs continuously as a capped service on the orchestration box |
 | Kaggle 2x T4, vLLM, Qwen2.5-Coder-14B-Instruct-AWQ | ~1M tokens per GPU-hour at batch 96; 44% pass execution | 7B-AWQ was faster (1.5M/GPU-h) but passed only 29%. Production run uses large batches plus one repair round |
+| Kaggle 2x T4 production run (14B-AWQ, with one repair round) | 1,481 verified of 3,000 (49%: 37% first pass + 12% after repair) and 367 bug-fix pairs per ~8 h | ~2.7 h per 1,000 prompts, about 1.5M verified tokens per session. Too slow to matter for pretraining volume; the verified exercises are kept for the RL problem bank and the bug-fix pairs for SFT |
 | API pilot (Qwen3.8-27B, prompt v1) | 24% pass execution | 37% of test-requiring samples had no tests; prompt v3 makes tests mandatory and checks for them |
 
 Revised target: ~50–80M verified synthetic tokens over the project rather than 250M, used mainly in

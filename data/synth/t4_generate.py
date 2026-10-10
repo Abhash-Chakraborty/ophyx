@@ -51,9 +51,12 @@ def chat(convs, temps):
     return [o.outputs[0] for o in llm.chat(convs, params, use_tqdm=False)]
 
 
+last_chunk_s = 0.0
 for c0 in range(START, START + COUNT, CHUNK):
-    if time.time() - T_BEGIN > BUDGET - 1800:
-        print("budget nearly spent; stopping", flush=True)
+    # A chunk takes ~2.7 h on 2x T4; don't start one that can't finish before the kernel timeout
+    # (session 1 was cancelled mid-chunk with a 30-min margin).
+    if time.time() - T_BEGIN + max(1800, 1.15 * last_chunk_s) > BUDGET:
+        print("not enough budget left for another chunk; stopping", flush=True)
         break
     dest = os.path.join(VDIR, f"batch-t4-{c0:07d}.jsonl")
     if os.path.exists(dest):
@@ -122,6 +125,7 @@ for c0 in range(START, START + COUNT, CHUNK):
     bump("generated", len(specs))
     bump("kept", len(kept))
     json.dump(totals, open(os.path.join(VDIR, "t4_totals.json"), "w"), indent=1)
+    last_chunk_s = time.time() - t
     print(f"[{time.strftime('%H:%M:%S')}] chunk {c0}: {len(specs)} -> {len(kept)} verified "
           f"({len(bugfix)} after repair) in {time.time() - t:.0f}s; totals {totals}", flush=True)
 print("TOTALS", json.dumps(totals), flush=True)
