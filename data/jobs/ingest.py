@@ -802,6 +802,88 @@ def _clone(rec):
     return rec, d, sha
 
 
+def process_repo(rec, d, sha):
+    """Runs in a forked child with a memory limit (see run_isolated): one pathological repo must not take the
+    whole session down, which happened three times at the same chunk."""
+    delta = {}
+    py = [p for p in glob.glob(os.path.join(d, "**", "*.py"), recursive=True) if os.path.isfile(p)]
+    if len(py) > 5_000:  # monorepo of many unrelated projects or vendored code; not curated code
+        return [], None, {"huge_repo": 1}
+    share = python_share(d)
+    if share < 0.6:  # gate 2's language rule, measured from the clone instead of the API
+        return [], None, {"low_python_share": 1}
+    score, detail = repo_quality(d, py)
+    detail["python_share"] = round(share, 3)
+    texts, budget = [], 12_000_000
+    for p in sorted(py)[:2000]:
+        try:
+            if os.path.getsize(p) > 100_000:
+                delta["too_long"] = delta.get("too_long", 0) + 1
+                continue
+            src_text = open(p, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        budget -= len(src_text)
+        if budget < 0:
+            delta["repo_cap"] = delta.get("repo_cap", 0) + 1
+            break
+        texts.append((src_text, os.path.relpath(p, d)))
+    spdx = SPDX_CASE.get(rec["license"], rec["license"])
+    with mp.get_context("fork").Pool(os.cpu_count()) as cpool:
+        res = cpool.map(_clean_stack_row, [(x, "/" + rel, spdx) for x, rel in texts], chunksize=16)
+        rows = []
+        for (x, rel), (clean, reason, nred) in zip(texts, res):
+            delta[reason] = delta.get(reason, 0) + 1
+            if clean is None:
+                continue
+            h = sha1(clean)
+            rows.append({"id": h, "source": "github", "repo": rec["full_name"], "path": rel,
+                         "licence": rec["license"], "kind": "code", "text": clean,
+                         "text_raw": clean if keep_raw_sample(h) else None, "quality": score,
+                         "meta": json.dumps({"stars": rec["stars"], "commit": sha, "repo_quality": detail})})
+        formatted = ruff_format([r["text"] for r in rows])
+        for r, f, good in zip(rows, formatted, cpool.map(_parse_ok, formatted, chunksize=32)):
+            if good:
+                r["text"] = f
+    return rows, {"repo": rec["full_name"], "score": score, "files_kept": len(rows), **detail}, delta
+
+
+def run_isolated(fn, args, timeout, mem_bytes):
+    """fn(*args) in a forked child with RLIMIT_AS = mem_bytes and a wall-clock timeout.
+    Returns ("ok", result) or (failure_kind, detail); never raises, never lets the child kill the parent."""
+    import pickle
+    out = os.path.join(WORK, f"iso-{os.getpid()}-{time.time_ns()}.pkl")
+
+    def target():
+        import resource
+        try:
+            resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
+            result = ("ok", fn(*args))
+        except MemoryError:
+            result = ("oom", None)
+        except Exception as e:
+            result = ("error", f"{type(e).__name__}: {str(e)[:200]}")
+        try:
+            with open(out, "wb") as f:
+                pickle.dump(result, f)
+        finally:
+            os._exit(0)
+
+    p = mp.get_context("fork").Process(target=target)
+    p.start()
+    p.join(timeout)
+    if p.is_alive():
+        p.kill()
+        p.join()
+        return "timeout", None
+    if not os.path.exists(out):
+        return f"died(exit {p.exitcode})", None
+    with open(out, "rb") as f:
+        status, res = pickle.load(f)
+    os.remove(out)
+    return status, res
+
+
 def job_github(uploader, pool):
     lists = glob.glob("/kaggle/input/**/repos.jsonl", recursive=True) or [os.path.join(WORK, "repos.jsonl")]
     repos = [json.loads(l) for l in open(lists[0])]
@@ -825,57 +907,23 @@ def job_github(uploader, pool):
             if d is None:
                 stats["clone_fail"] = stats.get("clone_fail", 0) + 1
                 continue
-            py = [p for p in glob.glob(os.path.join(d, "**", "*.py"), recursive=True) if os.path.isfile(p)]
-            if len(py) > 5_000:  # monorepo of many unrelated projects or vendored code; not curated code
-                stats["huge_repo"] = stats.get("huge_repo", 0) + 1
-                shutil.rmtree(d, ignore_errors=True)
-                continue
-            share = python_share(d)
-            if share < 0.6:  # gate 2's language rule, measured from the clone instead of the API
-                stats["low_python_share"] = stats.get("low_python_share", 0) + 1
-                shutil.rmtree(d, ignore_errors=True)
-                continue
-            score, detail = repo_quality(d, py)
-            detail["python_share"] = round(share, 3)
-            # Memory guard: a chunk of big repos took a 31 GB session down twice (the chunk's text is held
-            # three times: raw, formatted, Arrow). Worst case per chunk is now 200 x 12M chars.
-            texts, budget = [], 12_000_000
-            for p in sorted(py)[:2000]:
-                try:
-                    if os.path.getsize(p) > 100_000:
-                        stats["too_long"] = stats.get("too_long", 0) + 1
-                        continue
-                    src_text = open(p, encoding="utf-8", errors="replace").read()  # not `t`: that's the chunk timer
-                except OSError:
-                    continue
-                budget -= len(src_text)
-                if budget < 0:
-                    stats["repo_cap"] = stats.get("repo_cap", 0) + 1
-                    break
-                texts.append((src_text, os.path.relpath(p, d)))
-            spdx = SPDX_CASE.get(rec["license"], rec["license"])
-            res = pool.map(_clean_stack_row, [(x, "/" + rel, spdx) for x, rel in texts], chunksize=16)
-            n_ok = 0
-            for (x, rel), (clean, reason, nred) in zip(texts, res):
-                stats[reason] = stats.get(reason, 0) + 1
-                if clean is None:
-                    continue
-                n_ok += 1
-                h = sha1(clean)
-                kept.append({"id": h, "source": "github", "repo": rec["full_name"], "path": rel,
-                             "licence": rec["license"], "kind": "code", "text": clean,
-                             "text_raw": clean if keep_raw_sample(h) else None, "quality": score,
-                             "meta": json.dumps({"stars": rec["stars"], "commit": sha, "repo_quality": detail})})
-            repo_rows.append({"repo": rec["full_name"], "score": score, "files_kept": n_ok, **detail})
+            status, res = run_isolated(process_repo, (rec, d, sha), timeout=600, mem_bytes=10 << 30)
             shutil.rmtree(d, ignore_errors=True)
-        formatted = ruff_format([k["text"] for k in kept])
-        for k, f, good in zip(kept, formatted, pool.map(_parse_ok, formatted, chunksize=32)):
-            if good:
-                k["text"] = f
+            if status != "ok":
+                stats[f"repo_{status.split('(')[0]}"] = stats.get(f"repo_{status.split('(')[0]}", 0) + 1
+                log(f"skipped {rec['full_name']}: {status} {res or ''}")
+                continue
+            rows, repo_row, delta = res
+            kept.extend(rows)
+            if repo_row:
+                repo_rows.append(repo_row)
+            for k2, v in delta.items():
+                stats[k2] = stats.get(k2, 0) + v
         stats["kept"] = len(kept)
         stats["kept_chars"] = sum(len(k["text"]) for k in kept)
         stats["repo_scores"] = repo_rows
         write_part(kept, name, uploader, stats)
+        uploader.flush()  # commit every chunk: crashes used to lose up to 8 finished chunks
         for k2, v in stats.items():
             if isinstance(v, (int, float)):
                 totals[k2] = totals.get(k2, 0) + v
