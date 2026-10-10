@@ -28,7 +28,7 @@ import urllib.error
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-PROMPT_VERSION = 1
+PROMPT_VERSION = 2  # v2: length limit (v1 produced 700+ line modules that broke or got cut off)
 
 TEACHERS = {
     "qwen3.8-27b@cerebras": {"url": "https://api.cerebras.ai/v1/chat/completions", "key": "CEREBRAS_TOKEN",
@@ -42,7 +42,8 @@ SYSTEM = (
     "Python 3.12 module and nothing else: no Markdown, no code fences, no prose outside the code. Every explanation goes "
     "in docstrings and comments. The code must be correct, idiomatic, PEP 8 formatted, fully type-hinted, and runnable "
     "with only the Python standard library (plus pytest for tests). No network access, no reading or writing files "
-    "outside a temporary directory, no input(), no sleeping longer than 0.1 seconds."
+    "outside a temporary directory, no input(), no sleeping longer than 0.1 seconds. Keep the whole module between 120 "
+    "and 300 lines: complete and focused beats long. Never refuse; if the topic is broad, pick one concrete, useful angle."
 )
 
 KINDS = {
@@ -148,7 +149,7 @@ class Pacer:
 
 def generate_one(s, env, pacer):
     t = TEACHERS[s["teacher"]]
-    body = {"model": t["model"], "temperature": s["temperature"], "max_tokens": 6000,
+    body = {"model": t["model"], "temperature": s["temperature"], "max_tokens": 8000,
             "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt(s)}], **t["extra"]}
     for attempt in range(6):
         pacer.wait()

@@ -357,6 +357,75 @@ def save_ckpt(state, step, extra):
     return d
 
 
+# Off-Kaggle copy of the latest checkpoint, so a session that dies before writing its output
+# can't send the chain back to an older step. CONFIG["hf_ckpt_repo"] enables it.
+_backup_thread = None
+
+
+def hf_backup(ckpt_dir, step):
+    repo = cfg("hf_ckpt_repo", None)
+    if not repo or not KEYS.get("HF_TOKEN"):
+        return
+    import threading
+
+    def push():
+        from huggingface_hub import HfApi
+        api = HfApi(token=KEYS["HF_TOKEN"])
+        prefix = f"{cfg('run_name', 'run')}/latest"
+        for attempt in range(5):
+            try:
+                api.create_repo(repo, repo_type="model", private=True, exist_ok=True)
+                api.upload_folder(repo_id=repo, repo_type="model", folder_path=ckpt_dir, path_in_repo=prefix,
+                                  commit_message=f"checkpoint step {step}", delete_patterns=["*"])
+                try:  # keep only the latest checkpoint in history, or storage grows ~4 GB per backup
+                    api.super_squash_history(repo_id=repo, repo_type="model")
+                except Exception as e:
+                    log("history squash failed:", e)
+                log(f"checkpoint step {step} backed up to HF")
+                return
+            except Exception as e:
+                log(f"HF backup failed ({type(e).__name__}: {str(e)[:150]}), retry")
+                time.sleep(60 * (attempt + 1))
+
+    global _backup_thread
+    if _backup_thread is not None and _backup_thread.is_alive():
+        _backup_thread.join()  # never two uploads at once
+    _backup_thread = threading.Thread(target=push, daemon=False)
+    _backup_thread.start()
+
+
+def hf_restore_if_newer(found):
+    repo = cfg("hf_ckpt_repo", None)
+    if not repo or not KEYS.get("HF_TOKEN"):
+        return found
+    try:
+        from huggingface_hub import hf_hub_download, snapshot_download
+        prefix = f"{cfg('run_name', 'run')}/latest"
+        meta = json.load(open(hf_hub_download(repo, f"{prefix}/meta.json", token=KEYS["HF_TOKEN"])))
+        if found is None or meta["step"] > found[0]:
+            d = snapshot_download(repo, allow_patterns=[f"{prefix}/*"], token=KEYS["HF_TOKEN"],
+                                  local_dir=os.path.join("/kaggle/tmp" if KAGGLE else out_dir(), "hf_restore"))
+            log(f"HF backup (step {meta['step']}) is newer than attached ({found and found[0]}); using it")
+            return meta["step"], os.path.join(d, prefix)
+    except Exception as e:
+        log(f"no HF checkpoint used ({type(e).__name__}: {str(e)[:120]})")
+    return found
+
+
+def publish_status(status):
+    """Small status file the watchdog reads (it can't download multi-GB kernel outputs)."""
+    repo = cfg("hf_ckpt_repo", None)
+    if not repo or not KEYS.get("HF_TOKEN"):
+        return
+    try:
+        from huggingface_hub import HfApi
+        p = os.path.join(out_dir(), "status.json")
+        HfApi(token=KEYS["HF_TOKEN"]).upload_file(path_or_fileobj=p, path_in_repo=f"{cfg('run_name', 'run')}/status.json",
+                                                  repo_id=repo, repo_type="model", commit_message=f"status: {status['reason']} at {status['step']}")
+    except Exception as e:
+        log("status publish failed:", e)
+
+
 def find_latest_ckpt():
     cands = glob.glob(os.path.join(out_dir(), "ckpt-*/meta.json"))
     if cfg("resume_inputs", True):
@@ -471,7 +540,7 @@ def train(data=None):
     opt_state = jax.jit(opt.init, out_shardings=repl)(params)
     n_params = sum(x.size for x in jax.tree_util.tree_leaves(params))
     start = 0
-    found = find_latest_ckpt()
+    found = hf_restore_if_newer(find_latest_ckpt())
     if found:
         start, path = found
         p, o = load_ckpt(path, (params, opt_state))
@@ -527,17 +596,18 @@ def train(data=None):
             stop_reason = "session_steps"
             break
         if cfg("save", True) and time.time() - last_ckpt > cfg("ckpt_every_s", 1800):
-            save_ckpt((params, opt_state), step, {"n_params": n_params})
+            hf_backup(save_ckpt((params, opt_state), step, {"n_params": n_params}), step)
             last_ckpt = time.time()
         if time.time() > deadline:
             stop_reason = "budget"
             break
     if stop_reason != "nan" and cfg("save", True):
-        save_ckpt((params, opt_state), step, {"n_params": n_params})
+        hf_backup(save_ckpt((params, opt_state), step, {"n_params": n_params}), step)
     status = {"step": step, "total_steps": total_steps, "finished": step >= total_steps, "reason": stop_reason,
               "hours": round((time.time() - T0) / 3600, 2), "tokens_per_s": last_rate, "n_params": n_params,
               "final_loss": round(float(ce), 4)}
     json.dump(status, open(os.path.join(out_dir(), "status.json"), "w"))
+    publish_status(status)
     if status["finished"] and cfg("export_hf", False):
         export_hf(params, dims, vocab, seq, os.path.join(out_dir(), "hf"), eos_id=cfg("eos_id", 0))
     if cfg("notify", True):

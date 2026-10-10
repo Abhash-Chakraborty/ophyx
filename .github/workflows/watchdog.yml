@@ -1,0 +1,26 @@
+name: training-watchdog
+
+on:
+  schedule:
+    - cron: "17 * * * *"  # hourly; a gap of up to an hour is small next to TPU queue waits
+  workflow_dispatch: {}
+
+concurrency:
+  group: watchdog
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q "kaggle==2.2.4" "huggingface_hub>=0.30"
+      - run: python kaggle/watchdog.py
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}

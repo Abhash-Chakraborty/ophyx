@@ -135,7 +135,9 @@ def main():
                 sols = [probs[i]["prompt"] + probs[i]["canonical_solution"] if ds == "humaneval"
                         else probs[i]["canonical_solution"] for i in ids]
             else:
-                prompts = [probs[i]["prompt"] for i in ids]
+                # HumanEval prompts end in "\n"; many tokenizers merge "\n" with the next indent, so a prompt
+                # ending in a bare newline pushes the model into a wrong indent. Let it write the newline.
+                prompts = [probs[i]["prompt"].rstrip() if ds == "humaneval" else probs[i]["prompt"] for i in ids]
                 comps = generate(model_id, prompts, STOPS[ds])
                 raw = [p + truncate(c, STOPS[ds]) for p, c in zip(prompts, comps)]
                 sols = [sanitize(r, probs[i]["entry_point"]) for r, i in zip(raw, ids)]
