@@ -739,7 +739,7 @@ def repo_quality(root, py_files):
     has_ci = os.path.isdir(os.path.join(root, ".github", "workflows")) or os.path.exists(os.path.join(root, ".gitlab-ci.yml"))
     has_pkg = any(os.path.exists(os.path.join(root, f)) for f in ("pyproject.toml", "setup.py", "setup.cfg"))
     funcs = typed = documented = lines = 0
-    for p in py_files[:400]:
+    for p in sorted(py_files)[:400]:
         try:
             src = open(p, encoding="utf-8", errors="replace").read()
             tree = ast.parse(src)
@@ -753,8 +753,9 @@ def repo_quality(root, py_files):
                 documented += bool(ast.get_docstring(n))
     ruff_err = 0
     if shutil.which("ruff") and py_files:
+        sample = sorted(py_files)[:400]  # lint the same sample the AST stats use, not the whole tree
         r = subprocess.run(["ruff", "check", "--select", "E9,F63,F7,F82,F401,F841,B", "--exit-zero", "--quiet",
-                            "--output-format", "json", "--no-cache", root], capture_output=True, text=True, timeout=300)
+                            "--output-format", "json", "--no-cache", *sample], capture_output=True, text=True, timeout=300)
         try:
             ruff_err = len(json.loads(r.stdout or "[]"))
         except json.JSONDecodeError:
@@ -825,7 +826,7 @@ def job_github(uploader, pool):
                 stats["clone_fail"] = stats.get("clone_fail", 0) + 1
                 continue
             py = [p for p in glob.glob(os.path.join(d, "**", "*.py"), recursive=True) if os.path.isfile(p)]
-            if len(py) > 20_000:  # generated or vendored monorepo; not the curated code we want
+            if len(py) > 5_000:  # monorepo of many unrelated projects or vendored code; not curated code
                 stats["huge_repo"] = stats.get("huge_repo", 0) + 1
                 shutil.rmtree(d, ignore_errors=True)
                 continue
@@ -836,10 +837,10 @@ def job_github(uploader, pool):
                 continue
             score, detail = repo_quality(d, py)
             detail["python_share"] = round(share, 3)
-            # Memory guard: one monorepo once took a whole 31 GB session down (OOM kill). Skip big files
-            # unread and cap what a single repo can contribute.
-            texts, budget = [], 60_000_000
-            for p in sorted(py)[:3000]:
+            # Memory guard: a chunk of big repos took a 31 GB session down twice (the chunk's text is held
+            # three times: raw, formatted, Arrow). Worst case per chunk is now 200 x 12M chars.
+            texts, budget = [], 12_000_000
+            for p in sorted(py)[:2000]:
                 try:
                     if os.path.getsize(p) > 100_000:
                         stats["too_long"] = stats.get("too_long", 0) + 1
