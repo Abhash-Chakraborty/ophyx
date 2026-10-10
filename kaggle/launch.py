@@ -17,7 +17,7 @@ import tempfile
 
 USER = "abhashchakraborty"
 KAGGLE = shutil.which("kaggle") or os.path.expanduser("~/.local/bin/kaggle")
-ACCEL = {"cpu": None, "t4": "NvidiaTeslaT4", "tpu": "TpuV5E8"}
+ACCEL = {"cpu": None, "t4": "NvidiaTeslaT4", "tpu": "TpuV5E8", "tpu6": "TpuV6E8"}
 
 
 def load_env(path):
