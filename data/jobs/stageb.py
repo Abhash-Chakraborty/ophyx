@@ -534,6 +534,23 @@ def job_tokenizer():
 # ---------------------------------------------------------------- job: tokenize
 
 
+def encode_docs(tok, docs, eot, batch=2000):
+    """docs: [(bucket, id, text)] -> {bucket: (train uint16 arrays, val uint16 arrays)}.
+    Encodes in small batches and keeps only uint16 ids: a 90M-token part encoded in one call held
+    full Encoding objects (strings, offsets, masks) and an int list, and OOM-killed a 31 GB session."""
+    by = collections.defaultdict(lambda: ([], []))
+    end = np.array([eot], dtype=np.uint16)
+    for j in range(0, len(docs), batch):
+        part = docs[j:j + batch]
+        enc = tok.encode_batch([x for _, _, x in part], add_special_tokens=False)
+        for (b, i, _), e in zip(part, enc):
+            dest = by[b][1] if int(i[:4], 16) % 200 == 0 else by[b][0]
+            dest.append(np.asarray(e.ids, dtype=np.uint16))
+            dest.append(end)
+        del enc
+    return by
+
+
 def job_tokenize():
     import pyarrow.parquet as pq
     from tokenizers import Tokenizer
@@ -551,20 +568,18 @@ def job_tokenize():
             continue
         t = time.time()
         tab = pq.read_table(download(p), columns=["id", "text"]).to_pydict()
-        by = collections.defaultdict(lambda: ([], []))
         docs = [(keep[i], i, x) for i, x in zip(tab["id"], tab["text"]) if i in keep]
-        enc = tok.encode_batch([x for _, _, x in docs])
-        for (b, i, _), e in zip(docs, enc):
-            dest = by[b][1] if int(i[:4], 16) % 200 == 0 else by[b][0]
-            dest.extend(e.ids)
-            dest.append(eot)
+        del tab
+        by = encode_docs(tok, docs, eot)
+        del docs
         files, counts = [], {}
         for b, (tr, va) in by.items():
-            for split, ids in (("train", tr), ("val", va)):
-                if not ids:
+            for split, chunks in (("train", tr), ("val", va)):
+                if not chunks:
                     continue
+                ids = np.concatenate(chunks)
                 local = os.path.join(WORK, f"{b}-{split}-{tag}.bin")
-                np.asarray(ids, dtype=np.uint16).tofile(local)
+                ids.tofile(local)
                 files.append((local, f"{OV}/tokens/{b}/{split}/{tag}.bin"))
                 counts[f"{b}/{split}"] = len(ids)
                 totals[f"{b}/{split}"] += len(ids)
