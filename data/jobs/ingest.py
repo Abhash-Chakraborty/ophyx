@@ -743,7 +743,7 @@ def job_synth(uploader, pool):
     totals = {}
     seen_batches = set()
     for path in files:
-        bname = re.search(r"batch-\d+", os.path.basename(path)).group(0)
+        bname = re.match(r"(batch-.+?)(\.jsonl)?(\.gz)?(\.tmp)?$", os.path.basename(path)).group(1)
         if bname in seen_batches:  # the same batch can arrive from more than one verifier output
             continue
         seen_batches.add(bname)

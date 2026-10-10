@@ -33,6 +33,7 @@ os.makedirs(OUT, exist_ok=True)
 WORKERS = CONFIG.get("workers", (os.cpu_count() or 4) * 2)
 T0 = time.time()
 PRLIMIT = shutil.which("prlimit")
+BATCH_RE = re.compile(r"(batch-.+?)(\.jsonl)?(\.gz)?(\.tmp)?$")  # any batch name, minus the extensions
 PASSED_RE = re.compile(r"(\d+) passed")
 FAILED_RE = re.compile(r"(\d+) (failed|error)")
 
@@ -95,9 +96,9 @@ def batch_files(root):
     batch-N.jsonl/batch-N.jsonl.gz.tmp). Returns {batch name: path}."""
     out = {}
     for p in glob.glob(os.path.join(root, "**", "batch-*"), recursive=True):
-        m = re.search(r"batch-\d+", os.path.basename(p))
+        m = BATCH_RE.match(os.path.basename(p))
         if m and os.path.isfile(p) and not p.endswith(".stats.json"):
-            out.setdefault(m.group(0), p)
+            out.setdefault(m.group(1), p)
     return dict(sorted(out.items()))
 
 
@@ -149,5 +150,5 @@ def main():
     log("TOTALS", json.dumps(by_kind))
 
 
-if __name__ == "__main__":
+if __name__ == "__main__" and not CONFIG.get("library"):
     main()

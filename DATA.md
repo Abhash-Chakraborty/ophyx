@@ -330,6 +330,20 @@ teacher is only needed for parts of them.
 
 ### Cost (free routes only)
 
+Measured 10 October 2026 (these replace the estimates below where they differ):
+
+| Route | Measured | Notes |
+|---|---|---|
+| Cerebras free tier (Qwen3.8-27B) | ~3.7M tokens, then HTTP 402 | The 216M tokens/day in its headers is a rate limit, not a free allowance. Not used further |
+| Groq free tier (gpt-oss-120b, Qwen3.8-27B) | ~1,800 samples/day | 1,000 requests/day and 8k tokens/min per model. Runs continuously as a capped service on the orchestration box |
+| Kaggle 2x T4, vLLM, Qwen2.5-Coder-14B-Instruct-AWQ | ~1M tokens per GPU-hour at batch 96; 44% pass execution | 7B-AWQ was faster (1.5M/GPU-h) but passed only 29%. Production run uses large batches plus one repair round |
+| API pilot (Qwen3.8-27B, prompt v1) | 24% pass execution | 37% of test-requiring samples had no tests; prompt v3 makes tests mandatory and checks for them |
+
+Revised target: ~50–80M verified synthetic tokens over the project rather than 250M, used mainly in
+the annealing phase where quality matters most. Every repaired failure also yields a bug-fix pair
+(broken code, error output, fixed code) for the bugfix bucket.
+
+
 Target ~250M verified tokens of our own, so ~400M generated. Free ready-made verified datasets
 (KodCode, OpenCoder's SFT and annealing sets, execution-filtered instruction sets, each checked
 for licence) cover part of the same ground, which is why our own target can be modest.

@@ -11,6 +11,8 @@ T_START = time.time()
 OUTD = "/kaggle/working"
 import sys
 _sp.run([sys.executable, "-m", "pip", "install", "-q", "vllm"], check=False)
+# vllm brings its own torch build; the preinstalled torchaudio no longer matches and breaks transformers imports
+_sp.run([sys.executable, "-m", "pip", "uninstall", "-y", "-q", "torchaudio"], check=False)
 import sys  # noqa: E402
 
 from vllm import LLM, SamplingParams  # noqa: E402
