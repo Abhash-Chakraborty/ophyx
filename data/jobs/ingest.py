@@ -844,14 +844,14 @@ def job_github(uploader, pool):
                     if os.path.getsize(p) > 100_000:
                         stats["too_long"] = stats.get("too_long", 0) + 1
                         continue
-                    t = open(p, encoding="utf-8", errors="replace").read()
+                    src_text = open(p, encoding="utf-8", errors="replace").read()  # not `t`: that's the chunk timer
                 except OSError:
                     continue
-                budget -= len(t)
+                budget -= len(src_text)
                 if budget < 0:
                     stats["repo_cap"] = stats.get("repo_cap", 0) + 1
                     break
-                texts.append((t, os.path.relpath(p, d)))
+                texts.append((src_text, os.path.relpath(p, d)))
             spdx = SPDX_CASE.get(rec["license"], rec["license"])
             res = pool.map(_clean_stack_row, [(x, "/" + rel, spdx) for x, rel in texts], chunksize=16)
             n_ok = 0
