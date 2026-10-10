@@ -17,8 +17,8 @@
   "vocab": 32768,
   "seq": 2048,
   "eos_id": 0,
-  "optimizer": "adamw",
-  "attention": "xla",
+  "optimizer": "muon",
+  "attention": "auto",
   "remat": "full",
   "loss_chunk": 512,
   "decay_frac": 0.15,
@@ -107,7 +107,7 @@
   "micro_batch": 16,
   "batch_tokens": 262144,
   "total_tokens": 2000000000,
-  "lr": 0.003,
+  "lr": 0.004,
   "warmup_tokens": 100000000,
   "run_name": "nano125m-v1"
  }

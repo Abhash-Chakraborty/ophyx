@@ -31,14 +31,62 @@ import time
 import urllib.request
 from functools import partial
 
-import jax
-import jax.numpy as jnp
-import numpy as np
-import optax
-from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
-
 CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("PYCODER_CONFIG", "{}"))
 T0 = time.time()
+
+SPLASH_PROBE = r"""
+import jax, jax.numpy as jnp
+from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel as sk, splash_attention_mask as sm
+T, G, hd = 2048, 4, 64
+k = sk.make_splash_mqa_single_device(mask=sm.MultiHeadMask([sm.CausalMask(shape=(T, T)) for _ in range(G)]))
+q = jnp.ones((G, T, hd), jnp.bfloat16); kv = jnp.ones((T, hd), jnp.bfloat16)
+out = jax.jit(k)(q, kv, kv).block_until_ready()
+g = jax.jit(jax.grad(lambda q: k(q, kv, kv).astype(jnp.float32).sum()))(q).block_until_ready()
+print("SPLASH_OK", out.shape, float(g.astype(jnp.float32).sum()) == float(g.astype(jnp.float32).sum()))
+"""
+
+
+def choose_attention():
+    """attention="auto": Kaggle's TPU image ships a libtpu too old for Pallas kernels. Install the libtpu that
+    matches the installed jax into a side directory, test splash attention (forward + backward) in a separate
+    process, and only if that passes point this process at the new libtpu. Otherwise plain XLA attention.
+    Must run before `import jax`; never raises."""
+    if CONFIG.get("attention") != "auto" and not any(r.get("attention") == "auto" for r in CONFIG.get("runs", [])):
+        return
+    os.environ["PYCODER_ATTENTION"] = "xla"
+    if not os.path.isdir("/kaggle") or not os.environ.get("TPU_ACCELERATOR_TYPE", os.environ.get("ISTPUVM")):
+        return
+    import importlib.metadata as md
+    import subprocess
+    import sys
+    try:
+        tgt = "/kaggle/tmp/libtpu_new"
+        v = md.version("jax")
+        r = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--target", tgt, f"jax[tpu]=={v}"],
+                           capture_output=True, text=True, timeout=900)
+        libs = sorted(glob.glob(os.path.join(tgt, "libtpu*", "**", "libtpu*.so"), recursive=True))
+        if not libs:
+            print(f"[attention] no libtpu installed (pip rc {r.returncode}: {r.stderr[-300:]}); using xla", flush=True)
+            return
+        env = {**os.environ, "TPU_LIBRARY_PATH": libs[0]}
+        t = subprocess.run([sys.executable, "-c", SPLASH_PROBE], capture_output=True, text=True, timeout=900, env=env)
+        if "SPLASH_OK" in t.stdout:
+            os.environ["TPU_LIBRARY_PATH"] = libs[0]
+            os.environ["PYCODER_ATTENTION"] = "splash"
+            print(f"[attention] splash works with {libs[0]}", flush=True)
+        else:
+            print(f"[attention] splash probe failed; using xla: {(t.stdout + t.stderr)[-400:]}", flush=True)
+    except Exception as e:  # anything goes wrong: stay on the image's libtpu and xla attention
+        print(f"[attention] probe error {type(e).__name__}: {e}; using xla", flush=True)
+
+
+choose_attention()
+
+import jax  # noqa: E402  (after choose_attention, which may switch libtpu)
+import jax.numpy as jnp  # noqa: E402
+import numpy as np  # noqa: E402
+import optax  # noqa: E402
+from jax.sharding import Mesh, NamedSharding, PartitionSpec as P  # noqa: E402
 KAGGLE = os.path.isdir("/kaggle")
 
 
@@ -132,6 +180,9 @@ def apply_rope(x, cos, sin):  # x [B, T, heads, hd]; HF rotate_half convention
 
 
 def make_attention(kind, mesh, H, KV, hd, T):
+    if kind == "auto":
+        kind = os.environ.get("PYCODER_ATTENTION", "xla")
+        log(f"attention: {kind}")
     if kind == "splash":
         from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel as sk
         from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask as sm
@@ -534,6 +585,12 @@ def export_hf(params, dims, vocab, seq, out_dir, eos_id=0):
         "use_sliding_window": False, "bos_token_id": eos_id, "eos_token_id": eos_id, "torch_dtype": "float32",
     }
     json.dump(config, open(os.path.join(out_dir, "config.json"), "w"), indent=1)
+    toks = glob.glob("/kaggle/input/**/tokenizer.json", recursive=True) + glob.glob(cfg("tokenizer_path", "/nonexistent"))
+    if toks:  # so AutoTokenizer / evalplus can load the export directly
+        shutil.copy(toks[0], os.path.join(out_dir, "tokenizer.json"))
+        json.dump({"tokenizer_class": "PreTrainedTokenizerFast", "eos_token": "<|end|>", "pad_token": "<|pad|>",
+                   "bos_token": None, "model_max_length": seq, "clean_up_tokenization_spaces": False},
+                  open(os.path.join(out_dir, "tokenizer_config.json"), "w"), indent=1)
     log("exported HF checkpoint to", out_dir)
 
 
