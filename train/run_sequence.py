@@ -7,6 +7,8 @@ listed last simply stops at the deadline, checkpoints, and is continued by its c
 restores from the HF backup).
 """
 
+start_heartbeat()
+set_phase("sequence start")
 RUNS = CONFIG["runs"]
 SESSION = {k: v for k, v in CONFIG.items() if k != "runs"}
 summary = []

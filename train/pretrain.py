@@ -108,16 +108,62 @@ def cfg(key, default):
     return CONFIG.get(key, default)
 
 
+_LOG_TAIL = []  # last log lines, shipped with the heartbeat
+PHASE = {"phase": "start", "run": None, "step": None}
+
+
 def log(*a):
-    print(f"[{time.time() - T0:7.0f}s]", *a, flush=True)
+    line = f"[{time.time() - T0:7.0f}s] " + " ".join(str(x) for x in a)
+    print(line, flush=True)
+    _LOG_TAIL.append(line[:300])
+    del _LOG_TAIL[:-60]
 
 
 def load_keys():
-    paths = glob.glob("/kaggle/input/**/keys.json", recursive=True)
+    paths = glob.glob("/kaggle/input/**/keys.json", recursive=True) + glob.glob(CONFIG.get("keys_path", "/nonexistent"))
     return json.load(open(paths[0])) if paths else {}
 
 
 KEYS = load_keys()
+_HEARTBEAT = {"started": False}
+
+
+def set_phase(phase, **kw):
+    PHASE.update(phase=phase, **kw)
+    log(f"phase: {phase}" + (f" {kw}" if kw else ""))
+
+
+def start_heartbeat(every_s=600):
+    """Kaggle shows no logs while a session runs; a 3-hour session once looked alive but produced nothing.
+    Every few minutes, write phase / step / recent log lines to HF so a session is never a black box."""
+    repo = CONFIG.get("heartbeat_repo", "abhash-chakraborty/pycoder-runs")
+    if _HEARTBEAT["started"] or not KEYS.get("HF_TOKEN") or not (KAGGLE or CONFIG.get("heartbeat_local")):
+        return
+    every_s = CONFIG.get("heartbeat_every_s", every_s)
+    _HEARTBEAT["started"] = True
+    import threading
+    name = f"sessions/{CONFIG.get('session_name', 'session')}-{time.strftime('%Y%m%d-%H%M', time.gmtime(T0))}.json"
+
+    def beat():
+        from huggingface_hub import HfApi
+        api = HfApi(token=KEYS["HF_TOKEN"])
+        warned = False
+        while True:
+            try:
+                api.create_repo(repo, repo_type="model", private=True, exist_ok=True)
+                body = {"utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "uptime_s": round(time.time() - T0),
+                        **PHASE, "tail": _LOG_TAIL[-40:]}
+                path = os.path.join("/kaggle/tmp" if KAGGLE else out_dir(), "heartbeat.json")
+                json.dump(body, open(path, "w"), indent=1)
+                api.upload_file(path_or_fileobj=path, path_in_repo=name, repo_id=repo, repo_type="model",
+                                commit_message=f"heartbeat: {PHASE.get('phase')} step {PHASE.get('step')}")
+            except Exception as e:
+                if not warned:
+                    print(f"heartbeat failed: {type(e).__name__}: {str(e)[:200]}", flush=True)
+                    warned = True
+            time.sleep(every_s)
+
+    threading.Thread(target=beat, daemon=True).start()
 
 
 def notify(title, msg, tags="robot"):
@@ -702,6 +748,8 @@ def export_hf(params, dims, vocab, seq, out_dir, eos_id=0):
 
 
 def train(data=None):
+    start_heartbeat()
+    set_phase("devices", run=cfg("run_name", None), step=None)
     devices = jax.devices()
     mesh = Mesh(np.array(devices), ("data",))
     repl, shard = NamedSharding(mesh, P()), NamedSharding(mesh, P("data", None))
@@ -715,6 +763,7 @@ def train(data=None):
     warmup = max(1, cfg("warmup_tokens", 200 * step_tokens) // step_tokens)
     sched = wsd_schedule(cfg("lr", 3e-3), warmup, total_steps, cfg("decay_frac", 0.15), cfg("min_lr_frac", 0.05))
     opt = build_optimizer(sched)
+    set_phase("data")
     data = data or Data(cfg("data", {}), seq, cfg("seed", 0), total_steps)
     log(f"model {dims}, vocab {vocab}, seq {seq}, {ndev} devices, micro {micro} x accum {accum} = "
         f"{step_tokens:,} tokens/step, {total_steps} steps, warmup {warmup}")
@@ -758,10 +807,12 @@ def train(data=None):
     def eval_ce_w(params, b, w):
         return loss_fn(params, b, w)[1]
 
+    set_phase("init_params")
     params = jax.jit(lambda k: init_params(dims, vocab, k), out_shardings=repl)(jax.random.PRNGKey(cfg("seed", 0)))
     opt_state = jax.jit(opt.init, out_shardings=repl)(params)
     n_params = sum(x.size for x in jax.tree_util.tree_leaves(params))
     start = 0
+    set_phase("restore")
     found = hf_restore_if_newer(find_latest_ckpt())
     if found:
         start, path = found
@@ -777,6 +828,7 @@ def train(data=None):
         return params, {"step": start, "total_steps": total_steps, "finished": True, "reason": "already_done",
                         "hours": 0.0, "tokens_per_s": None, "n_params": n_params, "final_loss": None}
 
+    set_phase("training", step=start)
     use_wandb = bool(cfg("wandb", None)) and KEYS.get("WANDB_API_KEY")
     if use_wandb:
         try:
@@ -837,6 +889,7 @@ def train(data=None):
             if use_wandb:
                 wandb.log(row, step=step)
             last_rate = row["tokens_per_s"]
+            PHASE.update(step=step, loss=row["loss"], tokens_per_s=last_rate)
             t_log, tok_log = time.time(), 0
         if session_steps and step - start >= session_steps:
             stop_reason = "session_steps"
@@ -847,6 +900,7 @@ def train(data=None):
         if time.time() > deadline:
             stop_reason = "budget"
             break
+    set_phase("saving", step=step)
     if stop_reason != "nan" and cfg("save", True):
         hf_backup(save_ckpt((params, opt_state), step, {"n_params": n_params}), step)
     status = {"step": step, "total_steps": total_steps, "finished": step >= total_steps, "reason": stop_reason,

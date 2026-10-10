@@ -19,7 +19,7 @@
   "seq": 2048,
   "eos_id": 0,
   "optimizer": "muon",
-  "attention": "auto",
+  "attention": "xla",
   "remat": "full",
   "loss_chunk": 512,
   "decay_frac": 0.15,
@@ -30,7 +30,7 @@
   "log_every": 50,
   "eval_every": 500,
   "export_hf": true,
-  "wandb": "pycoder",
+  "wandb": null,
   "hf_ckpt_repo": "abhash-chakraborty/pycoder-runs",
   "data": {
    "buckets": {
@@ -124,6 +124,7 @@
   "total_tokens": 12000000000,
   "lr": 0.003,
   "warmup_tokens": 500000000,
-  "run_name": "base350m-v1"
+  "run_name": "base350m-v1",
+  "session_name": "base350m"
  }
 }
