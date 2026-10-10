@@ -59,11 +59,11 @@
     },
     "cpython_lib": {
      "glob": "/kaggle/input/**/tokens/cpython_lib/train/*.bin",
-     "weight": 0.002
+     "weight": 0.001
     },
     "python_docs": {
      "glob": "/kaggle/input/**/tokens/python_docs/train/*.bin",
-     "weight": 0.002
+     "weight": 0.001
     }
    },
    "val_glob": "/kaggle/input/**/tokens/stack_edu_a/val/*.bin",
@@ -77,21 +77,21 @@
       "oc_synthetic_code_snippet": 0.04,
       "oc_algorithmic_corpus": 0.025,
       "fineweb_edu": 0.06,
-      "cpython_lib": 0.002,
-      "python_docs": 0.002
+      "cpython_lib": 0.001,
+      "python_docs": 0.001
      }
     },
     {
      "until": 1.0,
      "weights": {
       "stack_edu_a": 0.45,
-      "stack_edu_b": 0.17,
-      "oc_synthetic_qa": 0.1,
-      "oc_synthetic_code_snippet": 0.09,
+      "stack_edu_b": 0.21,
+      "oc_synthetic_qa": 0.12,
+      "oc_synthetic_code_snippet": 0.07,
       "oc_algorithmic_corpus": 0.07,
       "fineweb_edu": 0.03,
-      "cpython_lib": 0.045,
-      "python_docs": 0.045
+      "cpython_lib": 0.007,
+      "python_docs": 0.007
      }
     }
    ],
