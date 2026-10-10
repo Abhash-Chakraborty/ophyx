@@ -8,7 +8,7 @@ environment, and no network (the session has internet off and no secrets attache
   exercise/design/  `pytest module.py` must pass with at least 4 tests and no failures
   errors
 
-Writes /kaggle/working/verified/<batch>.jsonl.gz and a stats file. Restart-safe per batch.
+Writes /kaggle/working/verified/<batch>.jsonl and a stats file. Restart-safe per batch.
 """
 
 import concurrent.futures as cf
@@ -90,27 +90,45 @@ def run(code, kind):
         shutil.rmtree(d, ignore_errors=True)
 
 
+def batch_files(root):
+    """Batch files by name, whatever Kaggle did to them (it decompresses .gz uploads into
+    batch-N.jsonl/batch-N.jsonl.gz.tmp). Returns {batch name: path}."""
+    out = {}
+    for p in glob.glob(os.path.join(root, "**", "batch-*"), recursive=True):
+        m = re.search(r"batch-\d+", os.path.basename(p))
+        if m and os.path.isfile(p) and not p.endswith(".stats.json"):
+            out.setdefault(m.group(0), p)
+    return dict(sorted(out.items()))
+
+
+def read_jsonl(path):
+    with open(path, "rb") as f:
+        gz = f.read(2) == b"\x1f\x8b"
+    fh = gzip.open(path, "rt") if gz else open(path)
+    with fh:
+        return [json.loads(l) for l in fh if l.strip()]
+
+
 def main():
     try:
         import pytest  # noqa: F401
         log("pytest", pytest.__version__)
     except ImportError:
         raise SystemExit("pytest is not installed in this image")
-    files = sorted(glob.glob(os.path.join(SRC, "**", "batch-*.jsonl.gz"), recursive=True))
-    files = [f for i, f in enumerate(files) if i % NSHARDS == SHARD]
+    found = batch_files(SRC)
+    files = [(n, f) for i, (n, f) in enumerate(found.items()) if i % NSHARDS == SHARD]
     log(f"{len(files)} batch files for shard {SHARD}/{NSHARDS}, {WORKERS} workers")
     totals = {}
     with cf.ThreadPoolExecutor(WORKERS) as ex:
-        for path in files:
-            name = os.path.basename(path)
-            dest = os.path.join(OUT, name)
+        for name, path in files:
+            dest = os.path.join(OUT, name + ".jsonl")
             if os.path.exists(dest):
                 continue
-            recs = [json.loads(l) for l in gzip.open(path, "rt")]
+            recs = read_jsonl(path)
             t = time.time()
             results = list(ex.map(lambda r: run(r["code"], r["kind"]), recs))
             stats = {}
-            with gzip.open(dest + ".tmp", "wt") as f:
+            with open(dest + ".tmp", "w") as f:
                 for r, res in zip(recs, results):
                     key = f"{r['kind']}/{res['why']}"
                     stats[key] = stats.get(key, 0) + 1
@@ -118,7 +136,7 @@ def main():
                         f.write(json.dumps({**r, "verify": {k: res.get(k) for k in ("passed", "sec")}}) + "\n")
             os.replace(dest + ".tmp", dest)
             fails = [(r["kind"], r["leaf"], res["why"], res.get("tail", "")[-300:]) for r, res in zip(recs, results) if not res["ok"]][:20]
-            json.dump({"stats": stats, "sample_failures": fails}, open(dest.replace(".jsonl.gz", ".stats.json"), "w"), indent=1)
+            json.dump({"stats": stats, "sample_failures": fails}, open(os.path.join(OUT, name + ".stats.json"), "w"), indent=1)
             for k, v in stats.items():
                 totals[k] = totals.get(k, 0) + v
             ok = sum(v for k, v in stats.items() if k.endswith("/ok"))

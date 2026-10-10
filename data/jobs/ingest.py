@@ -736,20 +736,24 @@ def job_synth(uploader, pool):
     """Verified synthetic samples (data/synth/verify.py output, attached as kernel sources) -> raw parts."""
     import gzip as _gz
 
-    files = sorted(glob.glob("/kaggle/input/**/verified/batch-*.jsonl.gz", recursive=True))
+    files = sorted(p for p in glob.glob("/kaggle/input/**/verified/**/batch-*", recursive=True)
+                   if os.path.isfile(p) and not p.endswith(".stats.json"))
     if SMOKE:
-        files = sorted(glob.glob(os.path.join(WORK, "verified", "batch-*.jsonl.gz")))
+        files = sorted(glob.glob(os.path.join(WORK, "verified", "batch-*.jsonl")))
     totals = {}
     seen_batches = set()
     for path in files:
-        bname = os.path.basename(path).replace(".jsonl.gz", "")
+        bname = re.search(r"batch-\d+", os.path.basename(path)).group(0)
         if bname in seen_batches:  # the same batch can arrive from more than one verifier output
             continue
         seen_batches.add(bname)
         name = f"synth/{bname}.parquet"
         if uploader.exists(f"{PREFIX}/{name}"):
             continue
-        recs = [json.loads(l) for l in _gz.open(path, "rt")]
+        with open(path, "rb") as fh:
+            is_gz = fh.read(2) == b"\x1f\x8b"
+        with (_gz.open(path, "rt") if is_gz else open(path)) as fh:
+            recs = [json.loads(l) for l in fh if l.strip()]
         res = pool.map(_clean_synth, [r["code"] for r in recs], chunksize=16)
         kept, stats = [], {"input_rows": len(recs)}
         for r, (clean, reason, nred) in zip(recs, res):

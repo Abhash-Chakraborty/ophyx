@@ -27,15 +27,19 @@ import time
 import urllib.error
 import urllib.request
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-PROMPT_VERSION = 2  # v2: length limit (v1 produced 700+ line modules that broke or got cut off)
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) if "__file__" in globals() else os.getcwd()
+PROMPT_VERSION = 3  # v2: length limit. v3: tests mandatory and checked; Groq teachers (Cerebras free quota ran out)
 
+# rpm keeps each teacher under its free-tier limits (Groq: 8k tokens/min and 1,000 requests/day per model).
 TEACHERS = {
+    "gpt-oss-120b@groq": {"url": "https://api.groq.com/openai/v1/chat/completions", "key": "GROQ_TOKEN",
+                          "model": "openai/gpt-oss-120b", "extra": {"reasoning_effort": "low"}, "rpm": 0.65},
+    "qwen3.8-27b@groq": {"url": "https://api.groq.com/openai/v1/chat/completions", "key": "GROQ_TOKEN",
+                         "model": "qwen/qwen3.8-27b", "extra": {"reasoning_effort": "none"}, "rpm": 0.65},
     "qwen3.8-27b@cerebras": {"url": "https://api.cerebras.ai/v1/chat/completions", "key": "CEREBRAS_TOKEN",
-                             "model": "qwen-3.8-27b", "extra": {"disable_reasoning": True}},
-    "gpt-oss-120b@cerebras": {"url": "https://api.cerebras.ai/v1/chat/completions", "key": "CEREBRAS_TOKEN",
-                              "model": "gpt-oss-120b", "extra": {"reasoning_effort": "low"}},
+                             "model": "qwen-3.8-27b", "extra": {"disable_reasoning": True}, "rpm": 35},
 }
+ACTIVE_TEACHERS = ["gpt-oss-120b@groq", "qwen3.8-27b@groq"]
 
 SYSTEM = (
     "You write Python source files for a high-quality programming textbook and test suite. Output exactly one complete "
@@ -46,6 +50,9 @@ SYSTEM = (
     "and 300 lines: complete and focused beats long. Never refuse; if the topic is broad, pick one concrete, useful angle."
 )
 
+TESTS_RULE = (" The tests are required: put them at the end of the module as top-level functions named test_* "
+              "(not inside a class or under __main__), and work out every expected value by hand before writing it.")
+
 KINDS = {
     "textbook": (0.30, (
         "Kind: textbook module. Teach the topic the way a senior engineer would: what it is, why it matters, how it works "
@@ -55,16 +62,16 @@ KINDS = {
     "exercise": (0.40, (
         "Kind: exercise. The module docstring states the task as a user would ask for it. Then the solution, with type "
         "hints and docstrings. Then at least six pytest test functions (named test_*) covering normal cases, edge cases "
-        "and error cases. Tests must be deterministic and fast; use tmp_path or monkeypatch where needed.")),
+        "and error cases. Tests must be deterministic and fast; use tmp_path or monkeypatch where needed." + TESTS_RULE)),
     "design": (0.20, (
         "Kind: design-as-code. The module docstring gives the requirements, constraints, the design chosen, trade-offs and "
         "the alternatives considered. Then a clean implementation with small classes and clear interfaces. Then at least "
-        "six pytest test functions (named test_*) that check the behaviour and the invariants.")),
+        "six pytest test functions (named test_*) that check the behaviour and the invariants." + TESTS_RULE)),
     "errors": (0.10, (
         "Kind: error-handling scenario. Write code that handles a specific failure mode realistically (for example "
         "timeouts, partial writes, malformed input, transient failures with retries, resource cleanup). Explain the "
         "failure modes in the docstrings. Then at least six pytest test functions (named test_*) that trigger each "
-        "failure path using fakes, mocks or monkeypatch, never real network or long sleeps.")),
+        "failure path using fakes, mocks or monkeypatch, never real network or long sleeps." + TESTS_RULE)),
 }
 
 DOMAINS = ["finance", "games", "devops", "science", "web backend", "data engineering", "education", "e-commerce",
@@ -78,7 +85,8 @@ DIFFICULTY = {1: "beginner", 2: "easy", 3: "intermediate", 4: "advanced", 5: "ex
 
 
 def leaves():
-    cur = json.load(open(os.path.join(ROOT, "data", "curriculum.json")))
+    cfg = globals().get("CONFIG") or {}
+    cur = cfg.get("curriculum") or json.load(open(os.path.join(ROOT, "data", "curriculum.json")))
     return [(area, leaf) for area, ls in cur["areas"].items() for leaf in ls]
 
 
@@ -90,7 +98,7 @@ def spec(i, seed=0):
     kinds = list(KINDS)
     kind = r.choices(kinds, weights=[KINDS[k][0] for k in kinds])[0]
     area, leaf = LEAVES[i % len(LEAVES)] if i < 10 * len(LEAVES) else r.choice(LEAVES)  # even coverage first
-    teacher = "gpt-oss-120b@cerebras" if (kind == "design" and r.random() < 0.15) else "qwen3.8-27b@cerebras"
+    teacher = ACTIVE_TEACHERS[i % len(ACTIVE_TEACHERS)]
     return {"i": i, "area": area, "leaf": leaf, "kind": kind, "difficulty": r.choice([1, 2, 3, 3, 4, 4, 5]),
             "domain": r.choice(DOMAINS), "style": r.choice(STYLES), "teacher": teacher, "temperature": r.choice([0.6, 0.8, 1.0])}
 
@@ -147,7 +155,17 @@ class Pacer:
             self.next = max(self.next, time.time() + seconds)
 
 
-def generate_one(s, env, pacer):
+def shape_ok(code, kind):
+    """Cheap structural check before upload: test kinds need >= 4 top-level tests, textbooks a __main__ block."""
+    t = ast.parse(code)
+    if kind == "textbook":
+        return any(isinstance(n, ast.If) and "__main__" in ast.unparse(n.test) for n in t.body)
+    n = sum(isinstance(x, (ast.FunctionDef, ast.AsyncFunctionDef)) and x.name.startswith("test") for x in t.body)
+    return n >= 4
+
+
+def generate_one(s, env, pacers):
+    pacer = pacers[s["teacher"]]
     t = TEACHERS[s["teacher"]]
     body = {"model": t["model"], "temperature": s["temperature"], "max_tokens": 8000,
             "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt(s)}], **t["extra"]}
@@ -173,14 +191,16 @@ def generate_one(s, env, pacer):
     return None, {"error": "gave up"}, None
 
 
-def upload(out_dir, env):
-    """Push all batch files as a new version of the private Kaggle dataset."""
+def upload(out_dir, env, dataset):
+    """Push all batch files as a new version of the private Kaggle dataset (only when --dataset is given)."""
+    if not dataset:
+        return
     up = os.path.join(out_dir, "upload")
     os.makedirs(up, exist_ok=True)
     for f in os.listdir(out_dir):
-        if f.startswith("batch-") and f.endswith(".jsonl.gz") and not os.path.exists(os.path.join(up, f)):
+        if f.startswith("batch-") and f.endswith((".jsonl", ".jsonl.gz")) and not os.path.exists(os.path.join(up, f)):
             os.link(os.path.join(out_dir, f), os.path.join(up, f))
-    meta = {"title": "pycoder-synth-raw", "id": "abhashchakraborty/pycoder-synth-raw", "licenses": [{"name": "other"}]}
+    meta = {"title": dataset.split("/")[-1], "id": dataset, "licenses": [{"name": "other"}]}
     json.dump(meta, open(os.path.join(up, "dataset-metadata.json"), "w"))
     kaggle = shutil.which("kaggle") or os.path.expanduser("~/.local/bin/kaggle")
     e = {**os.environ, "KAGGLE_API_TOKEN": env["KAGGLE_API_TOKEN"]}
@@ -202,12 +222,13 @@ def main():
     ap.add_argument("--batch", type=int, default=1000)
     ap.add_argument("--daily-token-cap", type=float, default=150e6)
     ap.add_argument("--upload-every", type=int, default=0, help="upload after every k batches (0 = only at the end)")
+    ap.add_argument("--dataset", default=None, help="Kaggle dataset to push batches to, e.g. abhashchakraborty/pycoder-synth-raw")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     env = load_env()
     state_p = os.path.join(a.out, "state.json")
     state = json.load(open(state_p)) if os.path.exists(state_p) else {"next": 0, "day": time.strftime("%Y-%m-%d"), "day_tokens": 0}
-    pacer = Pacer(a.rpm)
+    pacers = {t: Pacer(TEACHERS[t]["rpm"]) for t in TEACHERS}
     batches_since_upload = 0
     print(f"{len(LEAVES)} leaves; starting at {state['next']} of {a.n}", flush=True)
     with cf.ThreadPoolExecutor(a.workers) as ex:
@@ -222,13 +243,14 @@ def main():
             start, end = state["next"], min(a.n, state["next"] + a.batch)
             specs = [spec(i) for i in range(start, end)]
             t0 = time.time()
-            results = list(ex.map(lambda s: (s, *generate_one(s, env, pacer)), specs))
-            recs, rejects, stats = [], [], {"ok": 0, "no_parse": 0, "error": 0, "truncated": 0}
+            results = list(ex.map(lambda s: (s, *generate_one(s, env, pacers)), specs))
+            recs, rejects, stats = [], [], {"ok": 0, "no_parse": 0, "error": 0, "truncated": 0, "bad_shape": 0}
             tokens = 0
             for s, content, usage, finish in results:
                 tokens += int((usage or {}).get("total_tokens") or 0)
                 if content is None:
                     stats["error"] += 1
+                    rejects.append({"i": s["i"], "kind": s["kind"], "error": str((usage or {}).get("error"))[:300]})
                     continue
                 code = extract_code(content)
                 try:
@@ -240,12 +262,15 @@ def main():
                 if finish == "length":
                     stats["truncated"] += 1
                     continue
+                if not shape_ok(code, s["kind"]):
+                    stats["bad_shape"] += 1
+                    continue
                 sid = hashlib.sha1(f"{PROMPT_VERSION}-{s['i']}".encode()).hexdigest()[:16]
                 recs.append({"id": sid, **s, "prompt_version": PROMPT_VERSION, "code": code,
                              "usage": {k: usage.get(k) for k in ("prompt_tokens", "completion_tokens")}})
                 stats["ok"] += 1
-            path = os.path.join(a.out, f"batch-{start:07d}.jsonl.gz")
-            with gzip.open(path + ".tmp", "wt") as f:
+            path = os.path.join(a.out, f"batch-{start:07d}.jsonl")  # plain: Kaggle rewrites .gz uploads
+            with open(path + ".tmp", "w") as f:
                 for r in recs:
                     f.write(json.dumps(r) + "\n")
             os.replace(path + ".tmp", path)
@@ -260,10 +285,10 @@ def main():
                   f"({tokens / dt / 1e3:.1f}k tok/s); today {state['day_tokens'] / 1e6:.1f}M", flush=True)
             batches_since_upload += 1
             if a.upload_every and batches_since_upload >= a.upload_every:
-                upload(a.out, env)
+                upload(a.out, env, a.dataset)
                 batches_since_upload = 0
-    upload(a.out, env)
+    upload(a.out, env, a.dataset)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__" and not (globals().get("CONFIG") or {}).get("library"):
     main()
