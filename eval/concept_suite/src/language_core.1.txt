@@ -1,0 +1,1692 @@
+@@@ task semver_data_model leaf=0 diff=3 entry=SemVer
+@@@ prompt
+Write a `SemVer` value class for semantic versions like `1.4.0` or `2.0.0-rc.1`, using the data model. `SemVer.parse(text)` (a classmethod) accepts `MAJOR.MINOR.PATCH` with non-negative integers without leading zeros, optionally followed by `-` and dot-separated prerelease identifiers (alphanumerics and hyphens), and raises `ValueError` otherwise. Store `major`, `minor`, `patch` and `prerelease` (a tuple of strings). Implement `__str__` (the canonical text), `__repr__` (`SemVer('2.0.0-rc.1')`), `__eq__`, `__hash__` and ordering via `__lt__` plus `functools.total_ordering`, following SemVer precedence: compare the numbers; a prerelease sorts before the release; prerelease identifiers compare left to right, numeric ones numerically and below alphanumeric ones, alphanumeric ones lexically; if all compared identifiers are equal, the shorter list sorts first.
+@@@ reference
+import functools
+import re
+
+_RE = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?")
+
+
+@functools.total_ordering
+class SemVer:
+    def __init__(self, major, minor, patch, prerelease=()):
+        self.major, self.minor, self.patch = major, minor, patch
+        self.prerelease = tuple(prerelease)
+
+    @classmethod
+    def parse(cls, text):
+        m = _RE.fullmatch(text)
+        if not m:
+            raise ValueError(f"invalid version {text!r}")
+        pre = tuple(m.group(4).split(".")) if m.group(4) else ()
+        return cls(int(m.group(1)), int(m.group(2)), int(m.group(3)), pre)
+
+    def __str__(self):
+        base = f"{self.major}.{self.minor}.{self.patch}"
+        return base + ("-" + ".".join(self.prerelease) if self.prerelease else "")
+
+    def __repr__(self):
+        return f"SemVer({str(self)!r})"
+
+    def _key(self):
+        return (self.major, self.minor, self.patch, self.prerelease)
+
+    def __eq__(self, other):
+        if not isinstance(other, SemVer):
+            return NotImplemented
+        return self._key() == other._key()
+
+    def __hash__(self):
+        return hash(self._key())
+
+    @staticmethod
+    def _pre_key(pre):
+        return [(0, int(p), "") if p.isdigit() else (1, 0, p) for p in pre]
+
+    def __lt__(self, other):
+        if not isinstance(other, SemVer):
+            return NotImplemented
+        a, b = self._key()[:3], other._key()[:3]
+        if a != b:
+            return a < b
+        if not self.prerelease or not other.prerelease:
+            return bool(self.prerelease) and not other.prerelease
+        return self._pre_key(self.prerelease) < self._pre_key(other.prerelease)
+@@@ tests
+import pytest
+from solution import SemVer
+
+
+def test_parse_and_str():
+    v = SemVer.parse("2.0.0-rc.1")
+    assert (v.major, v.minor, v.patch, v.prerelease) == (2, 0, 0, ("rc", "1"))
+    assert str(v) == "2.0.0-rc.1" and repr(v) == "SemVer('2.0.0-rc.1')"
+    assert str(SemVer.parse("10.20.30")) == "10.20.30"
+
+
+@pytest.mark.parametrize("bad", ["1.2", "1.2.3.4", "01.2.3", "1.2.3-", "1.2.3-a..b", "v1.2.3", "1.2.-3", ""])
+def test_invalid(bad):
+    with pytest.raises(ValueError):
+        SemVer.parse(bad)
+
+
+def test_spec_precedence_chain():
+    chain = ["1.0.0-alpha", "1.0.0-alpha.1", "1.0.0-alpha.beta", "1.0.0-beta", "1.0.0-beta.2",
+             "1.0.0-beta.11", "1.0.0-rc.1", "1.0.0", "1.0.1", "1.1.0", "2.0.0"]
+    vs = [SemVer.parse(s) for s in chain]
+    for a, b in zip(vs, vs[1:]):
+        assert a < b and b > a and not b < a
+    assert sorted(reversed(vs)) == vs
+
+
+def test_numeric_not_lexical():
+    assert SemVer.parse("1.10.0") > SemVer.parse("1.9.0")
+    assert SemVer.parse("1.0.0-2") < SemVer.parse("1.0.0-10")
+
+
+def test_eq_hash():
+    assert SemVer.parse("1.2.3") == SemVer(1, 2, 3)
+    assert len({SemVer.parse("1.2.3"), SemVer(1, 2, 3), SemVer.parse("1.2.3-x")}) == 2
+    assert (SemVer(1, 2, 3) == "1.2.3") is False
+
+
+def test_total_ordering_derived():
+    a, b = SemVer.parse("1.0.0-rc.1"), SemVer.parse("1.0.0")
+    assert a <= b and b >= a and a != b
+    with pytest.raises(TypeError):
+        a < "1.0.0"
+@@@ task sequence_protocol leaf=0 diff=2 entry=Playlist
+@@@ prompt
+Write a `Playlist(name, tracks=())` that behaves like a read-only sequence through dunder methods. Store tracks in a list copied from the argument. Implement `__len__`, `__getitem__` (an int index returns a track and supports negatives; a slice returns a new `Playlist` with the same name), `__contains__`, `__iter__`, `__bool__` (False when empty), `__add__` (concatenating two playlists into a new one named `"<a> + <b>"`; adding anything else returns `NotImplemented`), `__eq__` (same name and tracks) and `__repr__` as `Playlist('Mix', ['a', 'b'])`. Because `__len__` and `__getitem__` exist, `reversed()` must work too.
+@@@ reference
+class Playlist:
+    def __init__(self, name, tracks=()):
+        self.name = name
+        self._tracks = list(tracks)
+
+    def __len__(self):
+        return len(self._tracks)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return Playlist(self.name, self._tracks[index])
+        return self._tracks[index]
+
+    def __contains__(self, track):
+        return track in self._tracks
+
+    def __iter__(self):
+        return iter(self._tracks)
+
+    def __bool__(self):
+        return bool(self._tracks)
+
+    def __add__(self, other):
+        if not isinstance(other, Playlist):
+            return NotImplemented
+        return Playlist(f"{self.name} + {other.name}", self._tracks + other._tracks)
+
+    def __eq__(self, other):
+        if not isinstance(other, Playlist):
+            return NotImplemented
+        return (self.name, self._tracks) == (other.name, other._tracks)
+
+    __hash__ = None
+
+    def __repr__(self):
+        return f"Playlist({self.name!r}, {self._tracks!r})"
+@@@ tests
+import pytest
+from solution import Playlist
+
+
+def test_len_index_contains():
+    p = Playlist("Mix", ["a", "b", "c"])
+    assert len(p) == 3 and p[0] == "a" and p[-1] == "c" and "b" in p and "z" not in p
+    with pytest.raises(IndexError):
+        p[3]
+
+
+def test_slice_returns_playlist():
+    p = Playlist("Mix", ["a", "b", "c", "d"])
+    s = p[1:3]
+    assert isinstance(s, Playlist) and s == Playlist("Mix", ["b", "c"])
+    assert p[::-1] == Playlist("Mix", ["d", "c", "b", "a"])
+
+
+def test_iteration_and_reversed():
+    p = Playlist("x", [1, 2, 3])
+    assert list(p) == [1, 2, 3] and list(reversed(p)) == [3, 2, 1]
+
+
+def test_truthiness():
+    assert not Playlist("empty") and Playlist("one", ["t"])
+
+
+def test_add():
+    a, b = Playlist("A", ["x"]), Playlist("B", ["y"])
+    assert a + b == Playlist("A + B", ["x", "y"])
+    with pytest.raises(TypeError):
+        a + ["z"]
+
+
+def test_repr_and_copy_of_input():
+    src = ["a"]
+    p = Playlist("Mix", src)
+    src.append("b")
+    assert repr(p) == "Playlist('Mix', ['a'])"
+@@@ task reiterable_grid leaf=1 diff=2 entry=Grid,GridIterator
+@@@ prompt
+Show the difference between an iterable and an iterator. `Grid(rows, cols)` is an iterable: its `__iter__` returns a new `GridIterator` each time, so a grid can be looped over many times and even zipped with itself. `GridIterator` implements `__iter__` (returning itself) and `__next__`, yielding `(row, col)` tuples in row-major order and raising `StopIteration` when done, and it must keep raising `StopIteration` on every later `next()` call. `len(Grid)` is rows * cols. Negative sizes raise `ValueError`; a zero size gives an empty iteration.
+@@@ reference
+class GridIterator:
+    def __init__(self, rows, cols):
+        self.rows, self.cols = rows, cols
+        self._i = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._i >= self.rows * self.cols:
+            raise StopIteration
+        r, c = divmod(self._i, self.cols)
+        self._i += 1
+        return (r, c)
+
+
+class Grid:
+    def __init__(self, rows, cols):
+        if rows < 0 or cols < 0:
+            raise ValueError("sizes must be non-negative")
+        self.rows, self.cols = rows, cols
+
+    def __iter__(self):
+        return GridIterator(self.rows, self.cols)
+
+    def __len__(self):
+        return self.rows * self.cols
+@@@ tests
+import pytest
+from solution import Grid, GridIterator
+
+
+def test_row_major():
+    assert list(Grid(2, 3)) == [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)]
+
+
+def test_reiterable():
+    g = Grid(2, 2)
+    assert list(g) == list(g)
+    assert list(zip(g, g))[1] == ((0, 1), (0, 1))
+
+
+def test_iterator_protocol():
+    it = iter(Grid(1, 2))
+    assert isinstance(it, GridIterator) and iter(it) is it
+    assert next(it) == (0, 0) and next(it) == (0, 1)
+    for _ in range(3):
+        with pytest.raises(StopIteration):
+            next(it)
+
+
+def test_fresh_iterators():
+    g = Grid(1, 3)
+    a, b = iter(g), iter(g)
+    next(a)
+    assert next(b) == (0, 0) and a is not b
+
+
+def test_empty_and_len():
+    assert list(Grid(0, 5)) == [] and list(Grid(3, 0)) == []
+    assert len(Grid(4, 5)) == 20
+    with pytest.raises(ValueError):
+        Grid(-1, 2)
+@@@ task lazy_log_pipeline leaf=2 diff=3 entry=parse,only,take,errors_pipeline
+@@@ prompt
+Write a lazy log-processing pipeline from generator functions. `parse(lines)` yields `(level, message)` for each line of the form `"LEVEL: message"` (LEVEL is uppercase letters; strip the message) and silently skips lines that do not match. `only(records, level)` yields the records with that level. `take(n, iterable)` yields at most the first `n` items and must not pull more items from the source than it yields (so with an infinite source it terminates). `errors_pipeline(lines, n)` chains them to yield the first `n` ERROR messages (just the message strings). Everything must be lazy: nothing is read from `lines` until the result is iterated, and only as much as needed.
+@@@ reference
+import re
+
+_LINE = re.compile(r"([A-Z]+):\s*(.*)")
+
+
+def parse(lines):
+    for line in lines:
+        m = _LINE.fullmatch(line.rstrip("\n"))
+        if m:
+            yield m.group(1), m.group(2).strip()
+
+
+def only(records, level):
+    return (r for r in records if r[0] == level)
+
+
+def take(n, iterable):
+    if n <= 0:
+        return
+    for i, item in enumerate(iterable, 1):
+        yield item
+        if i >= n:
+            return
+
+
+def errors_pipeline(lines, n):
+    return (msg for _, msg in take(n, only(parse(lines), "ERROR")))
+@@@ tests
+import itertools
+from solution import parse, only, take, errors_pipeline
+
+
+def test_parse_skips_bad_lines():
+    lines = ["INFO: started", "garbage", "ERROR:  disk full  ", "warn: lowercase", "DEBUG:"]
+    assert list(parse(lines)) == [("INFO", "started"), ("ERROR", "disk full"), ("DEBUG", "")]
+
+
+def test_only():
+    recs = [("INFO", "a"), ("ERROR", "b"), ("INFO", "c")]
+    assert list(only(recs, "INFO")) == [("INFO", "a"), ("INFO", "c")]
+
+
+def test_take_does_not_overconsume():
+    src = iter(range(10))
+    assert list(take(3, src)) == [0, 1, 2]
+    assert next(src) == 3
+    assert list(take(0, iter([1]))) == []
+
+
+def test_take_on_infinite():
+    assert list(take(4, itertools.count())) == [0, 1, 2, 3]
+
+
+def test_pipeline_is_lazy():
+    pulled = []
+
+    def source():
+        for i in itertools.count():
+            pulled.append(i)
+            yield f"ERROR: e{i}" if i % 3 == 0 else f"INFO: i{i}"
+    result = errors_pipeline(source(), 2)
+    assert pulled == []
+    assert list(result) == ["e0", "e3"]
+    assert pulled == [0, 1, 2, 3]
+
+
+def test_pipeline_stops_before_bad_input():
+    def source():
+        yield "ERROR: first"
+        raise AssertionError("pipeline read too far")
+    assert list(errors_pipeline(source(), 1)) == ["first"]
+@@@ task yield_from_delegation leaf=3 diff=3 entry=flatten,run_all
+@@@ prompt
+Write two generators that use `yield from`. `flatten(items)` yields the leaves of arbitrarily nested lists and tuples in order, delegating to itself recursively with `yield from`; strings, bytes and every other type are leaves (do not recurse into strings). `run_all(*generators)` delegates to each given generator in turn with `yield from`, so callers see all of their values in sequence, and finally returns (as the generator's return value, i.e. `StopIteration.value`) the list of the sub-generators' own return values. Values sent with `send()` must reach the sub-generator currently running, which `yield from` does for you.
+@@@ reference
+def flatten(items):
+    for x in items:
+        if isinstance(x, (list, tuple)):
+            yield from flatten(x)
+        else:
+            yield x
+
+
+def run_all(*generators):
+    results = []
+    for g in generators:
+        results.append((yield from g))
+    return results
+@@@ tests
+from solution import flatten, run_all
+
+
+def test_flatten_nested():
+    assert list(flatten([1, [2, (3, [4, []]), "ab"], b"cd", ((5,),)])) == [1, 2, 3, 4, "ab", b"cd", 5]
+    assert list(flatten([])) == []
+
+
+def test_flatten_is_lazy():
+    gen = flatten([1, [2, 3]])
+    assert next(gen) == 1
+
+
+def worker(name, n):
+    for i in range(n):
+        yield f"{name}{i}"
+    return f"{name} done"
+
+
+def test_run_all_values_and_return():
+    g = run_all(worker("a", 2), worker("b", 1))
+    values = []
+    try:
+        while True:
+            values.append(next(g))
+    except StopIteration as stop:
+        result = stop.value
+    assert values == ["a0", "a1", "b0"] and result == ["a done", "b done"]
+
+
+def test_send_reaches_subgenerator():
+    def echo():
+        received = []
+        while True:
+            x = yield len(received)
+            if x is None:
+                return received
+            received.append(x)
+    g = run_all(echo())
+    assert next(g) == 0
+    assert g.send("x") == 1 and g.send("y") == 2
+    try:
+        g.send(None)
+    except StopIteration as stop:
+        assert stop.value == [["x", "y"]]
+
+
+def test_empty_run_all():
+    g = run_all()
+    try:
+        next(g)
+    except StopIteration as stop:
+        assert stop.value == []
+@@@ task coroutine_averager leaf=4 diff=4 entry=averager,Reset
+@@@ prompt
+Write a generator-based coroutine `averager(log=None)` and an exception class `Reset`. After priming with `next()` (which yields None), each `send(x)` adds a number and yields the running mean. `gen.throw(Reset)` clears the running state and yields None (so `throw` returns None). Any other exception thrown in propagates out and finishes the generator. On `close()` (i.e. `GeneratorExit`), if `log` is a list, append `(count, mean)` for the current state (mean None when empty) before finishing; do not yield again after `GeneratorExit`.
+@@@ reference
+class Reset(Exception):
+    pass
+
+
+def averager(log=None):
+    total = 0.0
+    count = 0
+    value = None
+    while True:
+        try:
+            x = yield value
+        except Reset:
+            total, count, value = 0.0, 0, None
+            continue
+        except GeneratorExit:
+            if log is not None:
+                log.append((count, total / count if count else None))
+            raise
+        total += x
+        count += 1
+        value = total / count
+@@@ tests
+import pytest
+from solution import averager, Reset
+
+
+def started(log=None):
+    g = averager(log)
+    assert next(g) is None
+    return g
+
+
+def test_running_mean():
+    g = started()
+    assert g.send(10) == 10 and g.send(20) == 15 and g.send(0) == 10
+
+
+def test_reset():
+    g = started()
+    g.send(100)
+    assert g.throw(Reset) is None
+    assert g.send(4) == 4
+
+
+def test_other_exceptions_finish_generator():
+    g = started()
+    with pytest.raises(KeyError):
+        g.throw(KeyError("x"))
+    with pytest.raises(StopIteration):
+        next(g)
+
+
+def test_close_logs_state():
+    log = []
+    g = started(log)
+    g.send(3)
+    g.send(5)
+    g.close()
+    assert log == [(2, 4.0)]
+    with pytest.raises(StopIteration):
+        g.send(1)
+
+
+def test_close_empty():
+    log = []
+    g = started(log)
+    g.close()
+    assert log == [(0, None)]
+
+
+def test_close_without_log():
+    g = started()
+    g.send(1)
+    g.close()
+@@@ task comprehensions_index leaf=5 diff=1 entry=build_index,transpose,word_lengths
+@@@ prompt
+Write three small functions, each as a single comprehension rather than an explicit loop with appends. `build_index(docs: dict[str, str]) -> dict[str, set[str]]` maps every lowercased word (split on whitespace) to the set of document ids containing it (a dict comprehension over a set comprehension of words). `transpose(matrix: list[list]) -> list[list]` returns the transpose using a nested list comprehension (an empty matrix gives `[]`; rows have equal length). `word_lengths(text: str) -> set[int]` returns the set of distinct word lengths, ignoring words shorter than 3 characters.
+@@@ reference
+def build_index(docs):
+    words = {w for text in docs.values() for w in text.lower().split()}
+    return {w: {doc_id for doc_id, text in docs.items() if w in text.lower().split()} for w in words}
+
+
+def transpose(matrix):
+    if not matrix:
+        return []
+    return [[row[c] for row in matrix] for c in range(len(matrix[0]))]
+
+
+def word_lengths(text):
+    return {len(w) for w in text.split() if len(w) >= 3}
+@@@ tests
+from solution import build_index, transpose, word_lengths
+
+
+def test_index():
+    idx = build_index({"d1": "The cat sat", "d2": "the dog", "d3": "Cat CAT"})
+    assert idx["the"] == {"d1", "d2"} and idx["cat"] == {"d1", "d3"} and idx["dog"] == {"d2"}
+    assert set(idx) == {"the", "cat", "sat", "dog"}
+
+
+def test_index_empty():
+    assert build_index({}) == {} and build_index({"a": ""}) == {}
+
+
+def test_transpose():
+    assert transpose([[1, 2, 3], [4, 5, 6]]) == [[1, 4], [2, 5], [3, 6]]
+    assert transpose([[1]]) == [[1]] and transpose([]) == []
+
+
+def test_transpose_new_lists():
+    m = [[1, 2], [3, 4]]
+    t = transpose(m)
+    t[0][0] = 99
+    assert m[0][0] == 1
+
+
+def test_word_lengths():
+    assert word_lengths("a an the cats alphabet") == {3, 4, 8}
+    assert word_lengths("") == set()
+@@@ task streaming_stats leaf=6 diff=2 entry=stream_stats,sum_of_squares
+@@@ prompt
+Write `stream_stats(numbers) -> dict` that computes `count`, `total`, `minimum`, `maximum` and `mean` in a single pass over any iterable, including one-shot iterators and generators that cannot be iterated twice, without building a list (an empty input gives count 0, total 0 and None for the others). Also write `sum_of_squares(n: int) -> int` returning the sum of i*i for i in range(n) using a generator expression rather than a list comprehension, so memory use stays constant for large n.
+@@@ reference
+def stream_stats(numbers):
+    count = 0
+    total = 0
+    lo = hi = None
+    for x in numbers:
+        count += 1
+        total += x
+        lo = x if lo is None or x < lo else lo
+        hi = x if hi is None or x > hi else hi
+    return {"count": count, "total": total, "minimum": lo, "maximum": hi,
+            "mean": total / count if count else None}
+
+
+def sum_of_squares(n):
+    return sum(i * i for i in range(n))
+@@@ tests
+import tracemalloc
+from solution import stream_stats, sum_of_squares
+
+
+def test_stats_on_generator():
+    gen = (x for x in [3, 1, 4, 1, 5])
+    assert stream_stats(gen) == {"count": 5, "total": 14, "minimum": 1, "maximum": 5, "mean": 2.8}
+
+
+def test_empty():
+    assert stream_stats(iter([])) == {"count": 0, "total": 0, "minimum": None, "maximum": None, "mean": None}
+
+
+def test_single_pass_only():
+    class OneShot:
+        def __init__(self, data):
+            self.data, self.used = data, False
+
+        def __iter__(self):
+            assert not self.used, "iterated twice"
+            self.used = True
+            return iter(self.data)
+    assert stream_stats(OneShot([2, 4]))["mean"] == 3
+
+
+def test_negative_numbers():
+    s = stream_stats(iter([-5, -1, -10]))
+    assert s["minimum"] == -10 and s["maximum"] == -1
+
+
+def test_constant_memory():
+    tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        assert sum_of_squares(200_000) == sum(i * i for i in range(200_000))
+        s = stream_stats(i for i in range(200_000))
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert s["count"] == 200_000
+    assert peak < 200_000, f"peak {peak} bytes suggests a list was built"
+@@@ task closure_counters leaf=7 diff=2 entry=make_counter,make_averager
+@@@ prompt
+Write closure-based state with `nonlocal`. `make_counter(start=0, step=1)` returns a tuple of three functions `(increment, current, reset)` that share private state: `increment()` adds `step` and returns the new value, `current()` returns it, `reset()` sets it back to `start`. Each call to `make_counter` creates independent state. `make_averager()` returns a function `add(x)` that remembers every value it has seen only through its closure (no globals, no class) and returns the running average.
+@@@ reference
+def make_counter(start=0, step=1):
+    value = start
+
+    def increment():
+        nonlocal value
+        value += step
+        return value
+
+    def current():
+        return value
+
+    def reset():
+        nonlocal value
+        value = start
+
+    return increment, current, reset
+
+
+def make_averager():
+    total = 0.0
+    count = 0
+
+    def add(x):
+        nonlocal total, count
+        total += x
+        count += 1
+        return total / count
+
+    return add
+@@@ tests
+from solution import make_counter, make_averager
+
+
+def test_counter():
+    inc, cur, reset = make_counter(10, 5)
+    assert cur() == 10 and inc() == 15 and inc() == 20 and cur() == 20
+    reset()
+    assert cur() == 10
+
+
+def test_independent_counters():
+    a = make_counter()
+    b = make_counter()
+    a[0]()
+    a[0]()
+    assert a[1]() == 2 and b[1]() == 0
+
+
+def test_state_lives_in_closure():
+    inc, cur, _ = make_counter()
+    assert inc.__closure__ is not None
+    assert any(c.cell_contents == 0 for c in cur.__closure__)
+
+
+def test_averager():
+    avg = make_averager()
+    assert avg(10) == 10 and avg(20) == 15 and avg(30) == 20
+
+
+def test_averagers_independent():
+    a, b = make_averager(), make_averager()
+    a(100)
+    assert b(1) == 1
+@@@ task count_calls_decorator leaf=8 diff=2 entry=count_calls
+@@@ prompt
+Write a decorator `count_calls(fn)` that counts how many times the decorated function has been called. The wrapper exposes the count as an integer attribute `calls` and a method-like function attribute `reset_calls()` that sets it back to 0. Use `functools.wraps` so the wrapper keeps `__name__`, `__doc__`, `__module__` and gets `__wrapped__` (which also makes `inspect.signature` report the original signature). A call that raises still counts. The decorator must work on plain functions and on methods defined in a class.
+@@@ reference
+import functools
+
+
+def count_calls(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        wrapper.calls += 1
+        return fn(*args, **kwargs)
+
+    def reset_calls():
+        wrapper.calls = 0
+
+    wrapper.calls = 0
+    wrapper.reset_calls = reset_calls
+    return wrapper
+@@@ tests
+import inspect
+import pytest
+from solution import count_calls
+
+
+@count_calls
+def greet(name, *, punct="!"):
+    """Say hi."""
+    return f"hi {name}{punct}"
+
+
+def test_counts():
+    greet.reset_calls()
+    greet("a")
+    greet("b", punct="?")
+    assert greet.calls == 2
+
+
+def test_metadata_preserved():
+    assert greet.__name__ == "greet" and greet.__doc__ == "Say hi."
+    assert greet.__wrapped__("x") == "hi x!"
+    assert str(inspect.signature(greet)) == "(name, *, punct='!')"
+
+
+def test_reset():
+    greet("x")
+    greet.reset_calls()
+    assert greet.calls == 0
+
+
+def test_errors_count():
+    @count_calls
+    def boom():
+        raise ValueError
+    with pytest.raises(ValueError):
+        boom()
+    assert boom.calls == 1
+
+
+def test_methods():
+    class Repo:
+        @count_calls
+        def load(self, k):
+            return k * 2
+    r = Repo()
+    assert r.load(2) == 4 and Repo().load(1) == 2
+    assert Repo.load.calls == 2
+@@@ task validate_range_decorator leaf=9 diff=3 entry=validate_range
+@@@ prompt
+Write a decorator factory `validate_range(**bounds)` where each keyword maps a parameter name to a `(low, high)` tuple (either side may be None for "unbounded"). The decorated function checks, on every call, that each bounded argument satisfies `low <= value <= high`, raising `ValueError` naming the parameter and the bounds otherwise. Arguments may be passed positionally or by keyword, and defaults count too, so bind the call with `inspect.signature(fn).bind(*args, **kwargs)` and `apply_defaults()`. A bound naming a parameter the function does not have raises `TypeError` at decoration time. Preserve metadata with `functools.wraps`.
+@@@ reference
+import functools
+import inspect
+
+
+def validate_range(**bounds):
+    def deco(fn):
+        sig = inspect.signature(fn)
+        unknown = set(bounds) - set(sig.parameters)
+        if unknown:
+            raise TypeError(f"{fn.__name__} has no parameters {sorted(unknown)}")
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            bound = sig.bind(*args, **kwargs)
+            bound.apply_defaults()
+            for name, (low, high) in bounds.items():
+                v = bound.arguments[name]
+                if (low is not None and v < low) or (high is not None and v > high):
+                    raise ValueError(f"{name}={v!r} not in range [{low}, {high}]")
+            return fn(*args, **kwargs)
+        return wrapper
+    return deco
+@@@ tests
+import pytest
+from solution import validate_range
+
+
+@validate_range(volume=(0, 11), balance=(-1, 1))
+def set_audio(volume, balance=0.0, *, mute=False):
+    """Docs."""
+    return volume, balance, mute
+
+
+def test_valid_calls():
+    assert set_audio(5) == (5, 0.0, False)
+    assert set_audio(volume=11, balance=-1, mute=True) == (11, -1, True)
+
+
+def test_positional_and_keyword_checked():
+    with pytest.raises(ValueError, match="volume"):
+        set_audio(12)
+    with pytest.raises(ValueError, match="balance"):
+        set_audio(1, balance=2)
+    with pytest.raises(ValueError, match="balance"):
+        set_audio(1, 1.5)
+
+
+def test_defaults_are_validated():
+    @validate_range(n=(1, None))
+    def f(n=0):
+        return n
+    with pytest.raises(ValueError):
+        f()
+    assert f(10 ** 9) == 10 ** 9
+
+
+def test_open_bounds():
+    @validate_range(x=(None, 0))
+    def g(x):
+        return x
+    assert g(-100) == -100
+    with pytest.raises(ValueError):
+        g(1)
+
+
+def test_unknown_parameter_at_decoration():
+    with pytest.raises(TypeError):
+        @validate_range(nope=(0, 1))
+        def h(x):
+            return x
+
+
+def test_metadata():
+    assert set_audio.__name__ == "set_audio" and set_audio.__doc__ == "Docs."
+@@@ task auto_repr_class_decorator leaf=10 diff=3 entry=auto_repr
+@@@ prompt
+Write a class decorator `auto_repr(cls)` that adds a `__repr__` built from the parameters of the class's `__init__` (found with `inspect.signature`, skipping `self`, `*args` and `**kwargs`). The repr looks like `Point(x=1, y=2)`: the class name of the actual instance (so subclasses show their own name), then each parameter name with `repr()` of the instance attribute of the same name. If the class body itself already defines `__repr__`, leave it untouched. The decorator returns the same class object, not a new one.
+@@@ reference
+import inspect
+
+
+def auto_repr(cls):
+    if "__repr__" in cls.__dict__:
+        return cls
+    params = [p.name for p in list(inspect.signature(cls.__init__).parameters.values())[1:]
+              if p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)]
+
+    def __repr__(self):
+        args = ", ".join(f"{name}={getattr(self, name)!r}" for name in params)
+        return f"{type(self).__name__}({args})"
+
+    cls.__repr__ = __repr__
+    return cls
+@@@ tests
+from solution import auto_repr
+
+
+@auto_repr
+class Point:
+    def __init__(self, x, y=0, *args, label="p", **kw):
+        self.x, self.y, self.label = x, y, label
+
+
+def test_repr():
+    assert repr(Point(1, 2)) == "Point(x=1, y=2, label='p')"
+    assert repr(Point("a", label=None)) == "Point(x='a', y=0, label=None)"
+
+
+def test_same_class_returned():
+    class A:
+        def __init__(self, a):
+            self.a = a
+    assert auto_repr(A) is A
+
+
+def test_explicit_repr_kept():
+    @auto_repr
+    class Custom:
+        def __init__(self, v):
+            self.v = v
+
+        def __repr__(self):
+            return "custom"
+    assert repr(Custom(1)) == "custom"
+
+
+def test_subclass_name():
+    class Point3(Point):
+        pass
+    assert repr(Point3(1, 2)) == "Point3(x=1, y=2, label='p')"
+
+
+def test_reflects_current_state():
+    p = Point(1)
+    p.x = [1, 2]
+    assert repr(p).startswith("Point(x=[1, 2]")
+@@@ task typed_descriptor leaf=11 diff=3 entry=Typed
+@@@ prompt
+Write a data descriptor `Typed(expected_type, *, nullable=False)` that validates attribute types. Use `__set_name__` to learn the attribute name, store values in the instance's `__dict__` under that same name (a data descriptor takes priority over the instance dict, so this is safe), and implement `__get__` (accessing on the class returns the descriptor itself; reading an attribute that was never set raises `AttributeError`), `__set__` (raise `TypeError` with a message like `"age must be int, got str"` unless `isinstance(value, expected_type)`, or the value is None and `nullable` is true) and `__delete__`. `expected_type` may be a tuple of types.
+@@@ reference
+class Typed:
+    def __init__(self, expected_type, *, nullable=False):
+        self.expected_type = expected_type
+        self.nullable = nullable
+        self.name = None
+
+    def __set_name__(self, owner, name):
+        self.name = name
+
+    def __get__(self, obj, objtype=None):
+        if obj is None:
+            return self
+        try:
+            return obj.__dict__[self.name]
+        except KeyError:
+            raise AttributeError(self.name) from None
+
+    def _type_name(self):
+        t = self.expected_type
+        return " or ".join(x.__name__ for x in t) if isinstance(t, tuple) else t.__name__
+
+    def __set__(self, obj, value):
+        if value is None and self.nullable:
+            pass
+        elif not isinstance(value, self.expected_type):
+            raise TypeError(f"{self.name} must be {self._type_name()}, got {type(value).__name__}")
+        obj.__dict__[self.name] = value
+
+    def __delete__(self, obj):
+        try:
+            del obj.__dict__[self.name]
+        except KeyError:
+            raise AttributeError(self.name) from None
+@@@ tests
+import pytest
+from solution import Typed
+
+
+class Person:
+    name = Typed(str)
+    age = Typed(int)
+    nickname = Typed(str, nullable=True)
+    score = Typed((int, float))
+
+    def __init__(self, name, age):
+        self.name = name
+        self.age = age
+
+
+def test_valid_assignment():
+    p = Person("ann", 30)
+    p.score = 1.5
+    p.nickname = None
+    assert (p.name, p.age, p.score, p.nickname) == ("ann", 30, 1.5, None)
+
+
+def test_type_error_message():
+    with pytest.raises(TypeError) as ei:
+        Person("ann", "thirty")
+    assert str(ei.value) == "age must be int, got str"
+
+
+def test_not_nullable():
+    p = Person("a", 1)
+    with pytest.raises(TypeError):
+        p.name = None
+
+
+def test_tuple_types():
+    p = Person("a", 1)
+    p.score = 3
+    with pytest.raises(TypeError):
+        p.score = "high"
+
+
+def test_unset_and_delete():
+    p = Person("a", 1)
+    with pytest.raises(AttributeError):
+        p.score
+    del p.age
+    with pytest.raises(AttributeError):
+        p.age
+
+
+def test_class_access_and_per_instance_storage():
+    assert isinstance(Person.__dict__["age"], Typed) and Person.age is Person.__dict__["age"]
+    a, b = Person("a", 1), Person("b", 2)
+    assert (a.age, b.age) == (1, 2) and a.__dict__["age"] == 1
+@@@ task alias_descriptor leaf=11 diff=3 entry=Alias
+@@@ prompt
+Write a descriptor `Alias(target: str)` that makes one attribute an alias for another. Reading, assigning and deleting the alias attribute forward to the target attribute on the same instance (use `getattr`, `setattr`, `delattr`, so the target may itself be a property or another descriptor). Use `__set_name__` to record the alias's own name; accessing the alias on the class returns the descriptor itself, whose `repr` is `Alias('name' -> 'target')`. This lets a class rename an attribute while keeping the old name working.
+@@@ reference
+class Alias:
+    def __init__(self, target):
+        self.target = target
+        self.name = None
+
+    def __set_name__(self, owner, name):
+        self.name = name
+
+    def __get__(self, obj, objtype=None):
+        if obj is None:
+            return self
+        return getattr(obj, self.target)
+
+    def __set__(self, obj, value):
+        setattr(obj, self.target, value)
+
+    def __delete__(self, obj):
+        delattr(obj, self.target)
+
+    def __repr__(self):
+        return f"Alias({self.name!r} -> {self.target!r})"
+@@@ tests
+import pytest
+from solution import Alias
+
+
+class Account:
+    login = Alias("username")
+    pw = Alias("password_hash")
+
+    def __init__(self, username):
+        self.username = username
+        self._hash = "x"
+
+    @property
+    def password_hash(self):
+        return self._hash
+
+    @password_hash.setter
+    def password_hash(self, v):
+        self._hash = v.upper()
+
+
+def test_read_forwards():
+    a = Account("ann")
+    assert a.login == "ann"
+
+
+def test_write_forwards():
+    a = Account("ann")
+    a.login = "bob"
+    assert a.username == "bob" and "login" not in a.__dict__
+
+
+def test_delete_forwards():
+    a = Account("ann")
+    del a.login
+    assert not hasattr(a, "username")
+    with pytest.raises(AttributeError):
+        a.login
+
+
+def test_works_with_properties():
+    a = Account("ann")
+    a.pw = "secret"
+    assert a.password_hash == "SECRET" and a.pw == "SECRET"
+
+
+def test_class_access_and_repr():
+    d = Account.login
+    assert isinstance(d, Alias) and repr(d) == "Alias('login' -> 'username')"
+@@@ task temperature_properties leaf=12 diff=2 entry=Temperature
+@@@ prompt
+Write a `Temperature(celsius=0.0)` class that stores only degrees Celsius (in a private attribute) and exposes three properties with setters: `celsius`, `fahrenheit` (F = C * 9/5 + 32) and `kelvin` (K = C + 273.15). Setting any of them updates the single stored value. Every setter rejects values below absolute zero (-273.15 °C) with `ValueError`, and non-numbers with `TypeError`. Also make `__repr__` return `Temperature(celsius=21.5)`.
+@@@ reference
+import numbers
+
+ABSOLUTE_ZERO = -273.15
+
+
+class Temperature:
+    def __init__(self, celsius=0.0):
+        self.celsius = celsius
+
+    @property
+    def celsius(self):
+        return self._c
+
+    @celsius.setter
+    def celsius(self, value):
+        if isinstance(value, bool) or not isinstance(value, numbers.Real):
+            raise TypeError("temperature must be a number")
+        if value < ABSOLUTE_ZERO:
+            raise ValueError("below absolute zero")
+        self._c = float(value)
+
+    @property
+    def fahrenheit(self):
+        return self._c * 9 / 5 + 32
+
+    @fahrenheit.setter
+    def fahrenheit(self, value):
+        if isinstance(value, bool) or not isinstance(value, numbers.Real):
+            raise TypeError("temperature must be a number")
+        self.celsius = (value - 32) * 5 / 9
+
+    @property
+    def kelvin(self):
+        return self._c + 273.15
+
+    @kelvin.setter
+    def kelvin(self, value):
+        if isinstance(value, bool) or not isinstance(value, numbers.Real):
+            raise TypeError("temperature must be a number")
+        self.celsius = value - 273.15
+
+    def __repr__(self):
+        return f"Temperature(celsius={self._c})"
+@@@ tests
+import pytest
+from solution import Temperature
+
+
+def test_conversions():
+    t = Temperature(100)
+    assert t.fahrenheit == pytest.approx(212) and t.kelvin == pytest.approx(373.15)
+
+
+def test_setters_update_single_value():
+    t = Temperature()
+    t.fahrenheit = 32
+    assert t.celsius == pytest.approx(0)
+    t.kelvin = 0
+    assert t.celsius == pytest.approx(-273.15)
+    t.celsius = 21.5
+    assert repr(t) == "Temperature(celsius=21.5)"
+
+
+def test_absolute_zero_enforced():
+    with pytest.raises(ValueError):
+        Temperature(-300)
+    t = Temperature()
+    with pytest.raises(ValueError):
+        t.kelvin = -1
+    with pytest.raises(ValueError):
+        t.fahrenheit = -500
+    assert t.celsius == 0
+
+
+def test_type_errors():
+    t = Temperature()
+    with pytest.raises(TypeError):
+        t.celsius = "hot"
+    with pytest.raises(TypeError):
+        t.kelvin = None
+
+
+def test_only_one_stored_value():
+    t = Temperature(5)
+    numeric = [v for v in vars(t).values() if isinstance(v, (int, float))]
+    assert len(numeric) == 1
+@@@ task init_subclass_registry leaf=13 diff=3 entry=Plugin
+@@@ prompt
+Write a base class `Plugin` that registers its subclasses automatically with `__init_subclass__`. A subclass declares its name with a class keyword argument: `class Gzip(Plugin, name="gzip"): ...`. Subclasses declared without a name (abstract intermediates) are not registered, but their own named subclasses are. Registering a name twice raises `ValueError`. `Plugin.registry` is a dict from name to class shared by the whole hierarchy, each registered class gets a `plugin_name` attribute, and `Plugin.create(name, *args, **kwargs)` instantiates a registered plugin (`KeyError` for unknown names). Remember to call `super().__init_subclass__(**kwargs)`.
+@@@ reference
+class Plugin:
+    registry = {}
+
+    def __init_subclass__(cls, name=None, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if name is None:
+            return
+        if name in Plugin.registry:
+            raise ValueError(f"plugin name {name!r} already registered")
+        cls.plugin_name = name
+        Plugin.registry[name] = cls
+
+    @classmethod
+    def create(cls, name, *args, **kwargs):
+        return Plugin.registry[name](*args, **kwargs)
+@@@ tests
+import pytest
+from solution import Plugin
+
+
+class Compressor(Plugin):
+    pass
+
+
+class Gzip(Compressor, name="gzip"):
+    def __init__(self, level=6):
+        self.level = level
+
+
+class Zstd(Compressor, name="zstd"):
+    pass
+
+
+def test_registered():
+    assert Plugin.registry["gzip"] is Gzip and Plugin.registry["zstd"] is Zstd
+    assert Gzip.plugin_name == "gzip"
+
+
+def test_intermediate_not_registered():
+    assert Compressor not in Plugin.registry.values()
+
+
+def test_create():
+    g = Plugin.create("gzip", level=9)
+    assert isinstance(g, Gzip) and g.level == 9
+    with pytest.raises(KeyError):
+        Plugin.create("lz4")
+
+
+def test_duplicate_name():
+    with pytest.raises(ValueError):
+        class Again(Plugin, name="gzip"):
+            pass
+
+
+def test_registry_shared_and_subclass_create():
+    class Brotli(Compressor, name="brotli"):
+        pass
+    assert Compressor.registry is Plugin.registry and "brotli" in Plugin.registry
+    assert isinstance(Compressor.create("brotli"), Brotli)
+
+
+def test_cooperates_with_other_init_subclass():
+    seen = []
+
+    class Tracking:
+        def __init_subclass__(cls, **kw):
+            super().__init_subclass__(**kw)
+            seen.append(cls.__name__)
+
+    class Both(Plugin, Tracking):
+        pass
+
+    class Leaf(Both, name="leaf"):
+        pass
+    assert seen == ["Both", "Leaf"]
+@@@ task model_metaclass leaf=13 diff=4 entry=Field,ModelMeta,Model
+@@@ prompt
+Write a tiny ORM-style model system with a metaclass. `Field(default=None, required=False)` marks a model attribute. `ModelMeta(type)` runs when a model class is created: it collects the `Field` objects from the class body in declaration order, merged with those of base classes (inherited first, with overrides keeping the base position), into an ordered dict `cls._fields` of name to Field, and removes them from the class namespace. `Model` (created with `metaclass=ModelMeta`) has an `__init__(**kwargs)` that sets every field from kwargs or its default, raises `TypeError` for unknown keywords and for missing required fields, a `__repr__` like `User(id=1, name='ann')` in field order, and `__eq__` comparing class and field values.
+@@@ reference
+class Field:
+    def __init__(self, default=None, required=False):
+        self.default = default
+        self.required = required
+
+
+class ModelMeta(type):
+    def __new__(mcls, name, bases, ns):
+        fields = {}
+        for base in reversed(bases):
+            fields.update(getattr(base, "_fields", {}))
+        own = {k: v for k, v in ns.items() if isinstance(v, Field)}
+        for k in own:
+            del ns[k]
+        fields.update(own)
+        cls = super().__new__(mcls, name, bases, ns)
+        cls._fields = dict(fields)
+        return cls
+
+
+class Model(metaclass=ModelMeta):
+    def __init__(self, **kwargs):
+        unknown = set(kwargs) - set(self._fields)
+        if unknown:
+            raise TypeError(f"unknown fields: {sorted(unknown)}")
+        for name, f in self._fields.items():
+            if name in kwargs:
+                value = kwargs[name]
+            elif f.required:
+                raise TypeError(f"missing required field {name!r}")
+            else:
+                value = f.default
+            setattr(self, name, value)
+
+    def __repr__(self):
+        args = ", ".join(f"{n}={getattr(self, n)!r}" for n in self._fields)
+        return f"{type(self).__name__}({args})"
+
+    def __eq__(self, other):
+        if type(other) is not type(self):
+            return NotImplemented
+        return all(getattr(self, n) == getattr(other, n) for n in self._fields)
+@@@ tests
+import pytest
+from solution import Field, ModelMeta, Model
+
+
+class User(Model):
+    id = Field(required=True)
+    name = Field(default="anon")
+    email = Field()
+
+
+class Admin(User):
+    level = Field(default=1)
+    name = Field(default="root")
+
+
+def test_metaclass_and_fields_order():
+    assert type(User) is ModelMeta
+    assert list(User._fields) == ["id", "name", "email"]
+    assert list(Admin._fields) == ["id", "name", "email", "level"]
+    assert Admin._fields["name"].default == "root"
+
+
+def test_fields_removed_from_namespace():
+    assert "name" not in User.__dict__
+
+
+def test_init_defaults_and_required():
+    u = User(id=1)
+    assert (u.id, u.name, u.email) == (1, "anon", None)
+    with pytest.raises(TypeError):
+        User(name="x")
+    with pytest.raises(TypeError):
+        User(id=1, nickname="x")
+
+
+def test_repr_and_eq():
+    assert repr(User(id=1, name="ann")) == "User(id=1, name='ann', email=None)"
+    assert User(id=1) == User(id=1) and User(id=1) != User(id=2)
+    assert User(id=1) != Admin(id=1)
+
+
+def test_inherited_override():
+    a = Admin(id=5)
+    assert a.name == "root" and a.level == 1
+@@@ task transaction_context_manager leaf=14 diff=3 entry=Transaction
+@@@ prompt
+Write a class-based context manager `Transaction(store: dict)` that gives all-or-nothing updates to a dict. `__enter__` returns a working copy (a shallow `dict` copy) for the block to modify. If the block finishes without an exception, `__exit__` writes the working copy back into the original dict in place (so other references to `store` see the change: clear it and update it). If the block raises, the original dict is left exactly as it was, and the exception propagates (`__exit__` returns False). The same `Transaction` object may be used for several `with` blocks in a row.
+@@@ reference
+class Transaction:
+    def __init__(self, store):
+        self.store = store
+        self._work = None
+
+    def __enter__(self):
+        self._work = dict(self.store)
+        return self._work
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is None:
+            self.store.clear()
+            self.store.update(self._work)
+        self._work = None
+        return False
+@@@ tests
+import pytest
+from solution import Transaction
+
+
+def test_commit():
+    store = {"a": 1}
+    alias = store
+    with Transaction(store) as tx:
+        tx["a"] = 2
+        tx["b"] = 3
+        assert store == {"a": 1}
+    assert alias == {"a": 2, "b": 3}
+
+
+def test_rollback():
+    store = {"a": 1}
+    with pytest.raises(KeyError):
+        with Transaction(store) as tx:
+            tx["a"] = 100
+            del tx["a"]
+            tx["missing"]
+    assert store == {"a": 1}
+
+
+def test_deletions_committed():
+    store = {"a": 1, "b": 2}
+    with Transaction(store) as tx:
+        del tx["a"]
+    assert store == {"b": 2}
+
+
+def test_reusable():
+    store = {}
+    t = Transaction(store)
+    with t as tx:
+        tx["x"] = 1
+    with pytest.raises(ValueError):
+        with t as tx:
+            tx["y"] = 2
+            raise ValueError
+    with t as tx:
+        tx["z"] = 3
+    assert store == {"x": 1, "z": 3}
+
+
+def test_exception_not_suppressed():
+    t = Transaction({})
+    assert t.__exit__(ValueError, ValueError(), None) is False
+@@@ task temporary_attribute leaf=14 diff=2 entry=temporary_attr
+@@@ prompt
+Write a class-based context manager `temporary_attr(obj, name, value)` (implement `__enter__` and `__exit__` yourself, no `contextlib`) that sets `obj.<name> = value` for the duration of a `with` block and then restores the previous state: if the attribute existed, restore the old value; if it did not exist, delete it. Restoration must happen even if the block raises, and the exception must propagate. `__enter__` returns `obj`.
+@@@ reference
+_MISSING = object()
+
+
+class temporary_attr:
+    def __init__(self, obj, name, value):
+        self.obj, self.name, self.value = obj, name, value
+        self._old = _MISSING
+
+    def __enter__(self):
+        self._old = getattr(self.obj, self.name, _MISSING) if hasattr(self.obj, self.name) else _MISSING
+        if self._old is not _MISSING and self.name not in getattr(self.obj, "__dict__", {}):
+            self._old = (_MISSING, self._old)
+        setattr(self.obj, self.name, self.value)
+        return self.obj
+
+    def __exit__(self, *exc):
+        if self._old is _MISSING or isinstance(self._old, tuple) and self._old and self._old[0] is _MISSING:
+            delattr(self.obj, self.name)
+            if isinstance(self._old, tuple) and self._old and self._old[0] is _MISSING:
+                if getattr(self.obj, self.name, _MISSING) != self._old[1]:
+                    setattr(self.obj, self.name, self._old[1])
+        else:
+            setattr(self.obj, self.name, self._old)
+        return False
+@@@ tests
+import types
+import pytest
+from solution import temporary_attr
+
+
+def test_existing_attribute_restored():
+    o = types.SimpleNamespace(level=1)
+    with temporary_attr(o, "level", 5) as same:
+        assert same is o and o.level == 5
+    assert o.level == 1
+
+
+def test_missing_attribute_deleted():
+    o = types.SimpleNamespace()
+    with temporary_attr(o, "debug", True):
+        assert o.debug is True
+    assert not hasattr(o, "debug")
+
+
+def test_restored_on_error():
+    o = types.SimpleNamespace(x="orig")
+    with pytest.raises(RuntimeError):
+        with temporary_attr(o, "x", "temp"):
+            raise RuntimeError
+    assert o.x == "orig"
+
+
+def test_none_value_is_a_value():
+    o = types.SimpleNamespace(x=None)
+    with temporary_attr(o, "x", 3):
+        pass
+    assert hasattr(o, "x") and o.x is None
+
+
+def test_class_attribute_not_destroyed():
+    class C:
+        mode = "class-level"
+    c = C()
+    with temporary_attr(c, "mode", "instance"):
+        assert c.mode == "instance"
+    assert c.mode == "class-level" and C.mode == "class-level"
+
+
+def test_nested():
+    o = types.SimpleNamespace(v=0)
+    with temporary_attr(o, "v", 1):
+        with temporary_attr(o, "v", 2):
+            assert o.v == 2
+        assert o.v == 1
+    assert o.v == 0
+@@@ task exitstack_open_all leaf=15 diff=3 entry=open_all
+@@@ prompt
+Write a context manager `open_all(paths, mode="r", opener=open)` using `contextlib.contextmanager` and `contextlib.ExitStack`. It opens every path with `opener(path, mode)` and yields the list of open file objects. All files are closed when the block exits, whether normally or with an exception. If opening the k-th file fails, the files already opened must be closed before the exception propagates (ExitStack gives you that for free when you enter each file into the stack).
+@@@ reference
+from contextlib import ExitStack, contextmanager
+
+
+@contextmanager
+def open_all(paths, mode="r", opener=open):
+    with ExitStack() as stack:
+        yield [stack.enter_context(opener(p, mode)) for p in paths]
+@@@ tests
+import pytest
+from solution import open_all
+
+
+class FakeFile:
+    def __init__(self, name, log):
+        self.name, self.log, self.closed = name, log, False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.closed = True
+        self.log.append(f"close {self.name}")
+
+
+def fake_opener(log, fail_on=None):
+    def opener(path, mode):
+        if path == fail_on:
+            raise FileNotFoundError(path)
+        log.append(f"open {path} {mode}")
+        return FakeFile(path, log)
+    return opener
+
+
+def test_real_files(tmp_path):
+    for n in ("a", "b"):
+        (tmp_path / n).write_text(n.upper())
+    with open_all([tmp_path / "a", tmp_path / "b"]) as files:
+        assert [f.read() for f in files] == ["A", "B"]
+    assert all(f.closed for f in files)
+
+
+def test_closes_on_body_error():
+    log = []
+    with pytest.raises(ValueError):
+        with open_all(["x", "y"], "rb", opener=fake_opener(log)) as files:
+            raise ValueError
+    assert all(f.closed for f in files)
+    assert log == ["open x rb", "open y rb", "close y", "close x"]
+
+
+def test_partial_open_failure_closes_opened():
+    log = []
+    with pytest.raises(FileNotFoundError):
+        with open_all(["a", "b", "c"], opener=fake_opener(log, fail_on="c")):
+            pass
+    assert log == ["open a r", "open b r", "close b", "close a"]
+
+
+def test_empty():
+    with open_all([]) as files:
+        assert files == []
+
+
+def test_write_mode(tmp_path):
+    with open_all([tmp_path / "o1", tmp_path / "o2"], "w") as files:
+        for i, f in enumerate(files):
+            f.write(str(i))
+    assert (tmp_path / "o2").read_text() == "1"
+@@@ task patched_mapping leaf=15 diff=2 entry=patched
+@@@ prompt
+Write a generator-based context manager `patched(mapping, **overrides)` with `@contextlib.contextmanager` that temporarily sets keys in a mutable mapping (for example `os.environ` or a config dict) and yields the mapping. On exit, every overridden key is restored to its previous value, and keys that did not exist before are removed again. An override value of `None` means "remove this key for the duration of the block". Restoration must run even if the block raises (use `try`/`finally` around the `yield`), and the exception must propagate.
+@@@ reference
+from contextlib import contextmanager
+
+_MISSING = object()
+
+
+@contextmanager
+def patched(mapping, **overrides):
+    saved = {k: mapping.get(k, _MISSING) if k in mapping else _MISSING for k in overrides}
+    try:
+        for k, v in overrides.items():
+            if v is None:
+                mapping.pop(k, None)
+            else:
+                mapping[k] = v
+        yield mapping
+    finally:
+        for k, old in saved.items():
+            if old is _MISSING:
+                mapping.pop(k, None)
+            else:
+                mapping[k] = old
+@@@ tests
+import pytest
+from solution import patched
+
+
+def test_set_and_restore():
+    cfg = {"debug": "0", "keep": "k"}
+    with patched(cfg, debug="1") as m:
+        assert m is cfg and cfg["debug"] == "1"
+    assert cfg == {"debug": "0", "keep": "k"}
+
+
+def test_new_keys_removed():
+    cfg = {}
+    with patched(cfg, NEW="x"):
+        assert cfg == {"NEW": "x"}
+    assert cfg == {}
+
+
+def test_none_removes_temporarily():
+    cfg = {"TOKEN": "secret"}
+    with patched(cfg, TOKEN=None):
+        assert "TOKEN" not in cfg
+    assert cfg["TOKEN"] == "secret"
+    with patched(cfg, ABSENT=None):
+        assert "ABSENT" not in cfg
+    assert "ABSENT" not in cfg
+
+
+def test_restored_on_exception():
+    cfg = {"a": 1}
+    with pytest.raises(KeyError):
+        with patched(cfg, a=2, b=3):
+            raise KeyError("x")
+    assert cfg == {"a": 1}
+
+
+def test_existing_none_value_restored():
+    cfg = {"a": None}
+    with patched(cfg, a=5):
+        pass
+    assert "a" in cfg and cfg["a"] is None
+
+
+def test_os_environ(monkeypatch):
+    import os
+    monkeypatch.setenv("PYCODER_TEST_VAR", "orig")
+    with patched(os.environ, PYCODER_TEST_VAR="tmp", PYCODER_OTHER="1"):
+        assert os.environ["PYCODER_TEST_VAR"] == "tmp"
+    assert os.environ["PYCODER_TEST_VAR"] == "orig" and "PYCODER_OTHER" not in os.environ
+@@@ task parameter_kinds leaf=16 diff=3 entry=make_url
+@@@ prompt
+Write `make_url(host, /, *path, scheme="https", port=None, **query) -> str` that uses every kind of parameter on purpose: `host` is positional-only (so a query parameter may itself be called `host`), any number of path segments are positional, `scheme` and `port` are keyword-only, and the remaining keyword arguments become the query string in the order given. Build `scheme://host[:port]/seg1/seg2?k=v&...`, quoting each path segment with `urllib.parse.quote(seg, safe="")` and encoding the query with `urllib.parse.urlencode`. With no path the URL ends in `/`. A query value of None is omitted. A port must be an int in 1-65535, else `ValueError`.
+@@@ reference
+from urllib.parse import quote, urlencode
+
+
+def make_url(host, /, *path, scheme="https", port=None, **query):
+    if port is not None and (not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535):
+        raise ValueError(f"invalid port {port!r}")
+    netloc = host if port is None else f"{host}:{port}"
+    url = f"{scheme}://{netloc}/" + "/".join(quote(str(seg), safe="") for seg in path)
+    params = [(k, v) for k, v in query.items() if v is not None]
+    if params:
+        url += "?" + urlencode(params)
+    return url
+@@@ tests
+import inspect
+import pytest
+from solution import make_url
+
+
+def test_basic():
+    assert make_url("example.com") == "https://example.com/"
+    assert make_url("example.com", "api", "v1", "users") == "https://example.com/api/v1/users"
+
+
+def test_keyword_only_and_query():
+    assert make_url("h", "a", scheme="http", port=8080, q="x y", page=2) == "http://h:8080/a?q=x+y&page=2"
+
+
+def test_host_positional_only_allows_host_query_param():
+    assert make_url("api.io", host="other") == "https://api.io/?host=other"
+    with pytest.raises(TypeError):
+        make_url(host="api.io")
+
+
+def test_segments_quoted():
+    assert make_url("h", "a b", "c/d") == "https://h/a%20b/c%2Fd"
+
+
+def test_none_query_omitted_and_port_validation():
+    assert make_url("h", q=None) == "https://h/"
+    for bad in (0, 70000, "80"):
+        with pytest.raises(ValueError):
+            make_url("h", port=bad)
+
+
+def test_signature_kinds():
+    params = inspect.signature(make_url).parameters
+    kinds = {name: p.kind for name, p in params.items()}
+    P = inspect.Parameter
+    assert kinds == {"host": P.POSITIONAL_ONLY, "path": P.VAR_POSITIONAL, "scheme": P.KEYWORD_ONLY,
+                     "port": P.KEYWORD_ONLY, "query": P.VAR_KEYWORD}
+@@@ task unpacking_walrus leaf=17 diff=2 entry=split_ends,read_chunks,parse_settings
+@@@ prompt
+Write three functions using starred unpacking and the walrus operator. `split_ends(seq)` returns `(first, middle, last)` where `middle` is a list, using a single starred assignment `first, *middle, last = seq`; sequences shorter than 2 raise `ValueError`. `read_chunks(read, size)` repeatedly calls `read(size)` and collects the chunks into a list until it returns an empty value, using `while (chunk := read(size)):`. `parse_settings(lines) -> dict` parses lines like `key = value` (whitespace around `=` optional, keys are identifiers), using `if (m := PATTERN.match(line)):` and skipping non-matching lines; values stay strings.
+@@@ reference
+import re
+
+_SETTING = re.compile(r"\s*([A-Za-z_]\w*)\s*=\s*(.*?)\s*$")
+
+
+def split_ends(seq):
+    if len(seq) < 2:
+        raise ValueError("need at least two items")
+    first, *middle, last = seq
+    return first, middle, last
+
+
+def read_chunks(read, size):
+    chunks = []
+    while (chunk := read(size)):
+        chunks.append(chunk)
+    return chunks
+
+
+def parse_settings(lines):
+    out = {}
+    for line in lines:
+        if (m := _SETTING.match(line)):
+            out[m.group(1)] = m.group(2)
+    return out
+@@@ tests
+import io
+import pytest
+from solution import split_ends, read_chunks, parse_settings
+
+
+def test_split_ends():
+    assert split_ends([1, 2, 3, 4]) == (1, [2, 3], 4)
+    assert split_ends("ab") == ("a", [], "b")
+    assert split_ends((1, 2, 3)) == (1, [2], 3)
+
+
+def test_split_ends_short():
+    for bad in ([], [1], ""):
+        with pytest.raises(ValueError):
+            split_ends(bad)
+
+
+def test_read_chunks():
+    buf = io.BytesIO(b"abcdefg")
+    assert read_chunks(buf.read, 3) == [b"abc", b"def", b"g"]
+    assert read_chunks(io.StringIO("").read, 5) == []
+
+
+def test_read_chunks_custom_reader():
+    data = ["x", "y", ""]
+    calls = []
+
+    def read(n):
+        calls.append(n)
+        return data.pop(0)
+    assert read_chunks(read, 7) == ["x", "y"] and calls == [7, 7, 7]
+
+
+def test_parse_settings():
+    lines = ["host = localhost", "port=8080", "# comment", "bad line", "  name =  two words  ", "1x = no"]
+    assert parse_settings(lines) == {"host": "localhost", "port": "8080", "name": "two words"}

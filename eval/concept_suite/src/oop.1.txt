@@ -1,0 +1,1550 @@
+@@@ task encapsulated_cart leaf=0 diff=2 entry=ShoppingCart
+@@@ prompt
+Write a `ShoppingCart` that protects its internal state. Keep all state in private attributes (leading underscore). `add(sku, price, qty=1)` adds a quantity; `price` is converted with `decimal.Decimal(str(price))`; adding a sku again with a different price raises `ValueError`; `qty` must be a positive int. `remove(sku, qty=None)` removes some or all of a line (`KeyError` for unknown skus, `ValueError` for removing more than present). The read-only property `items` returns a `types.MappingProxyType` view mapping sku to quantity, so callers can read but not modify it, and `total` is a computed `Decimal` property. Neither property has a setter.
+@@@ reference
+from decimal import Decimal
+from types import MappingProxyType
+
+
+class ShoppingCart:
+    def __init__(self):
+        self._lines = {}
+        self._qty = {}
+
+    def add(self, sku, price, qty=1):
+        if not isinstance(qty, int) or isinstance(qty, bool) or qty <= 0:
+            raise ValueError("qty must be a positive int")
+        price = Decimal(str(price))
+        if sku in self._lines and self._lines[sku] != price:
+            raise ValueError(f"price mismatch for {sku}")
+        self._lines[sku] = price
+        self._qty[sku] = self._qty.get(sku, 0) + qty
+
+    def remove(self, sku, qty=None):
+        if sku not in self._qty:
+            raise KeyError(sku)
+        if qty is None or qty == self._qty[sku]:
+            del self._qty[sku]
+            del self._lines[sku]
+            return
+        if qty > self._qty[sku] or qty <= 0:
+            raise ValueError("invalid quantity to remove")
+        self._qty[sku] -= qty
+
+    @property
+    def items(self):
+        return MappingProxyType(self._qty)
+
+    @property
+    def total(self):
+        return sum((self._lines[s] * q for s, q in self._qty.items()), Decimal("0"))
+@@@ tests
+from decimal import Decimal
+import pytest
+from solution import ShoppingCart
+
+
+def test_add_and_total():
+    c = ShoppingCart()
+    c.add("apple", "0.10", 3)
+    c.add("pear", 0.2)
+    c.add("apple", Decimal("0.10"))
+    assert dict(c.items) == {"apple": 4, "pear": 1}
+    assert c.total == Decimal("0.60")
+
+
+def test_items_view_is_read_only():
+    c = ShoppingCart()
+    c.add("a", 1)
+    view = c.items
+    with pytest.raises(TypeError):
+        view["a"] = 100
+    c.add("b", 2)
+    assert "b" in c.items
+
+
+def test_properties_have_no_setters():
+    c = ShoppingCart()
+    with pytest.raises(AttributeError):
+        c.total = 5
+    with pytest.raises(AttributeError):
+        c.items = {}
+
+
+def test_price_mismatch_and_bad_qty():
+    c = ShoppingCart()
+    c.add("a", "1.00")
+    with pytest.raises(ValueError):
+        c.add("a", "2.00")
+    for bad in (0, -1, 1.5, True):
+        with pytest.raises(ValueError):
+            c.add("b", 1, bad)
+
+
+def test_remove():
+    c = ShoppingCart()
+    c.add("a", 1, 5)
+    c.remove("a", 2)
+    assert c.items["a"] == 3
+    with pytest.raises(ValueError):
+        c.remove("a", 10)
+    c.remove("a")
+    assert "a" not in c.items and c.total == 0
+    with pytest.raises(KeyError):
+        c.remove("a")
+
+
+def test_float_price_exact():
+    c = ShoppingCart()
+    c.add("x", 0.1, 3)
+    assert c.total == Decimal("0.3")
+@@@ task super_hierarchy leaf=1 diff=2 entry=Employee,Manager
+@@@ prompt
+Write an `Employee(name, annual_salary)` class and a `Manager(Employee)` subclass that extend behaviour with `super()` instead of duplicating it. `Employee.__init__` stores both values and raises `ValueError` for a negative salary; `monthly_pay()` returns `round(annual_salary / 12, 2)`; `describe()` returns `f"{name} ({ClassName})"` using the actual class name of the instance. `Manager(name, annual_salary, bonus_rate=0.1, reports=None)` calls `super().__init__`, stores a fresh list of reports per instance and has `add_report(employee)`. Its `monthly_pay()` is `round(super().monthly_pay() * (1 + bonus_rate), 2)`, and its `describe()` appends `", manages <n>"` to the base description.
+@@@ reference
+class Employee:
+    def __init__(self, name, annual_salary):
+        if annual_salary < 0:
+            raise ValueError("salary cannot be negative")
+        self.name = name
+        self.annual_salary = annual_salary
+
+    def monthly_pay(self):
+        return round(self.annual_salary / 12, 2)
+
+    def describe(self):
+        return f"{self.name} ({type(self).__name__})"
+
+
+class Manager(Employee):
+    def __init__(self, name, annual_salary, bonus_rate=0.1, reports=None):
+        super().__init__(name, annual_salary)
+        self.bonus_rate = bonus_rate
+        self.reports = list(reports) if reports else []
+
+    def add_report(self, employee):
+        self.reports.append(employee)
+
+    def monthly_pay(self):
+        return round(super().monthly_pay() * (1 + self.bonus_rate), 2)
+
+    def describe(self):
+        return f"{super().describe()}, manages {len(self.reports)}"
+@@@ tests
+import pytest
+from solution import Employee, Manager
+
+
+def test_employee():
+    e = Employee("Bo", 60000)
+    assert e.monthly_pay() == 5000.0 and e.describe() == "Bo (Employee)"
+
+
+def test_manager_pay_uses_base():
+    m = Manager("Ann", 120000, bonus_rate=0.25)
+    assert m.monthly_pay() == 12500.0
+
+
+def test_manager_describe():
+    m = Manager("Ann", 1)
+    m.add_report(Employee("Bo", 1))
+    m.add_report(Employee("Cy", 1))
+    assert m.describe() == "Ann (Manager), manages 2"
+
+
+def test_manager_runs_base_validation():
+    with pytest.raises(ValueError):
+        Manager("Ann", -5)
+
+
+def test_reports_not_shared():
+    a, b = Manager("A", 1), Manager("B", 1)
+    a.add_report(Employee("x", 1))
+    assert b.reports == []
+    src = [Employee("y", 1)]
+    c = Manager("C", 1, reports=src)
+    c.add_report(Employee("z", 1))
+    assert len(src) == 1
+
+
+def test_subclass_of_manager_reports_its_name():
+    class Director(Manager):
+        pass
+    assert Director("Di", 1).describe() == "Di (Director), manages 0"
+    assert isinstance(Director("Di", 1), Employee)
+@@@ task serialisation_mixins leaf=2 diff=3 entry=ReprMixin,DictMixin,JsonMixin
+@@@ prompt
+Write three reusable mixins. `DictMixin.to_dict()` returns a dict of the instance's public attributes (names not starting with `_`, from `vars(self)`), converting nested values recursively: objects that have a `to_dict` method are converted with it, and lists/tuples become lists of converted items. `JsonMixin.to_json(**kwargs)` returns `json.dumps(self.to_dict(), **kwargs)`, relying on `to_dict` being provided by another class in the MRO. `ReprMixin.__repr__` returns `ClassName(a=1, b='x')` with public attributes in sorted order using `repr` for values. Mixins hold no state and define no `__init__`.
+@@@ reference
+import json
+
+
+class DictMixin:
+    def to_dict(self):
+        return {k: self._convert(v) for k, v in vars(self).items() if not k.startswith("_")}
+
+    @classmethod
+    def _convert(cls, v):
+        if hasattr(v, "to_dict"):
+            return v.to_dict()
+        if isinstance(v, (list, tuple)):
+            return [cls._convert(x) for x in v]
+        if isinstance(v, dict):
+            return {k: cls._convert(x) for k, x in v.items()}
+        return v
+
+
+class JsonMixin:
+    def to_json(self, **kwargs):
+        return json.dumps(self.to_dict(), **kwargs)
+
+
+class ReprMixin:
+    def __repr__(self):
+        attrs = ", ".join(f"{k}={v!r}" for k, v in sorted(vars(self).items()) if not k.startswith("_"))
+        return f"{type(self).__name__}({attrs})"
+@@@ tests
+import json
+from solution import ReprMixin, DictMixin, JsonMixin
+
+
+class Address(DictMixin):
+    def __init__(self, city):
+        self.city = city
+
+
+class Person(ReprMixin, DictMixin, JsonMixin):
+    def __init__(self, name, age, addresses=(), secret="x"):
+        self.name = name
+        self.age = age
+        self.addresses = list(addresses)
+        self._secret = secret
+
+
+def test_repr_sorted_public():
+    assert repr(Person("Ann", 3)) == "Person(addresses=[], age=3, name='Ann')"
+
+
+def test_to_dict_nested():
+    p = Person("Ann", 3, [Address("Oslo"), Address("Rome")])
+    assert p.to_dict() == {"name": "Ann", "age": 3, "addresses": [{"city": "Oslo"}, {"city": "Rome"}]}
+
+
+def test_to_json_kwargs():
+    p = Person("Ann", 3)
+    assert json.loads(p.to_json()) == {"name": "Ann", "age": 3, "addresses": []}
+    assert p.to_json(sort_keys=True).startswith('{"addresses"')
+
+
+def test_mixins_have_no_init_or_state():
+    for m in (ReprMixin, DictMixin, JsonMixin):
+        assert "__init__" not in vars(m)
+
+
+def test_json_mixin_uses_mro():
+    class Custom(JsonMixin):
+        def to_dict(self):
+            return {"custom": True}
+    assert Custom().to_json() == '{"custom": true}'
+
+
+def test_repr_in_subclass_and_tuple_values():
+    class Pair(ReprMixin, DictMixin):
+        def __init__(self):
+            self.items = (Address("x"), 2)
+    assert repr(Pair()).startswith("Pair(items=(")
+    assert Pair().to_dict() == {"items": [{"city": "x"}, 2]}
+@@@ task cooperative_diamond leaf=2 diff=4 entry=Base,LoggingMixin,TimestampMixin,Service
+@@@ prompt
+Build a cooperative multiple-inheritance hierarchy where every `__init__` runs exactly once. `Base.__init__(self, **kwargs)` sets `self.setup_log = []` and passes any leftover kwargs to `super().__init__(**kwargs)` (so unknown arguments end in a `TypeError` from `object`). `LoggingMixin(Base)` takes a keyword-only `log` (default None, stored as `self.log`) and `TimestampMixin(Base)` a keyword-only `clock` (default `time.time`, stored as `self.clock`); each consumes its own argument and forwards the rest with `super().__init__(**kwargs)`. `Service(LoggingMixin, TimestampMixin)` takes keyword-only `name`. Every class also defines `setup()`, which appends its class name to `self.setup_log` and then calls `super().setup()` (Base's `setup` ends the chain), so `Service(...).setup()` records the MRO order.
+@@@ reference
+import time
+
+
+class Base:
+    def __init__(self, **kwargs):
+        self.setup_log = []
+        super().__init__(**kwargs)
+
+    def setup(self):
+        self.setup_log.append("Base")
+
+
+class LoggingMixin(Base):
+    def __init__(self, *, log=None, **kwargs):
+        self.log = log
+        super().__init__(**kwargs)
+
+    def setup(self):
+        self.setup_log.append("LoggingMixin")
+        super().setup()
+
+
+class TimestampMixin(Base):
+    def __init__(self, *, clock=time.time, **kwargs):
+        self.clock = clock
+        super().__init__(**kwargs)
+
+    def setup(self):
+        self.setup_log.append("TimestampMixin")
+        super().setup()
+
+
+class Service(LoggingMixin, TimestampMixin):
+    def __init__(self, *, name, **kwargs):
+        self.name = name
+        super().__init__(**kwargs)
+
+    def setup(self):
+        self.setup_log.append("Service")
+        super().setup()
+@@@ tests
+import pytest
+from solution import Base, LoggingMixin, TimestampMixin, Service
+
+
+def test_mro():
+    assert [c.__name__ for c in Service.__mro__] == ["Service", "LoggingMixin", "TimestampMixin", "Base", "object"]
+
+
+def test_all_arguments_consumed():
+    clock = lambda: 1.0
+    s = Service(name="api", log="L", clock=clock)
+    assert (s.name, s.log, s.clock) == ("api", "L", clock)
+
+
+def test_setup_follows_mro():
+    s = Service(name="x")
+    s.setup()
+    assert s.setup_log == ["Service", "LoggingMixin", "TimestampMixin", "Base"]
+
+
+def test_base_init_runs_once():
+    calls = []
+    orig = Base.__init__
+
+    def counting(self, **kw):
+        calls.append(1)
+        orig(self, **kw)
+    Base.__init__ = counting
+    try:
+        Service(name="x")
+    finally:
+        Base.__init__ = orig
+    assert calls == [1]
+
+
+def test_unknown_kwarg_is_type_error():
+    with pytest.raises(TypeError):
+        Service(name="x", colour="red")
+
+
+def test_mixins_usable_alone():
+    l = LoggingMixin(log=1)
+    l.setup()
+    assert l.setup_log == ["LoggingMixin", "Base"]
+    t = TimestampMixin()
+    assert callable(t.clock)
+@@@ task duck_typed_render leaf=3 diff=3 entry=render
+@@@ prompt
+Write `render(obj) -> str` that turns values into HTML using duck typing rather than checking for specific classes. Rules, in order: if the object has a callable `__html__` method, return its result unchanged (it is already safe HTML); a `str` is escaped with `html.escape`; anything with an `items()` method is treated as a mapping and rendered as `<dl>` with `<dt>key</dt><dd>value</dd>` for each pair (both rendered recursively); anything else that is iterable (try `iter(obj)` and catch `TypeError`) becomes `<ul>` with `<li>item</li>` per item, rendered recursively; everything else is `html.escape(str(obj))`. No whitespace between tags.
+@@@ reference
+import html
+
+
+def render(obj):
+    method = getattr(obj, "__html__", None)
+    if callable(method):
+        return method()
+    if isinstance(obj, str):
+        return html.escape(obj)
+    items = getattr(obj, "items", None)
+    if callable(items):
+        return "<dl>" + "".join(f"<dt>{render(k)}</dt><dd>{render(v)}</dd>" for k, v in items()) + "</dl>"
+    try:
+        it = iter(obj)
+    except TypeError:
+        return html.escape(str(obj))
+    return "<ul>" + "".join(f"<li>{render(x)}</li>" for x in it) + "</ul>"
+@@@ tests
+from solution import render
+
+
+class Safe:
+    def __html__(self):
+        return "<b>bold</b>"
+
+
+class Bag:
+    def __init__(self, *xs):
+        self.xs = xs
+
+    def __iter__(self):
+        return iter(self.xs)
+
+
+class Pairs:
+    def items(self):
+        return [("k", 1)]
+
+
+def test_strings_escaped():
+    assert render("<script>&") == "&lt;script&gt;&amp;"
+
+
+def test_html_protocol_trusted():
+    assert render(Safe()) == "<b>bold</b>"
+    assert render([Safe()]) == "<ul><li><b>bold</b></li></ul>"
+
+
+def test_mapping_by_items_method():
+    assert render({"a": 1, "<b>": "x"}) == "<dl><dt>a</dt><dd>1</dd><dt>&lt;b&gt;</dt><dd>x</dd></dl>"
+    assert render(Pairs()) == "<dl><dt>k</dt><dd>1</dd></dl>"
+
+
+def test_any_iterable():
+    assert render(Bag(1, "<")) == "<ul><li>1</li><li>&lt;</li></ul>"
+    assert render(x * 2 for x in range(2)) == "<ul><li>0</li><li>2</li></ul>"
+    assert render([]) == "<ul></ul>"
+
+
+def test_scalars():
+    assert render(3.5) == "3.5" and render(None) == "None"
+
+
+def test_nested():
+    assert render({"tags": ["a", "b"]}) == "<dl><dt>tags</dt><dd><ul><li>a</li><li>b</li></ul></dd></dl>"
+@@@ task abstract_storage leaf=4 diff=3 entry=Storage,MemoryStorage
+@@@ prompt
+Write an abstract base class `Storage(abc.ABC)` for a blob store with abstract methods `read(key) -> bytes` (raises `KeyError` if missing), `write(key, data: bytes)`, `delete(key)` and `keys() -> list`. It also provides concrete methods built only on those primitives: `exists(key)` (default implementation uses `keys()`), `copy(src, dst)` and `move(src, dst)` (copy then delete). Then write `MemoryStorage(Storage)`, a dict-backed implementation whose `keys()` returns a sorted list and whose `write` rejects non-bytes data with `TypeError`. Instantiating `Storage` or an incomplete subclass must fail with `TypeError`.
+@@@ reference
+import abc
+
+
+class Storage(abc.ABC):
+    @abc.abstractmethod
+    def read(self, key) -> bytes:
+        ...
+
+    @abc.abstractmethod
+    def write(self, key, data: bytes):
+        ...
+
+    @abc.abstractmethod
+    def delete(self, key):
+        ...
+
+    @abc.abstractmethod
+    def keys(self) -> list:
+        ...
+
+    def exists(self, key):
+        return key in self.keys()
+
+    def copy(self, src, dst):
+        self.write(dst, self.read(src))
+
+    def move(self, src, dst):
+        self.copy(src, dst)
+        self.delete(src)
+
+
+class MemoryStorage(Storage):
+    def __init__(self):
+        self._blobs = {}
+
+    def read(self, key):
+        return self._blobs[key]
+
+    def write(self, key, data):
+        if not isinstance(data, bytes):
+            raise TypeError("data must be bytes")
+        self._blobs[key] = data
+
+    def delete(self, key):
+        del self._blobs[key]
+
+    def keys(self):
+        return sorted(self._blobs)
+@@@ tests
+import pytest
+from solution import Storage, MemoryStorage
+
+
+def test_cannot_instantiate_abstract():
+    with pytest.raises(TypeError):
+        Storage()
+
+
+def test_incomplete_subclass():
+    class Half(Storage):
+        def read(self, key):
+            return b""
+    with pytest.raises(TypeError):
+        Half()
+
+
+def test_memory_storage_basics():
+    s = MemoryStorage()
+    s.write("b", b"2")
+    s.write("a", b"1")
+    assert s.keys() == ["a", "b"] and s.read("a") == b"1" and s.exists("a")
+    s.delete("a")
+    assert not s.exists("a")
+    with pytest.raises(KeyError):
+        s.read("a")
+    with pytest.raises(TypeError):
+        s.write("c", "text")
+
+
+def test_copy_and_move_template_methods():
+    s = MemoryStorage()
+    s.write("x", b"data")
+    s.copy("x", "y")
+    s.move("x", "z")
+    assert s.keys() == ["y", "z"] and s.read("z") == b"data"
+
+
+def test_concrete_methods_work_for_any_subclass():
+    log = []
+
+    class Logged(Storage):
+        def __init__(self):
+            self.d = {}
+
+        def read(self, key):
+            log.append(("read", key))
+            return self.d[key]
+
+        def write(self, key, data):
+            log.append(("write", key))
+            self.d[key] = data
+
+        def delete(self, key):
+            log.append(("delete", key))
+            del self.d[key]
+
+        def keys(self):
+            return list(self.d)
+    s = Logged()
+    s.write("a", b"1")
+    s.move("a", "b")
+    assert log == [("write", "a"), ("read", "a"), ("write", "b"), ("delete", "a")]
+
+
+def test_exists_can_be_overridden():
+    class Fast(MemoryStorage):
+        def exists(self, key):
+            return key in self._blobs
+    f = Fast()
+    f.write("k", b"")
+    assert f.exists("k") and isinstance(f, Storage)
+@@@ task subclasshook_abc leaf=4 diff=4 entry=Drawable,render_all
+@@@ prompt
+Write an ABC `Drawable` with an abstract method `draw() -> str` and a `__subclasshook__` (like the ones in `collections.abc`) so that any class whose MRO defines a callable `draw` counts as a `Drawable` for `isinstance`/`issubclass`, even without inheriting from it; for classes that do not define `draw`, return `NotImplemented` so normal rules (including `Drawable.register`) still apply. The hook must only apply to `Drawable` itself (`if cls is Drawable`), not to its subclasses. Then write `render_all(items) -> list[str]` that returns `item.draw()` for every item that is a `Drawable` and skips the rest.
+@@@ reference
+import abc
+
+
+class Drawable(abc.ABC):
+    @abc.abstractmethod
+    def draw(self) -> str:
+        ...
+
+    @classmethod
+    def __subclasshook__(cls, C):
+        if cls is Drawable:
+            for klass in C.__mro__:
+                if "draw" in klass.__dict__:
+                    return True if callable(klass.__dict__["draw"]) else NotImplemented
+        return NotImplemented
+
+
+def render_all(items):
+    return [item.draw() for item in items if isinstance(item, Drawable)]
+@@@ tests
+import pytest
+from solution import Drawable, render_all
+
+
+class Circle:
+    def draw(self):
+        return "()"
+
+
+class Square(Circle):
+    pass
+
+
+class Text:
+    pass
+
+
+class NotCallable:
+    draw = "nope"
+
+
+def test_structural_isinstance():
+    assert isinstance(Circle(), Drawable) and issubclass(Square, Drawable)
+    assert not isinstance(Text(), Drawable)
+    assert not issubclass(NotCallable, Drawable)
+
+
+def test_register_still_works():
+    class Legacy:
+        pass
+    Drawable.register(Legacy)
+    assert isinstance(Legacy(), Drawable)
+
+
+def test_abstract_enforced_for_real_subclasses():
+    class Bad(Drawable):
+        pass
+    with pytest.raises(TypeError):
+        Bad()
+
+    class Good(Drawable):
+        def draw(self):
+            return "g"
+    assert Good().draw() == "g"
+
+
+def test_hook_not_inherited_by_subclasses():
+    class Shape(Drawable):
+        def draw(self):
+            return "s"
+    assert not issubclass(Circle, Shape)
+
+
+def test_render_all():
+    assert render_all([Circle(), Text(), Square(), 5]) == ["()", "()"]
+@@@ task protocol_exporters leaf=5 diff=3 entry=Exporter,ExporterRegistry,CsvExporter,JsonExporter
+@@@ prompt
+Write a Protocol-based plugin registry for data exporters. `Exporter` is a `typing.Protocol` decorated with `@runtime_checkable`, declaring a `name: str` attribute and a method `export(rows: list[dict]) -> str`. `ExporterRegistry.register(exporter)` accepts any object that structurally satisfies `Exporter` (no inheritance required), raising `TypeError` otherwise and `ValueError` for a duplicate name; `get(name)` returns it (`KeyError` if unknown); `names()` returns sorted names; `export(name, rows)` delegates. Provide two implementations that do not inherit from `Exporter`: `CsvExporter` (`name = "csv"`) writes the rows with `csv.DictWriter`, fieldnames taken from the first row's keys in order, `lineterminator="\n"`, and returns `""` for no rows; `JsonExporter` (`name = "json"`) returns `json.dumps(rows, sort_keys=True)`.
+@@@ reference
+import csv
+import io
+import json
+from typing import Protocol, runtime_checkable
+
+
+@runtime_checkable
+class Exporter(Protocol):
+    name: str
+
+    def export(self, rows: list[dict]) -> str:
+        ...
+
+
+class ExporterRegistry:
+    def __init__(self):
+        self._by_name = {}
+
+    def register(self, exporter):
+        if not isinstance(exporter, Exporter):
+            raise TypeError(f"{exporter!r} does not implement Exporter")
+        if exporter.name in self._by_name:
+            raise ValueError(f"duplicate exporter {exporter.name!r}")
+        self._by_name[exporter.name] = exporter
+        return exporter
+
+    def get(self, name):
+        return self._by_name[name]
+
+    def names(self):
+        return sorted(self._by_name)
+
+    def export(self, name, rows):
+        return self.get(name).export(rows)
+
+
+class CsvExporter:
+    name = "csv"
+
+    def export(self, rows):
+        if not rows:
+            return ""
+        buf = io.StringIO()
+        w = csv.DictWriter(buf, fieldnames=list(rows[0]), lineterminator="\n")
+        w.writeheader()
+        w.writerows(rows)
+        return buf.getvalue()
+
+
+class JsonExporter:
+    name = "json"
+
+    def export(self, rows):
+        return json.dumps(rows, sort_keys=True)
+@@@ tests
+import json
+import pytest
+from solution import Exporter, ExporterRegistry, CsvExporter, JsonExporter
+
+ROWS = [{"id": 1, "name": "a, b"}, {"id": 2, "name": "c"}]
+
+
+def test_builtin_exporters_satisfy_protocol_without_inheritance():
+    assert isinstance(CsvExporter(), Exporter) and isinstance(JsonExporter(), Exporter)
+    assert Exporter not in CsvExporter.__mro__
+
+
+def test_csv_output():
+    assert CsvExporter().export(ROWS) == 'id,name\n1,"a, b"\n2,c\n'
+    assert CsvExporter().export([]) == ""
+
+
+def test_json_output():
+    assert json.loads(JsonExporter().export(ROWS)) == ROWS
+    assert JsonExporter().export([{"b": 1, "a": 2}]) == '[{"a": 2, "b": 1}]'
+
+
+def test_registry():
+    reg = ExporterRegistry()
+    reg.register(CsvExporter())
+    reg.register(JsonExporter())
+    assert reg.names() == ["csv", "json"]
+    assert reg.export("json", []) == "[]"
+    with pytest.raises(KeyError):
+        reg.get("xml")
+
+
+def test_custom_plugin_and_rejections():
+    class Upper:
+        name = "upper"
+
+        def export(self, rows):
+            return str(rows).upper()
+
+    class NoExport:
+        name = "broken"
+    reg = ExporterRegistry()
+    reg.register(Upper())
+    assert reg.export("upper", [{"a": "x"}]) == "[{'A': 'X'}]"
+    with pytest.raises(TypeError):
+        reg.register(NoExport())
+    with pytest.raises(ValueError):
+        reg.register(Upper())
+@@@ task composed_audited_dict leaf=6 diff=3 entry=AuditedDict
+@@@ prompt
+Instead of subclassing `dict` (whose `update`, `setdefault` and constructor bypass an overridden `__setitem__`), write `AuditedDict(inner=None)` using composition: it implements `collections.abc.MutableMapping` by delegating to a wrapped mapping (`inner`, default a new dict, used as-is so the caller can share it) and records every change in `self.log` as `("set", key)` or `("del", key)` tuples. Implement only the five abstract methods (`__getitem__`, `__setitem__`, `__delitem__`, `__iter__`, `__len__`) plus `__repr__`; inherited mixin methods like `update`, `pop` and `setdefault` must then be audited automatically. It must not be a `dict` subclass.
+@@@ reference
+from collections.abc import MutableMapping
+
+
+class AuditedDict(MutableMapping):
+    def __init__(self, inner=None):
+        self._inner = {} if inner is None else inner
+        self.log = []
+
+    def __getitem__(self, key):
+        return self._inner[key]
+
+    def __setitem__(self, key, value):
+        self._inner[key] = value
+        self.log.append(("set", key))
+
+    def __delitem__(self, key):
+        del self._inner[key]
+        self.log.append(("del", key))
+
+    def __iter__(self):
+        return iter(self._inner)
+
+    def __len__(self):
+        return len(self._inner)
+
+    def __repr__(self):
+        return f"AuditedDict({self._inner!r})"
+@@@ tests
+from collections import OrderedDict
+from collections.abc import MutableMapping
+import pytest
+from solution import AuditedDict
+
+
+def test_is_mapping_not_dict():
+    d = AuditedDict()
+    assert isinstance(d, MutableMapping) and not isinstance(d, dict)
+
+
+def test_basic_and_log():
+    d = AuditedDict()
+    d["a"] = 1
+    d["a"] = 2
+    del d["a"]
+    assert d.log == [("set", "a"), ("set", "a"), ("del", "a")] and len(d) == 0
+
+
+def test_mixin_methods_are_audited():
+    d = AuditedDict()
+    d.update({"x": 1}, y=2)
+    d.setdefault("z", 3)
+    d.setdefault("z", 4)
+    assert d.pop("x") == 1
+    assert d.log == [("set", "x"), ("set", "y"), ("set", "z"), ("del", "x")]
+    assert dict(d) == {"y": 2, "z": 3}
+
+
+def test_wraps_any_mapping_and_shares_it():
+    inner = OrderedDict(b=1)
+    d = AuditedDict(inner)
+    d["a"] = 2
+    assert list(inner) == ["b", "a"]
+    assert list(d) == ["b", "a"]
+
+
+def test_missing_key_and_get():
+    d = AuditedDict({"k": 1})
+    assert d.get("nope") is None and d["k"] == 1
+    with pytest.raises(KeyError):
+        d["nope"]
+    assert d.log == []
+
+
+def test_repr_and_equality():
+    d = AuditedDict({"a": 1})
+    assert "a" in repr(d) and d == {"a": 1}
+@@@ task single_responsibility_report leaf=7 diff=3 entry=Order,parse_orders,validate,summarize,format_report,generate_report
+@@@ prompt
+Refactor a monolithic "read CSV, check it, compute stats, print report" script into small single-purpose functions. `Order` is a dataclass `(id: str, customer: str, amount: Decimal)`. `parse_orders(csv_text) -> list[Order]` only parses (header `id,customer,amount`; amounts via `Decimal`, raising `ValueError` on bad numbers). `validate(order) -> list[str]` only checks rules and returns problems: `"empty customer"` if the customer is blank, `"non-positive amount"` if amount <= 0. `summarize(orders) -> dict` only computes `{"count": n, "total": Decimal, "by_customer": {customer: Decimal total}}`. `format_report(summary) -> str` only formats: first line `Orders: <count>`, second `Total: <total with 2 decimals>`, then one line per customer sorted by name as `  <customer>: <amount with 2 decimals>`, joined with `\n`. `generate_report(csv_text) -> str` composes them, summarising only the orders that pass validation.
+@@@ reference
+import csv
+import io
+from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
+
+
+@dataclass
+class Order:
+    id: str
+    customer: str
+    amount: Decimal
+
+
+def parse_orders(csv_text):
+    out = []
+    for row in csv.DictReader(io.StringIO(csv_text)):
+        try:
+            amount = Decimal(row["amount"])
+        except InvalidOperation:
+            raise ValueError(f"bad amount {row['amount']!r}") from None
+        out.append(Order(row["id"], row["customer"], amount))
+    return out
+
+
+def validate(order):
+    problems = []
+    if not order.customer.strip():
+        problems.append("empty customer")
+    if order.amount <= 0:
+        problems.append("non-positive amount")
+    return problems
+
+
+def summarize(orders):
+    by_customer = {}
+    for o in orders:
+        by_customer[o.customer] = by_customer.get(o.customer, Decimal("0")) + o.amount
+    return {"count": len(orders), "total": sum((o.amount for o in orders), Decimal("0")), "by_customer": by_customer}
+
+
+def format_report(summary):
+    lines = [f"Orders: {summary['count']}", f"Total: {summary['total']:.2f}"]
+    for name in sorted(summary["by_customer"]):
+        lines.append(f"  {name}: {summary['by_customer'][name]:.2f}")
+    return "\n".join(lines)
+
+
+def generate_report(csv_text):
+    orders = [o for o in parse_orders(csv_text) if not validate(o)]
+    return format_report(summarize(orders))
+@@@ tests
+from decimal import Decimal
+import pytest
+from solution import Order, parse_orders, validate, summarize, format_report, generate_report
+
+CSV = "id,customer,amount\n1,bob,10.5\n2,ann,3\n3,bob,1.25\n4, ,9\n5,cy,-2\n"
+
+
+def test_parse_only():
+    orders = parse_orders(CSV)
+    assert orders[0] == Order("1", "bob", Decimal("10.5")) and len(orders) == 5
+    with pytest.raises(ValueError):
+        parse_orders("id,customer,amount\n1,a,ten\n")
+
+
+def test_validate_only():
+    assert validate(Order("1", "a", Decimal(1))) == []
+    assert validate(Order("1", " ", Decimal(0))) == ["empty customer", "non-positive amount"]
+
+
+def test_summarize_only():
+    s = summarize([Order("1", "a", Decimal("1.5")), Order("2", "a", Decimal("2")), Order("3", "b", Decimal("1"))])
+    assert s == {"count": 3, "total": Decimal("4.5"), "by_customer": {"a": Decimal("3.5"), "b": Decimal("1")}}
+    assert summarize([]) == {"count": 0, "total": Decimal("0"), "by_customer": {}}
+
+
+def test_format_only():
+    text = format_report({"count": 2, "total": Decimal("5"), "by_customer": {"zed": Decimal("1"), "amy": Decimal("4")}})
+    assert text == "Orders: 2\nTotal: 5.00\n  amy: 4.00\n  zed: 1.00"
+
+
+def test_generate_report_composes():
+    assert generate_report(CSV) == "Orders: 3\nTotal: 14.75\n  ann: 3.00\n  bob: 11.75"
+@@@ task strategy_pricing leaf=8 diff=3 entry=PriceCalculator,PercentOff,FixedOff,MinimumPrice
+@@@ prompt
+Design a price calculator that is open for extension but closed for modification. `PriceCalculator(rules)` takes a list of rule objects; any object with a method `apply(price: Decimal, order: dict) -> Decimal` is a rule, so new rules never require changing the calculator. `PriceCalculator.total(base_price, order=None) -> Decimal` converts `base_price` with `Decimal(str(...))`, applies the rules in order, never lets the price drop below zero, and finally rounds to cents with `ROUND_HALF_UP`. Provide three rules: `PercentOff(percent)` subtracts that percentage; `FixedOff(amount)` subtracts a fixed amount, but only if the order's `"coupon"` key equals its optional `code` argument (when `code` is None it always applies); `MinimumPrice(floor)` raises the price to at least `floor`.
+@@@ reference
+from decimal import Decimal, ROUND_HALF_UP
+
+
+class PercentOff:
+    def __init__(self, percent):
+        self.percent = Decimal(str(percent))
+
+    def apply(self, price, order):
+        return price - price * self.percent / 100
+
+
+class FixedOff:
+    def __init__(self, amount, code=None):
+        self.amount = Decimal(str(amount))
+        self.code = code
+
+    def apply(self, price, order):
+        if self.code is None or order.get("coupon") == self.code:
+            return price - self.amount
+        return price
+
+
+class MinimumPrice:
+    def __init__(self, floor):
+        self.floor = Decimal(str(floor))
+
+    def apply(self, price, order):
+        return max(price, self.floor)
+
+
+class PriceCalculator:
+    def __init__(self, rules):
+        self.rules = list(rules)
+
+    def total(self, base_price, order=None):
+        order = order or {}
+        price = Decimal(str(base_price))
+        for rule in self.rules:
+            price = max(Decimal("0"), rule.apply(price, order))
+        return price.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+@@@ tests
+from decimal import Decimal
+from solution import PriceCalculator, PercentOff, FixedOff, MinimumPrice
+
+
+def test_no_rules():
+    assert PriceCalculator([]).total(19.999) == Decimal("20.00")
+
+
+def test_rules_in_order():
+    assert PriceCalculator([PercentOff(10), FixedOff(5)]).total(100) == Decimal("85.00")
+    assert PriceCalculator([FixedOff(5), PercentOff(10)]).total(100) == Decimal("85.50")
+
+
+def test_coupon_code():
+    calc = PriceCalculator([FixedOff("2.50", code="SAVE")])
+    assert calc.total(10) == Decimal("10.00")
+    assert calc.total(10, {"coupon": "SAVE"}) == Decimal("7.50")
+
+
+def test_never_negative_and_minimum():
+    assert PriceCalculator([FixedOff(50)]).total(10) == Decimal("0.00")
+    assert PriceCalculator([PercentOff(90), MinimumPrice(5)]).total(20) == Decimal("5.00")
+
+
+def test_rounding_half_up():
+    assert PriceCalculator([PercentOff(50)]).total("0.05") == Decimal("0.03")
+
+
+def test_new_rule_without_modifying_calculator():
+    class BulkDiscount:
+        def apply(self, price, order):
+            return price * Decimal("0.8") if order.get("qty", 0) >= 10 else price
+    calc = PriceCalculator([BulkDiscount(), FixedOff(1)])
+    assert calc.total(100, {"qty": 10}) == Decimal("79.00")
+    assert calc.total(100, {"qty": 1}) == Decimal("99.00")
+@@@ task liskov_shapes leaf=9 diff=3 entry=Rectangle,Square
+@@@ prompt
+The classic `Square(Rectangle)` with width/height setters violates the Liskov substitution principle: code that sets a rectangle's width and expects the height to stay the same breaks for squares. Design immutable shapes that avoid this. `Rectangle(width, height)` exposes read-only `width`, `height` and `area` properties, and `with_width(w)` / `with_height(h)` that return a new `Rectangle` (never mutating). `Square(side)` subclasses `Rectangle` and adds a read-only `side`; its `with_width`/`with_height` are inherited and therefore return a plain `Rectangle`, so every caller of the Rectangle contract keeps working. Equality compares type-independent dimensions (a `Square(2)` equals `Rectangle(2, 2)`), objects are hashable, and non-positive dimensions raise `ValueError`.
+@@@ reference
+class Rectangle:
+    def __init__(self, width, height):
+        if width <= 0 or height <= 0:
+            raise ValueError("dimensions must be positive")
+        self._w = width
+        self._h = height
+
+    @property
+    def width(self):
+        return self._w
+
+    @property
+    def height(self):
+        return self._h
+
+    @property
+    def area(self):
+        return self._w * self._h
+
+    def with_width(self, w):
+        return Rectangle(w, self._h)
+
+    def with_height(self, h):
+        return Rectangle(self._w, h)
+
+    def __eq__(self, other):
+        if not isinstance(other, Rectangle):
+            return NotImplemented
+        return (self._w, self._h) == (other._w, other._h)
+
+    def __hash__(self):
+        return hash((self._w, self._h))
+
+    def __repr__(self):
+        return f"{type(self).__name__}({self._w}, {self._h})"
+
+
+class Square(Rectangle):
+    def __init__(self, side):
+        super().__init__(side, side)
+
+    @property
+    def side(self):
+        return self._w
+@@@ tests
+import pytest
+from solution import Rectangle, Square
+
+
+def stretch_twice_as_wide(r):
+    """Client code written against the Rectangle contract."""
+    wider = r.with_width(r.width * 2)
+    assert wider.height == r.height
+    assert wider.area == 2 * r.area
+    return wider
+
+
+@pytest.mark.parametrize("shape", [Rectangle(2, 3), Square(3)])
+def test_substitutable(shape):
+    wider = stretch_twice_as_wide(shape)
+    assert type(wider) is Rectangle
+
+
+def test_immutable():
+    s = Square(2)
+    for attr in ("width", "height", "area", "side"):
+        with pytest.raises(AttributeError):
+            setattr(s, attr, 5)
+    s.with_height(9)
+    assert (s.width, s.height) == (2, 2)
+
+
+def test_equality_and_hash():
+    assert Square(2) == Rectangle(2, 2) and hash(Square(2)) == hash(Rectangle(2, 2))
+    assert Rectangle(2, 3) != Rectangle(3, 2)
+    assert len({Square(2), Rectangle(2, 2), Rectangle(1, 4)}) == 2
+
+
+def test_validation():
+    for args in ((0, 1), (1, -1)):
+        with pytest.raises(ValueError):
+            Rectangle(*args)
+    with pytest.raises(ValueError):
+        Square(0)
+
+
+def test_square_properties():
+    s = Square(4)
+    assert s.side == 4 and s.area == 16 and isinstance(s, Rectangle)
+@@@ task segregated_protocols leaf=10 diff=3 entry=Reader,Writer,MemoryReader,MemoryWriter,copy_stream
+@@@ prompt
+Apply interface segregation with small protocols instead of one big "Stream" interface. Define `@runtime_checkable` protocols `Reader` (method `read(n: int = -1) -> bytes`) and `Writer` (method `write(data: bytes) -> int`). Write `copy_stream(src: Reader, dst: Writer, chunk_size=65536) -> int` that copies until `read` returns `b""` and returns the number of bytes copied; it depends only on those two tiny interfaces, so it also works with `io.BytesIO` and real files. Provide `MemoryReader(data: bytes)` implementing only `read` (returning at most n bytes; n=-1 means the rest) and `MemoryWriter` implementing only `write` plus `getvalue()`. A `chunk_size` below 1 raises `ValueError`.
+@@@ reference
+from typing import Protocol, runtime_checkable
+
+
+@runtime_checkable
+class Reader(Protocol):
+    def read(self, n: int = -1) -> bytes:
+        ...
+
+
+@runtime_checkable
+class Writer(Protocol):
+    def write(self, data: bytes) -> int:
+        ...
+
+
+def copy_stream(src, dst, chunk_size=65536):
+    if chunk_size < 1:
+        raise ValueError("chunk_size must be >= 1")
+    total = 0
+    while True:
+        chunk = src.read(chunk_size)
+        if not chunk:
+            return total
+        dst.write(chunk)
+        total += len(chunk)
+
+
+class MemoryReader:
+    def __init__(self, data: bytes):
+        self._data = data
+        self._pos = 0
+
+    def read(self, n: int = -1) -> bytes:
+        if n < 0:
+            n = len(self._data) - self._pos
+        out = self._data[self._pos:self._pos + n]
+        self._pos += len(out)
+        return out
+
+
+class MemoryWriter:
+    def __init__(self):
+        self._parts = []
+
+    def write(self, data: bytes) -> int:
+        self._parts.append(bytes(data))
+        return len(data)
+
+    def getvalue(self) -> bytes:
+        return b"".join(self._parts)
+@@@ tests
+import io
+import pytest
+from solution import Reader, Writer, MemoryReader, MemoryWriter, copy_stream
+
+
+def test_protocol_membership():
+    assert isinstance(MemoryReader(b""), Reader) and not isinstance(MemoryReader(b""), Writer)
+    assert isinstance(MemoryWriter(), Writer) and not isinstance(MemoryWriter(), Reader)
+    assert isinstance(io.BytesIO(), Reader) and isinstance(io.BytesIO(), Writer)
+
+
+def test_memory_reader_chunks():
+    r = MemoryReader(b"abcdef")
+    assert r.read(4) == b"abcd" and r.read(4) == b"ef" and r.read(4) == b""
+    assert MemoryReader(b"xyz").read() == b"xyz"
+
+
+def test_copy_small_chunks():
+    w = MemoryWriter()
+    assert copy_stream(MemoryReader(b"hello world"), w, chunk_size=3) == 11
+    assert w.getvalue() == b"hello world"
+
+
+def test_works_with_bytesio_and_files(tmp_path):
+    p = tmp_path / "out.bin"
+    with open(p, "wb") as f:
+        assert copy_stream(io.BytesIO(b"\x00" * 100000), f) == 100000
+    assert p.stat().st_size == 100000
+
+
+def test_empty_and_validation():
+    assert copy_stream(MemoryReader(b""), MemoryWriter()) == 0
+    with pytest.raises(ValueError):
+        copy_stream(MemoryReader(b"x"), MemoryWriter(), chunk_size=0)
+@@@ task injected_signup_service leaf=11 diff=2 entry=SignupService,DuplicateUser
+@@@ prompt
+Write a `SignupService(repo, mailer, clock)` that receives all of its collaborators through the constructor (dependency injection) instead of creating them or using globals, so tests can pass fakes. `repo` has `get(email)` (returns a user dict or None) and `add(user)`; `mailer` has `send(to, subject)`; `clock()` returns the current time. `signup(email) -> dict` normalises the email (strip, lowercase), raises `ValueError` if it has no `@`, raises `DuplicateUser` if the repo already has it, otherwise creates `{"email": email, "created_at": clock()}`, adds it to the repo, sends the subject `"Welcome!"`, and returns the user. If the mailer raises, the user stays registered and the error is recorded in `service.failed_emails` (a list of emails) instead of propagating.
+@@@ reference
+class DuplicateUser(Exception):
+    pass
+
+
+class SignupService:
+    def __init__(self, repo, mailer, clock):
+        self.repo = repo
+        self.mailer = mailer
+        self.clock = clock
+        self.failed_emails = []
+
+    def signup(self, email):
+        email = email.strip().lower()
+        if "@" not in email:
+            raise ValueError(f"invalid email {email!r}")
+        if self.repo.get(email) is not None:
+            raise DuplicateUser(email)
+        user = {"email": email, "created_at": self.clock()}
+        self.repo.add(user)
+        try:
+            self.mailer.send(email, "Welcome!")
+        except Exception:
+            self.failed_emails.append(email)
+        return user
+@@@ tests
+import pytest
+from solution import SignupService, DuplicateUser
+
+
+class FakeRepo:
+    def __init__(self):
+        self.users = {}
+
+    def get(self, email):
+        return self.users.get(email)
+
+    def add(self, user):
+        self.users[user["email"]] = user
+
+
+class FakeMailer:
+    def __init__(self, fail=False):
+        self.sent = []
+        self.fail = fail
+
+    def send(self, to, subject):
+        if self.fail:
+            raise ConnectionError("smtp down")
+        self.sent.append((to, subject))
+
+
+def make(fail=False):
+    repo, mailer = FakeRepo(), FakeMailer(fail)
+    return SignupService(repo, mailer, clock=lambda: 1700000000.0), repo, mailer
+
+
+def test_signup_happy_path():
+    svc, repo, mailer = make()
+    user = svc.signup("  Ann@Example.com ")
+    assert user == {"email": "ann@example.com", "created_at": 1700000000.0}
+    assert repo.users["ann@example.com"] == user
+    assert mailer.sent == [("ann@example.com", "Welcome!")]
+
+
+def test_duplicate():
+    svc, repo, mailer = make()
+    svc.signup("a@b.c")
+    with pytest.raises(DuplicateUser):
+        svc.signup("A@B.C")
+    assert len(mailer.sent) == 1
+
+
+def test_invalid_email():
+    svc, repo, _ = make()
+    with pytest.raises(ValueError):
+        svc.signup("nope")
+    assert repo.users == {}
+
+
+def test_mailer_failure_recorded():
+    svc, repo, _ = make(fail=True)
+    svc.signup("a@b.c")
+    assert "a@b.c" in repo.users and svc.failed_emails == ["a@b.c"]
+
+
+def test_uses_injected_clock():
+    repo, mailer = FakeRepo(), FakeMailer()
+    times = iter([10.0, 20.0])
+    svc = SignupService(repo, mailer, clock=lambda: next(times))
+    assert svc.signup("a@x.y")["created_at"] == 10.0
+    assert svc.signup("b@x.y")["created_at"] == 20.0
+@@@ task shape_factory_registry leaf=12 diff=2 entry=register_shape,create_shape,Circle,Rect
+@@@ prompt
+Write a factory with a registry. `register_shape(kind)` is a class decorator that registers a class under a string kind (a duplicate kind raises `ValueError`) and returns the class unchanged. `create_shape(spec: dict)` reads `spec["kind"]` and calls the registered class with the remaining keys as keyword arguments; a missing or unknown kind raises `ValueError` whose message lists the known kinds in sorted order, and wrong parameters (a `TypeError` from the constructor) are re-raised as `ValueError` chained from it. The input dict must not be modified. Register two shapes: `Circle(radius)` as `"circle"` and `Rect(width, height)` as `"rect"`, each with an `area()` method (use `math.pi` for circles).
+@@@ reference
+import math
+
+_REGISTRY = {}
+
+
+def register_shape(kind):
+    def deco(cls):
+        if kind in _REGISTRY:
+            raise ValueError(f"shape kind {kind!r} already registered")
+        _REGISTRY[kind] = cls
+        return cls
+    return deco
+
+
+def create_shape(spec):
+    params = dict(spec)
+    kind = params.pop("kind", None)
+    if kind not in _REGISTRY:
+        raise ValueError(f"unknown shape kind {kind!r}; known kinds: {', '.join(sorted(_REGISTRY))}")
+    try:
+        return _REGISTRY[kind](**params)
+    except TypeError as exc:
+        raise ValueError(f"bad parameters for {kind}: {exc}") from exc
+
+
+@register_shape("circle")
+class Circle:
+    def __init__(self, radius):
+        self.radius = radius
+
+    def area(self):
+        return math.pi * self.radius ** 2
+
+
+@register_shape("rect")
+class Rect:
+    def __init__(self, width, height):
+        self.width = width
+        self.height = height
+
+    def area(self):
+        return self.width * self.height
+@@@ tests
+import math
+import pytest
+from solution import register_shape, create_shape, Circle, Rect
+
+
+def test_builtin_shapes():
+    c = create_shape({"kind": "circle", "radius": 2})
+    assert isinstance(c, Circle) and c.area() == pytest.approx(4 * math.pi)
+    assert create_shape({"kind": "rect", "width": 2, "height": 3}).area() == 6
+
+
+def test_unknown_kind_lists_known():
+    with pytest.raises(ValueError) as ei:
+        create_shape({"kind": "hexagon"})
+    msg = str(ei.value)
+    assert "circle" in msg and "rect" in msg and msg.index("circle") < msg.index("rect")
+    with pytest.raises(ValueError):
+        create_shape({})
+
+
+def test_bad_params_chained():
+    with pytest.raises(ValueError) as ei:
+        create_shape({"kind": "rect", "width": 1})
+    assert isinstance(ei.value.__cause__, TypeError)
+
+
+def test_spec_not_mutated():
+    spec = {"kind": "circle", "radius": 1}
+    create_shape(spec)
+    assert spec == {"kind": "circle", "radius": 1}
+
+
+def test_register_new_shape():
+    @register_shape("triangle")
+    class Triangle:
+        def __init__(self, base, height):
+            self.base, self.height = base, height
+
+        def area(self):
+            return self.base * self.height / 2
+    assert Triangle.__name__ == "Triangle"
+    assert create_shape({"kind": "triangle", "base": 4, "height": 3}).area() == 6
+    with pytest.raises(ValueError):
+        register_shape("triangle")(Triangle)
+@@@ task abstract_ui_factory leaf=12 diff=3 entry=UIFactory,LightFactory,DarkFactory,factory_for,build_form
+@@@ prompt
+Implement the abstract factory pattern for themed UI widgets. `UIFactory` is an `abc.ABC` with abstract methods `create_button(label)` and `create_checkbox(label, checked=False)`. `LightFactory` and `DarkFactory` produce widgets whose `render()` returns `"[light button: <label>]"`, `"[light checkbox: <label> x]"` (with ` x` only when checked, otherwise `"[light checkbox: <label>]"`), and the same with `dark`. `factory_for(theme: str) -> UIFactory` returns a factory for `"light"` or `"dark"` (case-insensitive) and raises `ValueError` otherwise. `build_form(factory, fields) -> str` is client code that only talks to the factory interface: for each `(kind, label)` in `fields` (kind `"button"`, `"checkbox"` or `"checkbox:checked"`) it creates the widget and returns the renders joined by `"\n"`; an unknown kind raises `ValueError`.
+@@@ reference
+import abc
+
+
+class _Widget:
+    def __init__(self, theme, kind, label, checked=False):
+        self.theme, self.kind, self.label, self.checked = theme, kind, label, checked
+
+    def render(self):
+        mark = " x" if self.checked else ""
+        return f"[{self.theme} {self.kind}: {self.label}{mark}]"
+
+
+class UIFactory(abc.ABC):
+    @abc.abstractmethod
+    def create_button(self, label):
+        ...
+
+    @abc.abstractmethod
+    def create_checkbox(self, label, checked=False):
+        ...
+
+
+class LightFactory(UIFactory):
+    def create_button(self, label):
+        return _Widget("light", "button", label)
+
+    def create_checkbox(self, label, checked=False):
+        return _Widget("light", "checkbox", label, checked)
+
+
+class DarkFactory(UIFactory):
+    def create_button(self, label):
+        return _Widget("dark", "button", label)
+
+    def create_checkbox(self, label, checked=False):
+        return _Widget("dark", "checkbox", label, checked)
+
+
+def factory_for(theme):
+    factories = {"light": LightFactory, "dark": DarkFactory}
+    try:
+        return factories[theme.lower()]()
+    except KeyError:
+        raise ValueError(f"unknown theme {theme!r}") from None
+
+
+def build_form(factory, fields):
+    out = []
+    for kind, label in fields:
+        if kind == "button":
+            w = factory.create_button(label)
+        elif kind == "checkbox":
+            w = factory.create_checkbox(label)
+        elif kind == "checkbox:checked":
+            w = factory.create_checkbox(label, checked=True)
+        else:
+            raise ValueError(f"unknown widget kind {kind!r}")
+        out.append(w.render())
+    return "\n".join(out)
+@@@ tests
+import pytest
+from solution import UIFactory, LightFactory, DarkFactory, factory_for, build_form
+
+FIELDS = [("checkbox", "Remember me"), ("checkbox:checked", "Terms"), ("button", "OK")]
+
+
+def test_light_form():
+    assert build_form(LightFactory(), FIELDS) == (
+        "[light checkbox: Remember me]\n[light checkbox: Terms x]\n[light button: OK]")
+
+
+def test_dark_family_consistent():
+    out = build_form(factory_for("DARK"), FIELDS)
+    assert out.count("[dark") == 3 and "light" not in out
+
+
+def test_factory_for_types():
+    assert isinstance(factory_for("light"), LightFactory) and isinstance(factory_for("Dark"), UIFactory)
+    with pytest.raises(ValueError):
+        factory_for("solarized")
+
+
+def test_abstract():
+    with pytest.raises(TypeError):
+        UIFactory()
+
+
+def test_client_works_with_new_family():
+    class Plain:
+        def render(self):
+            return "plain"
+
+    class PlainFactory(UIFactory):
+        def create_button(self, label):
+            return Plain()
+
+        def create_checkbox(self, label, checked=False):
+            return Plain()
+    assert build_form(PlainFactory(), FIELDS) == "plain\nplain\nplain"
+
+
+def test_unknown_kind():
+    with pytest.raises(ValueError):
+        build_form(LightFactory(), [("slider", "x")])
+@@@ task query_builder leaf=13 diff=3 entry=QueryBuilder
+@@@ prompt
+Write an immutable fluent builder for SQL SELECT statements. `QueryBuilder(table)` has `select(*columns)`, `where(condition, *params)`, `order_by(column, desc=False)` and `limit(n)`; each returns a new builder and leaves the original unchanged, so partially built queries can be reused safely. `build() -> tuple[str, tuple]` returns the SQL and the parameters, e.g. `("SELECT id, name FROM users WHERE age > ? AND name = ? ORDER BY name DESC, id LIMIT 10", (18, "ann"))`: no `select` means `*`, multiple `where` conditions are joined with ` AND `, multiple `order_by` calls are joined with `, ` (`DESC` only when requested), and parameters keep the order of the `where` calls. Table and column names must be identifiers (`[A-Za-z_][A-Za-z0-9_]*`) or a `ValueError` is raised; `limit` must be a non-negative int.
+@@@ reference
+import re
+
+_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+def _check(name):
+    if not isinstance(name, str) or not _IDENT.match(name):
+        raise ValueError(f"invalid identifier {name!r}")
+    return name
+
+
+class QueryBuilder:
+    def __init__(self, table, _columns=(), _where=(), _params=(), _order=(), _limit=None):
+        self._table = _check(table)
+        self._columns = _columns
+        self._where = _where
+        self._params = _params
+        self._order = _order
+        self._limit = _limit
+
+    def _copy(self, **changes):
+        state = dict(_columns=self._columns, _where=self._where, _params=self._params,
+                     _order=self._order, _limit=self._limit)
+        state.update(changes)
+        return QueryBuilder(self._table, **state)
+
+    def select(self, *columns):
+        return self._copy(_columns=self._columns + tuple(_check(c) for c in columns))
+
+    def where(self, condition, *params):
+        return self._copy(_where=self._where + (condition,), _params=self._params + params)
+
+    def order_by(self, column, desc=False):
+        return self._copy(_order=self._order + (_check(column) + (" DESC" if desc else ""),))
+
+    def limit(self, n):
+        if not isinstance(n, int) or isinstance(n, bool) or n < 0:
+            raise ValueError("limit must be a non-negative int")
+        return self._copy(_limit=n)
+
+    def build(self):
+        sql = f"SELECT {', '.join(self._columns) or '*'} FROM {self._table}"
+        if self._where:
+            sql += " WHERE " + " AND ".join(self._where)
+        if self._order:
+            sql += " ORDER BY " + ", ".join(self._order)
+        if self._limit is not None:
+            sql += f" LIMIT {self._limit}"
+        return sql, tuple(self._params)
+@@@ tests
+import sqlite3
+import pytest
+from solution import QueryBuilder
+
+
+def test_full_query():
+    q = (QueryBuilder("users").select("id", "name").where("age > ?", 18).where("name = ?", "ann")
+         .order_by("name", desc=True).order_by("id").limit(10))
+    assert q.build() == ("SELECT id, name FROM users WHERE age > ? AND name = ? ORDER BY name DESC, id LIMIT 10",
+                         (18, "ann"))
+
+
+def test_defaults():
+    assert QueryBuilder("t").build() == ("SELECT * FROM t", ())
+
+
+def test_immutable_reuse():
+    base = QueryBuilder("users").where("active = ?", 1)
+    a = base.where("age > ?", 30)
+    b = base.limit(1)
+    assert base.build() == ("SELECT * FROM users WHERE active = ?", (1,))
+    assert a.build()[1] == (1, 30) and b.build()[0].endswith("LIMIT 1")
+
+
+def test_identifier_validation():
+    with pytest.raises(ValueError):
+        QueryBuilder("users; DROP TABLE x")
+    with pytest.raises(ValueError):
+        QueryBuilder("t").select("id", "name--")
+    with pytest.raises(ValueError):
+        QueryBuilder("t").order_by("1=1")
+
+
+def test_limit_validation():
+    for bad in (-1, 1.5, "3", True):
+        with pytest.raises(ValueError):
+            QueryBuilder("t").limit(bad)
+    assert QueryBuilder("t").limit(0).build()[0] == "SELECT * FROM t LIMIT 0"
+
+
+def test_runs_on_sqlite():
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)")
+    conn.executemany("INSERT INTO users VALUES (?, ?, ?)", [(1, "ann", 30), (2, "bob", 15), (3, "cy", 40)])
+    sql, params = QueryBuilder("users").select("name").where("age >= ?", 18).order_by("age", desc=True).build()
+    assert [r[0] for r in conn.execute(sql, params)] == ["cy", "ann"]

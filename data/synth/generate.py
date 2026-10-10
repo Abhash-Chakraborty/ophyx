@@ -33,9 +33,9 @@ PROMPT_VERSION = 3  # v2: length limit. v3: tests mandatory and checked; Groq te
 # rpm keeps each teacher under its free-tier limits (Groq: 8k tokens/min and 1,000 requests/day per model).
 TEACHERS = {
     "gpt-oss-120b@groq": {"url": "https://api.groq.com/openai/v1/chat/completions", "key": "GROQ_TOKEN",
-                          "model": "openai/gpt-oss-120b", "extra": {"reasoning_effort": "low"}, "rpm": 0.65},
+                          "model": "openai/gpt-oss-120b", "extra": {"reasoning_effort": "low"}, "rpm": 0.65, "max_tokens": 6000},
     "qwen3.8-27b@groq": {"url": "https://api.groq.com/openai/v1/chat/completions", "key": "GROQ_TOKEN",
-                         "model": "qwen/qwen3.8-27b", "extra": {"reasoning_effort": "none"}, "rpm": 0.65},
+                         "model": "qwen/qwen3.8-27b", "extra": {"reasoning_effort": "none"}, "rpm": 0.65, "max_tokens": 6000},
     "qwen3.8-27b@cerebras": {"url": "https://api.cerebras.ai/v1/chat/completions", "key": "CEREBRAS_TOKEN",
                              "model": "qwen-3.8-27b", "extra": {"disable_reasoning": True}, "rpm": 35},
 }
@@ -151,8 +151,8 @@ class Pacer:
         time.sleep(max(0.0, t - now))
 
     def backoff(self, seconds):
-        with self.lock:
-            self.next = max(self.next, time.time() + seconds)
+        with self.lock:  # capped: a stray multi-hour retry-after once stalled the whole service
+            self.next = max(self.next, time.time() + min(seconds, 900))
 
 
 def shape_ok(code, kind):
@@ -167,19 +167,23 @@ def shape_ok(code, kind):
 def generate_one(s, env, pacers):
     pacer = pacers[s["teacher"]]
     t = TEACHERS[s["teacher"]]
-    body = {"model": t["model"], "temperature": s["temperature"], "max_tokens": 8000,
+    body = {"model": t["model"], "temperature": s["temperature"], "max_tokens": t.get("max_tokens", 8000),
             "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt(s)}], **t["extra"]}
     for attempt in range(6):
         pacer.wait()
         req = urllib.request.Request(t["url"], data=json.dumps(body).encode(), headers={
             "Authorization": f"Bearer {env[t['key']]}", "Content-Type": "application/json", "User-Agent": "pycoder-synth/1"})
         try:
+            t0 = time.time()
             with urllib.request.urlopen(req, timeout=300) as r:
                 j = json.load(r)
             content = j["choices"][0]["message"].get("content") or ""
+            print(f"  req {s['i']} {s['teacher']}: {time.time() - t0:.0f}s, {j.get('usage', {}).get('total_tokens')} tok", flush=True)
             return content, j.get("usage", {}), j["choices"][0].get("finish_reason")
         except urllib.error.HTTPError as e:
             wait = float(e.headers.get("retry-after") or 0) or min(300, 10 * 2 ** attempt)
+            print(f"  req {s['i']} {s['teacher']}: HTTP {e.code}, retry-after {e.headers.get('retry-after')}, "
+                  f"waiting {min(wait, 900):.0f}s", flush=True)
             if e.code == 429:
                 pacer.backoff(wait)
             elif e.code < 500:

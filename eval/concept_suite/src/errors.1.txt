@@ -1,0 +1,1387 @@
+@@@ task payment_exception_hierarchy leaf=0 diff=3 entry=PaymentError,CardDeclined,InsufficientFunds,GatewayError,GatewayTimeout,charge
+@@@ prompt
+Design the exception hierarchy for a small payments library and a function that uses it. `PaymentError(Exception)` is the base and has a class attribute `retryable = False`. `CardDeclined(PaymentError)` takes a decline `code` (stored as an attribute, included in the message); `InsufficientFunds(CardDeclined)` additionally stores `needed` (an int amount) and uses the code `"insufficient_funds"`. `GatewayError(PaymentError)` has `retryable = True` and stores `status` (an HTTP status code); `GatewayTimeout(GatewayError)` takes no arguments. Then write `charge(response: dict) -> str` that interprets a gateway response: `{"status": "ok", "id": ...}` returns the id; `{"status": "declined", "code": c}` raises `CardDeclined(c)`, except that code `"insufficient_funds"` raises `InsufficientFunds(response["needed"])`; `{"status": "error", "http": n}` raises `GatewayError(n)`; `{"status": "timeout"}` raises `GatewayTimeout()`; anything else raises a plain `PaymentError` describing the response.
+@@@ reference
+class PaymentError(Exception):
+    retryable = False
+
+
+class CardDeclined(PaymentError):
+    def __init__(self, code):
+        super().__init__(f"card declined: {code}")
+        self.code = code
+
+
+class InsufficientFunds(CardDeclined):
+    def __init__(self, needed):
+        super().__init__("insufficient_funds")
+        self.needed = needed
+
+
+class GatewayError(PaymentError):
+    retryable = True
+
+    def __init__(self, status):
+        super().__init__(f"gateway error (HTTP {status})")
+        self.status = status
+
+
+class GatewayTimeout(GatewayError):
+    def __init__(self):
+        super().__init__(504)
+        self.args = ("gateway timed out",)
+
+
+def charge(response):
+    status = response.get("status")
+    if status == "ok":
+        return response["id"]
+    if status == "declined":
+        if response.get("code") == "insufficient_funds":
+            raise InsufficientFunds(response["needed"])
+        raise CardDeclined(response.get("code"))
+    if status == "error":
+        raise GatewayError(response.get("http"))
+    if status == "timeout":
+        raise GatewayTimeout()
+    raise PaymentError(f"unexpected gateway response: {response!r}")
+@@@ tests
+import pytest
+from solution import PaymentError, CardDeclined, InsufficientFunds, GatewayError, GatewayTimeout, charge
+
+
+def test_hierarchy():
+    assert issubclass(InsufficientFunds, CardDeclined) and issubclass(CardDeclined, PaymentError)
+    assert issubclass(GatewayTimeout, GatewayError) and issubclass(GatewayError, PaymentError)
+    assert issubclass(PaymentError, Exception) and not issubclass(GatewayError, CardDeclined)
+
+
+def test_retryable_flags():
+    assert PaymentError.retryable is False and CardDeclined("x").retryable is False
+    assert GatewayError(502).retryable is True and GatewayTimeout().retryable is True
+
+
+def test_ok():
+    assert charge({"status": "ok", "id": "ch_1"}) == "ch_1"
+
+
+def test_declined_code_in_message():
+    with pytest.raises(CardDeclined) as ei:
+        charge({"status": "declined", "code": "stolen_card"})
+    assert ei.value.code == "stolen_card" and "stolen_card" in str(ei.value)
+    assert type(ei.value) is CardDeclined
+
+
+def test_insufficient_funds():
+    with pytest.raises(InsufficientFunds) as ei:
+        charge({"status": "declined", "code": "insufficient_funds", "needed": 250})
+    assert ei.value.needed == 250 and ei.value.code == "insufficient_funds"
+
+
+def test_gateway_errors_caught_by_base():
+    for resp, cls in [({"status": "error", "http": 503}, GatewayError), ({"status": "timeout"}, GatewayTimeout)]:
+        try:
+            charge(resp)
+        except PaymentError as e:
+            assert type(e) is cls and e.retryable
+        else:
+            pytest.fail("expected an error")
+    with pytest.raises(GatewayError) as ei:
+        charge({"status": "error", "http": 503})
+    assert ei.value.status == 503
+
+
+def test_unknown_response():
+    with pytest.raises(PaymentError) as ei:
+        charge({"status": "weird"})
+    assert type(ei.value) is PaymentError
+@@@ task config_exception_mixins leaf=0 diff=3 entry=ConfigError,MissingKey,InvalidValue,get_int
+@@@ prompt
+Write a configuration error hierarchy that also fits Python's built-in exceptions, so callers can catch either the library base class or the familiar built-in. `ConfigError(Exception)` is the base. `MissingKey(ConfigError, KeyError)` stores `key` and its `str()` is exactly `missing required key '<key>'` (note `KeyError` normally quotes its message, so override `__str__`). `InvalidValue(ConfigError, ValueError)` stores `key`, `value` and `reason`, with `str()` equal to `invalid value for '<key>': <value!r> (<reason>)`. Then write `get_int(config: dict, key, *, min=None, max=None) -> int` that raises `MissingKey` when absent, `InvalidValue` with reason `"not an integer"` when the value is not an int or an all-digit string (bools are not ints here), and `InvalidValue` with reason `"below minimum <min>"` or `"above maximum <max>"` when out of range.
+@@@ reference
+class ConfigError(Exception):
+    pass
+
+
+class MissingKey(ConfigError, KeyError):
+    def __init__(self, key):
+        super().__init__(key)
+        self.key = key
+
+    def __str__(self):
+        return f"missing required key '{self.key}'"
+
+
+class InvalidValue(ConfigError, ValueError):
+    def __init__(self, key, value, reason):
+        super().__init__(key, value, reason)
+        self.key, self.value, self.reason = key, value, reason
+
+    def __str__(self):
+        return f"invalid value for '{self.key}': {self.value!r} ({self.reason})"
+
+
+def get_int(config, key, *, min=None, max=None):
+    if key not in config:
+        raise MissingKey(key)
+    raw = config[key]
+    if isinstance(raw, bool):
+        raise InvalidValue(key, raw, "not an integer")
+    if isinstance(raw, int):
+        value = raw
+    elif isinstance(raw, str) and raw.strip().lstrip("-").isdigit():
+        value = int(raw)
+    else:
+        raise InvalidValue(key, raw, "not an integer")
+    if min is not None and value < min:
+        raise InvalidValue(key, raw, f"below minimum {min}")
+    if max is not None and value > max:
+        raise InvalidValue(key, raw, f"above maximum {max}")
+    return value
+@@@ tests
+import pytest
+from solution import ConfigError, MissingKey, InvalidValue, get_int
+
+
+def test_missing_key_catchable_both_ways():
+    with pytest.raises(KeyError):
+        get_int({}, "port")
+    with pytest.raises(ConfigError):
+        get_int({}, "port")
+
+
+def test_missing_key_message():
+    try:
+        get_int({}, "port")
+    except MissingKey as e:
+        assert str(e) == "missing required key 'port'" and e.key == "port"
+
+
+def test_invalid_value_is_value_error():
+    with pytest.raises(ValueError) as ei:
+        get_int({"port": "abc"}, "port")
+    e = ei.value
+    assert isinstance(e, InvalidValue) and isinstance(e, ConfigError)
+    assert str(e) == "invalid value for 'port': 'abc' (not an integer)"
+
+
+def test_parsing():
+    assert get_int({"n": 5}, "n") == 5
+    assert get_int({"n": "42"}, "n") == 42
+    for bad in (True, 3.0, None, "4.5", ""):
+        with pytest.raises(InvalidValue):
+            get_int({"n": bad}, "n")
+
+
+def test_range_reasons():
+    with pytest.raises(InvalidValue) as ei:
+        get_int({"port": 0}, "port", min=1, max=65535)
+    assert ei.value.reason == "below minimum 1"
+    with pytest.raises(InvalidValue) as ei:
+        get_int({"port": "70000"}, "port", min=1, max=65535)
+    assert ei.value.reason == "above maximum 65535" and ei.value.value == "70000"
+    assert get_int({"port": 1}, "port", min=1, max=1) == 1
+
+
+def test_attributes():
+    e = InvalidValue("k", [1], "nope")
+    assert (e.key, e.value, e.reason) == ("k", [1], "nope")
+@@@ task chained_parse_errors leaf=1 diff=2 entry=load_user,UserParseError
+@@@ prompt
+Write `load_user(raw: str) -> dict` and an exception `UserParseError`. Parse `raw` as JSON; it must be an object with an integer `"id"` and a string `"name"`; return `{"id": ..., "name": ...}`. Translate low-level failures into `UserParseError` while keeping the original as the explicit cause with `raise ... from exc`: invalid JSON chains from the `json.JSONDecodeError`, and a missing field chains from the `KeyError`. A wrong type (non-object JSON, non-int id, non-str name) raises `UserParseError` directly with a message naming the problem.
+@@@ reference
+import json
+
+
+class UserParseError(Exception):
+    pass
+
+
+def load_user(raw):
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise UserParseError(f"invalid JSON: {exc.msg}") from exc
+    if not isinstance(data, dict):
+        raise UserParseError("user must be a JSON object")
+    try:
+        uid, name = data["id"], data["name"]
+    except KeyError as exc:
+        raise UserParseError(f"missing field {exc.args[0]!r}") from exc
+    if not isinstance(uid, int) or isinstance(uid, bool):
+        raise UserParseError("id must be an integer")
+    if not isinstance(name, str):
+        raise UserParseError("name must be a string")
+    return {"id": uid, "name": name}
+@@@ tests
+import json
+import traceback
+import pytest
+from solution import load_user, UserParseError
+
+
+def test_valid():
+    assert load_user('{"id": 1, "name": "ann", "extra": true}') == {"id": 1, "name": "ann"}
+
+
+def test_bad_json_chained():
+    with pytest.raises(UserParseError) as ei:
+        load_user("{not json")
+    assert isinstance(ei.value.__cause__, json.JSONDecodeError)
+
+
+def test_missing_field_chained():
+    with pytest.raises(UserParseError) as ei:
+        load_user('{"id": 1}')
+    assert isinstance(ei.value.__cause__, KeyError)
+    assert "name" in str(ei.value)
+
+
+@pytest.mark.parametrize("raw", ['[1, 2]', '{"id": "1", "name": "x"}', '{"id": true, "name": "x"}', '{"id": 1, "name": 5}'])
+def test_type_errors(raw):
+    with pytest.raises(UserParseError):
+        load_user(raw)
+
+
+def test_traceback_shows_direct_cause():
+    try:
+        load_user("nope")
+    except UserParseError as e:
+        text = "".join(traceback.format_exception(e))
+    assert "The above exception was the direct cause of the following exception" in text
+
+
+def test_not_a_valueerror_leak():
+    with pytest.raises(UserParseError):
+        load_user("")
+@@@ task suppressed_context leaf=1 diff=3 entry=lookup_price,UnknownSku,read_settings,SettingsUnavailable
+@@@ prompt
+Write two functions that use exception chaining deliberately. `lookup_price(sku, table: dict)` returns `table[sku]`, but for a missing sku raises `UnknownSku(sku)` using `raise ... from None`, because the internal `KeyError` is an implementation detail that should not appear in the traceback (so `__cause__` is None and `__suppress_context__` is True). `read_settings(path) -> str` returns the file's text, and turns any `OSError` into `SettingsUnavailable(path)` raised `from` the original error, so the root cause stays visible. Both exceptions store the offending value in an attribute (`sku` and `path`).
+@@@ reference
+class UnknownSku(LookupError):
+    def __init__(self, sku):
+        super().__init__(f"unknown sku {sku!r}")
+        self.sku = sku
+
+
+class SettingsUnavailable(Exception):
+    def __init__(self, path):
+        super().__init__(f"cannot read settings from {path}")
+        self.path = path
+
+
+def lookup_price(sku, table):
+    try:
+        return table[sku]
+    except KeyError:
+        raise UnknownSku(sku) from None
+
+
+def read_settings(path):
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError as exc:
+        raise SettingsUnavailable(path) from exc
+@@@ tests
+import traceback
+import pytest
+from solution import lookup_price, UnknownSku, read_settings, SettingsUnavailable
+
+
+def test_price_found():
+    assert lookup_price("a", {"a": 3}) == 3
+
+
+def test_unknown_sku_suppresses_context():
+    with pytest.raises(UnknownSku) as ei:
+        lookup_price("zz", {})
+    e = ei.value
+    assert e.sku == "zz" and e.__cause__ is None and e.__suppress_context__ is True
+
+
+def test_traceback_hides_keyerror():
+    try:
+        lookup_price("zz", {})
+    except UnknownSku as e:
+        text = "".join(traceback.format_exception(e))
+    assert "KeyError" not in text and "During handling" not in text
+
+
+def test_read_settings_ok(tmp_path):
+    p = tmp_path / "s.ini"
+    p.write_text("x=1")
+    assert read_settings(p) == "x=1"
+
+
+def test_read_settings_chains_oserror(tmp_path):
+    missing = tmp_path / "nope.ini"
+    with pytest.raises(SettingsUnavailable) as ei:
+        read_settings(missing)
+    assert ei.value.path == missing and isinstance(ei.value.__cause__, FileNotFoundError)
+
+
+def test_directory_is_oserror_too(tmp_path):
+    with pytest.raises(SettingsUnavailable) as ei:
+        read_settings(tmp_path)
+    assert isinstance(ei.value.__cause__, OSError)
+@@@ task eafp_nested_get leaf=2 diff=2 entry=get_path
+@@@ prompt
+Write `get_path(data, path: str, default=None)` in EAFP style ("easier to ask forgiveness than permission"): walk a structure of nested dicts and lists following a dot-separated path such as `"users.0.address.city"`, where each segment indexes a dict by key or a list by integer position (negative indexes allowed). Instead of checking types and lengths before each step, just try the access and catch the specific exceptions that mean "not there" (`KeyError`, `IndexError`, `TypeError`, `ValueError`), returning `default`. An empty path returns `data` itself. Do not catch broad `Exception`.
+@@@ reference
+def get_path(data, path, default=None):
+    if path == "":
+        return data
+    node = data
+    for part in path.split("."):
+        try:
+            node = node[part]
+        except (KeyError, TypeError, IndexError):
+            try:
+                node = node[int(part)]
+            except (KeyError, IndexError, TypeError, ValueError):
+                return default
+    return node
+@@@ tests
+from solution import get_path
+
+DATA = {"users": [{"name": "ann", "address": {"city": "Oslo"}}, {"name": "bob", "tags": []}],
+        "count": 2, "0": "zero-key"}
+
+
+def test_nested_lookup():
+    assert get_path(DATA, "users.0.address.city") == "Oslo"
+    assert get_path(DATA, "users.1.name") == "bob"
+    assert get_path(DATA, "users.-1.name") == "bob"
+
+
+def test_missing_returns_default():
+    assert get_path(DATA, "users.5.name") is None
+    assert get_path(DATA, "users.1.address.city", "?") == "?"
+    assert get_path(DATA, "nope", default=0) == 0
+
+
+def test_type_mismatch_returns_default():
+    assert get_path(DATA, "count.x", "d") == "d"
+    assert get_path(DATA, "users.name", "d") == "d"
+    assert get_path(DATA, "users.1.tags.0", "d") == "d"
+
+
+def test_string_keys_that_look_numeric():
+    assert get_path(DATA, "0") == "zero-key"
+
+
+def test_empty_path():
+    assert get_path(DATA, "") is DATA
+
+
+def test_falsy_values_returned():
+    assert get_path({"a": {"b": 0}}, "a.b", default=1) == 0
+    assert get_path({"a": None}, "a", default=1) is None
+
+
+def test_does_not_swallow_real_bugs():
+    class Exploding(dict):
+        def __getitem__(self, k):
+            raise RuntimeError("bug")
+    import pytest
+    with pytest.raises(RuntimeError):
+        get_path(Exploding(), "a")
+@@@ task try_else_finally leaf=3 diff=2 entry=run_step
+@@@ prompt
+Write `run_step(step, on_success, on_error, on_finally)` that shows the precise semantics of `try/except/else/finally`. It calls `step()`. If `step` raises an `Exception`, it returns `on_error(exc)`. If `step` succeeds, it returns `on_success(result)`, but an exception raised by `on_success` must propagate and must not be passed to `on_error` (so call it in the `else` clause, not inside the `try`). In every case, including when `on_error` or `on_success` raises, `on_finally()` is called exactly once at the end.
+@@@ reference
+def run_step(step, on_success, on_error, on_finally):
+    try:
+        result = step()
+    except Exception as exc:
+        return on_error(exc)
+    else:
+        return on_success(result)
+    finally:
+        on_finally()
+@@@ tests
+import pytest
+from solution import run_step
+
+
+def recorder():
+    log = []
+    return log, (lambda r: log.append(("success", r)) or "S"), (lambda e: log.append(("error", type(e).__name__)) or "E"), (lambda: log.append("finally"))
+
+
+def test_success_path():
+    log, ok, err, fin = recorder()
+    assert run_step(lambda: 5, ok, err, fin) == "S"
+    assert log == [("success", 5), "finally"]
+
+
+def test_error_path():
+    log, ok, err, fin = recorder()
+    assert run_step(lambda: 1 / 0, ok, err, fin) == "E"
+    assert log == [("error", "ZeroDivisionError"), "finally"]
+
+
+def test_success_handler_errors_not_routed_to_on_error():
+    log, _, err, fin = recorder()
+
+    def bad_success(r):
+        raise ValueError("handler bug")
+    with pytest.raises(ValueError):
+        run_step(lambda: 1, bad_success, err, fin)
+    assert log == ["finally"]
+
+
+def test_finally_runs_when_on_error_raises():
+    log, ok, _, fin = recorder()
+
+    def bad_error(e):
+        raise RuntimeError("reraise") from e
+    with pytest.raises(RuntimeError):
+        run_step(lambda: [][0], ok, bad_error, fin)
+    assert log == ["finally"]
+
+
+def test_finally_called_once():
+    calls = []
+    run_step(lambda: None, lambda r: None, lambda e: None, lambda: calls.append(1))
+    run_step(lambda: {}["k"], lambda r: None, lambda e: None, lambda: calls.append(1))
+    assert calls == [1, 1]
+
+
+def test_base_exceptions_not_caught():
+    log, ok, err, fin = recorder()
+
+    def interrupt():
+        raise KeyboardInterrupt
+    with pytest.raises(KeyboardInterrupt):
+        run_step(interrupt, ok, err, fin)
+    assert log == ["finally"]
+@@@ task managed_resources leaf=4 diff=4 entry=managed_resources
+@@@ prompt
+Write a context manager `managed_resources(*factories)` (with `contextlib.contextmanager`) that creates one resource per factory in order and yields them as a list; every resource has a `close()` method. If factory k raises, close the resources already created, in reverse order, and let the factory's exception propagate. On exit from the block, close all resources in reverse order of creation. Closing must be robust: if one `close()` raises, still close all the others. If the block raised, the block's exception is what propagates; otherwise the first error raised by a `close()` propagates after everything has been closed.
+@@@ reference
+from contextlib import contextmanager
+
+
+def _close_all(resources):
+    first = None
+    for r in reversed(resources):
+        try:
+            r.close()
+        except Exception as exc:
+            if first is None:
+                first = exc
+    return first
+
+
+@contextmanager
+def managed_resources(*factories):
+    created = []
+    try:
+        for f in factories:
+            created.append(f())
+    except BaseException:
+        _close_all(created)
+        raise
+    try:
+        yield list(created)
+    except BaseException:
+        _close_all(created)
+        raise
+    err = _close_all(created)
+    if err is not None:
+        raise err
+@@@ tests
+import pytest
+from solution import managed_resources
+
+
+class Res:
+    def __init__(self, name, log, fail_close=False):
+        self.name, self.log, self.fail_close = name, log, fail_close
+        log.append(f"open {name}")
+
+    def close(self):
+        self.log.append(f"close {self.name}")
+        if self.fail_close:
+            raise OSError(f"close {self.name} failed")
+
+
+def test_yields_and_closes_in_reverse():
+    log = []
+    with managed_resources(lambda: Res("a", log), lambda: Res("b", log)) as rs:
+        assert [r.name for r in rs] == ["a", "b"]
+        log.append("body")
+    assert log == ["open a", "open b", "body", "close b", "close a"]
+
+
+def test_factory_failure_closes_created():
+    log = []
+
+    def boom():
+        raise ConnectionError("db down")
+    with pytest.raises(ConnectionError):
+        with managed_resources(lambda: Res("a", log), lambda: Res("b", log), boom, lambda: Res("c", log)):
+            log.append("body")
+    assert log == ["open a", "open b", "close b", "close a"]
+
+
+def test_body_error_propagates_and_closes():
+    log = []
+    with pytest.raises(KeyError):
+        with managed_resources(lambda: Res("a", log, fail_close=True), lambda: Res("b", log)):
+            raise KeyError("body")
+    assert log[-2:] == ["close b", "close a"]
+
+
+def test_close_errors_do_not_stop_others():
+    log = []
+    with pytest.raises(OSError, match="close b failed"):
+        with managed_resources(lambda: Res("a", log, fail_close=True), lambda: Res("b", log, fail_close=True),
+                               lambda: Res("c", log)):
+            pass
+    assert log[-3:] == ["close c", "close b", "close a"]
+
+
+def test_no_factories():
+    with managed_resources() as rs:
+        assert rs == []
+@@@ task temp_workspace leaf=4 diff=3 entry=TempWorkspace
+@@@ prompt
+Write a class-based context manager `TempWorkspace(base, keep_on_error=False)` that creates a fresh unique directory inside `base` on `__enter__` (use `tempfile.mkdtemp(dir=base)`) and returns it as a `pathlib.Path`, also available as the `path` attribute. On `__exit__` it removes the directory and everything in it, whether or not the block raised. Removal must also succeed when the block left read-only subdirectories behind (restore write permission and retry, e.g. with an error handler for `shutil.rmtree`). With `keep_on_error=True`, the directory is kept when the block raised (useful for debugging). Exceptions are never suppressed.
+@@@ reference
+import os
+import shutil
+import stat
+import tempfile
+from pathlib import Path
+
+
+class TempWorkspace:
+    def __init__(self, base, keep_on_error=False):
+        self.base = base
+        self.keep_on_error = keep_on_error
+        self.path = None
+
+    def __enter__(self):
+        self.path = Path(tempfile.mkdtemp(dir=self.base))
+        return self.path
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is not None and self.keep_on_error:
+            return False
+        for dirpath, dirnames, _ in os.walk(self.path):
+            for d in dirnames:
+                try:
+                    os.chmod(os.path.join(dirpath, d), stat.S_IRWXU)
+                except OSError:
+                    pass
+        shutil.rmtree(self.path)
+        return False
+@@@ tests
+import os
+import stat
+import pytest
+from solution import TempWorkspace
+
+
+def test_creates_and_removes(tmp_path):
+    with TempWorkspace(tmp_path) as ws:
+        assert ws.is_dir() and ws.parent == tmp_path
+        (ws / "f.txt").write_text("x")
+    assert not ws.exists()
+
+
+def test_unique_dirs(tmp_path):
+    with TempWorkspace(tmp_path) as a, TempWorkspace(tmp_path) as b:
+        assert a != b
+
+
+def test_removed_on_error_and_not_suppressed(tmp_path):
+    with pytest.raises(ValueError):
+        with TempWorkspace(tmp_path) as ws:
+            (ws / "sub").mkdir()
+            raise ValueError("boom")
+    assert not ws.exists()
+
+
+def test_keep_on_error(tmp_path):
+    t = TempWorkspace(tmp_path, keep_on_error=True)
+    with pytest.raises(RuntimeError):
+        with t as ws:
+            raise RuntimeError("debug me")
+    assert ws.exists() and t.path == ws
+    with TempWorkspace(tmp_path, keep_on_error=True) as ws2:
+        pass
+    assert not ws2.exists()
+
+
+def test_read_only_subdirectories(tmp_path):
+    with TempWorkspace(tmp_path) as ws:
+        locked = ws / "locked"
+        locked.mkdir()
+        (locked / "data.txt").write_text("x")
+        os.chmod(locked, stat.S_IRUSR | stat.S_IXUSR)
+    assert not ws.exists()
+@@@ task retry_decorator leaf=5 diff=3 entry=retry
+@@@ prompt
+Write a decorator factory `retry(attempts=3, base_delay=0.1, max_delay=2.0, exceptions=(Exception,), jitter=True, sleep=time.sleep, rng=random.random)`. The decorated function is called up to `attempts` times. When a call raises one of `exceptions` and attempts remain, sleep before retry number i (1-based) for `min(max_delay, base_delay * 2 ** (i - 1))`, multiplied by `rng()` when `jitter` is true ("full jitter"), using the injected `sleep` so tests do not wait. After the last attempt, re-raise the last exception. Exceptions not listed in `exceptions` propagate immediately with no retry. Preserve the function's metadata with `functools.wraps`. `attempts < 1` raises `ValueError` when the decorator is created.
+@@@ reference
+import functools
+import random
+import time
+
+
+def retry(attempts=3, base_delay=0.1, max_delay=2.0, exceptions=(Exception,), jitter=True,
+          sleep=time.sleep, rng=random.random):
+    if attempts < 1:
+        raise ValueError("attempts must be >= 1")
+
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            for i in range(1, attempts + 1):
+                try:
+                    return fn(*args, **kwargs)
+                except exceptions:
+                    if i == attempts:
+                        raise
+                    delay = min(max_delay, base_delay * 2 ** (i - 1))
+                    if jitter:
+                        delay *= rng()
+                    sleep(delay)
+        return wrapper
+    return deco
+@@@ tests
+import pytest
+from solution import retry
+
+
+def flaky(n_fail, exc=ConnectionError):
+    calls = []
+
+    def fn(x):
+        calls.append(x)
+        if len(calls) <= n_fail:
+            raise exc(f"fail {len(calls)}")
+        return x * 2
+    return fn, calls
+
+
+def test_eventual_success_and_delays():
+    sleeps = []
+    fn, calls = flaky(3)
+    wrapped = retry(attempts=5, base_delay=0.5, max_delay=10, jitter=False, sleep=sleeps.append)(fn)
+    assert wrapped(4) == 8
+    assert sleeps == [0.5, 1.0, 2.0] and len(calls) == 4
+
+
+def test_max_delay_cap():
+    sleeps = []
+    fn, _ = flaky(10)
+    wrapped = retry(attempts=6, base_delay=1, max_delay=3, jitter=False, sleep=sleeps.append)(fn)
+    with pytest.raises(ConnectionError, match="fail 6"):
+        wrapped(1)
+    assert sleeps == [1, 2, 3, 3, 3]
+
+
+def test_full_jitter_uses_rng():
+    sleeps = []
+    fn, _ = flaky(2)
+    wrapped = retry(attempts=3, base_delay=1, jitter=True, sleep=sleeps.append, rng=lambda: 0.25)(fn)
+    wrapped(1)
+    assert sleeps == pytest.approx([0.25, 0.5])
+
+
+def test_unlisted_exceptions_not_retried():
+    sleeps = []
+    fn, calls = flaky(5, exc=KeyError)
+    wrapped = retry(attempts=5, exceptions=(ConnectionError,), sleep=sleeps.append)(fn)
+    with pytest.raises(KeyError):
+        wrapped(1)
+    assert len(calls) == 1 and sleeps == []
+
+
+def test_wraps_and_validation():
+    @retry(sleep=lambda d: None)
+    def documented():
+        """Docs."""
+        return 1
+    assert documented.__name__ == "documented" and documented.__doc__ == "Docs."
+    with pytest.raises(ValueError):
+        retry(attempts=0)
+
+
+def test_single_attempt_no_sleep():
+    sleeps = []
+    fn, _ = flaky(1)
+    with pytest.raises(ConnectionError):
+        retry(attempts=1, sleep=sleeps.append)(fn)(1)
+    assert sleeps == []
+@@@ task backoff_policy leaf=5 diff=3 entry=backoff_delays,call_with_retry,RetryError
+@@@ prompt
+Write a reusable retry policy. `backoff_delays(base, factor, cap, attempts, jitter="none", rng=random.random)` is a generator yielding the `attempts - 1` waits between attempts: the raw delay for wait i (0-based) is `min(cap, base * factor ** i)`; `jitter="full"` yields `raw * rng()`, `jitter="equal"` yields `raw / 2 + rng() * raw / 2`, `"none"` yields `raw`; any other jitter raises `ValueError`. `call_with_retry(fn, delays, retry_on=(Exception,), sleep=time.sleep, on_retry=None)` calls `fn()`, and on a `retry_on` exception sleeps the next delay from the iterable `delays` and tries again; `on_retry(attempt_number, exc, delay)` is called before each sleep if given. When the delays run out, raise `RetryError` from the last exception, with an `attempts` attribute (total calls made) and `last` (the last exception).
+@@@ reference
+import random
+import time
+
+
+class RetryError(Exception):
+    def __init__(self, attempts, last):
+        super().__init__(f"gave up after {attempts} attempts: {last!r}")
+        self.attempts = attempts
+        self.last = last
+
+
+def backoff_delays(base, factor, cap, attempts, jitter="none", rng=random.random):
+    if jitter not in ("none", "full", "equal"):
+        raise ValueError(f"unknown jitter {jitter!r}")
+    for i in range(attempts - 1):
+        raw = min(cap, base * factor ** i)
+        if jitter == "full":
+            yield raw * rng()
+        elif jitter == "equal":
+            yield raw / 2 + rng() * raw / 2
+        else:
+            yield raw
+
+
+def call_with_retry(fn, delays, retry_on=(Exception,), sleep=time.sleep, on_retry=None):
+    delays = iter(delays)
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            return fn()
+        except retry_on as exc:
+            delay = next(delays, None)
+            if delay is None:
+                raise RetryError(attempt, exc) from exc
+            if on_retry is not None:
+                on_retry(attempt, exc, delay)
+            sleep(delay)
+@@@ tests
+import pytest
+from solution import backoff_delays, call_with_retry, RetryError
+
+
+def test_raw_delays():
+    assert list(backoff_delays(0.1, 2, 1.0, attempts=6)) == pytest.approx([0.1, 0.2, 0.4, 0.8, 1.0])
+    assert list(backoff_delays(1, 3, 100, attempts=1)) == []
+
+
+def test_jitter_modes():
+    assert list(backoff_delays(2, 2, 100, 3, jitter="full", rng=lambda: 0.5)) == [1.0, 2.0]
+    assert list(backoff_delays(2, 2, 100, 3, jitter="equal", rng=lambda: 0.0)) == [1.0, 2.0]
+    assert list(backoff_delays(2, 2, 100, 3, jitter="equal", rng=lambda: 1.0)) == [2.0, 4.0]
+    with pytest.raises(ValueError):
+        list(backoff_delays(1, 2, 3, 3, jitter="bogus"))
+
+
+def test_success_after_retries():
+    sleeps, seen = [], []
+    attempts = []
+
+    def fn():
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise TimeoutError("slow")
+        return "ok"
+    res = call_with_retry(fn, [1, 2, 3], sleep=sleeps.append, on_retry=lambda n, e, d: seen.append((n, type(e), d)))
+    assert res == "ok" and sleeps == [1, 2]
+    assert seen == [(1, TimeoutError, 1), (2, TimeoutError, 2)]
+
+
+def test_retry_error_chained():
+    def fn():
+        raise ConnectionError("nope")
+    with pytest.raises(RetryError) as ei:
+        call_with_retry(fn, backoff_delays(0, 2, 1, attempts=4), sleep=lambda d: None)
+    e = ei.value
+    assert e.attempts == 4 and isinstance(e.last, ConnectionError) and e.__cause__ is e.last
+
+
+def test_non_retryable_propagates():
+    calls = []
+
+    def fn():
+        calls.append(1)
+        raise ValueError("bad input")
+    with pytest.raises(ValueError):
+        call_with_retry(fn, [1, 1], retry_on=(ConnectionError,), sleep=lambda d: None)
+    assert len(calls) == 1
+
+
+def test_generator_is_lazy():
+    gen = backoff_delays(1, 2, 10, attempts=10 ** 9)
+    assert next(gen) == 1 and next(gen) == 2
+@@@ task circuit_breaker leaf=6 diff=4 entry=CircuitBreaker,CircuitOpenError
+@@@ prompt
+Write a `CircuitBreaker(failure_threshold=5, recovery_timeout=30.0, expected_exceptions=(Exception,), clock=time.monotonic)` and an exception `CircuitOpenError`. `call(fn, *args, **kwargs)` runs `fn` while the breaker is closed. Each exception that is an instance of `expected_exceptions` counts as a failure (other exceptions propagate without counting); a success resets the count. After `failure_threshold` consecutive failures the breaker opens: calls raise `CircuitOpenError` immediately without calling `fn`. After `recovery_timeout` seconds it becomes half-open and lets exactly one trial call through: success closes it, an expected failure opens it again for another full timeout. Expose `state` (`"closed"`, `"open"`, `"half_open"`) and make the breaker usable as a decorator (`@breaker`).
+@@@ reference
+import functools
+import time
+
+
+class CircuitOpenError(Exception):
+    pass
+
+
+class CircuitBreaker:
+    def __init__(self, failure_threshold=5, recovery_timeout=30.0, expected_exceptions=(Exception,),
+                 clock=time.monotonic):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.expected_exceptions = expected_exceptions
+        self.clock = clock
+        self._failures = 0
+        self._opened_at = None
+
+    @property
+    def state(self):
+        if self._opened_at is None:
+            return "closed"
+        if self.clock() - self._opened_at >= self.recovery_timeout:
+            return "half_open"
+        return "open"
+
+    def call(self, fn, *args, **kwargs):
+        state = self.state
+        if state == "open":
+            raise CircuitOpenError("circuit is open")
+        try:
+            result = fn(*args, **kwargs)
+        except self.expected_exceptions:
+            self._failures += 1
+            if state == "half_open" or self._failures >= self.failure_threshold:
+                self._opened_at = self.clock()
+            raise
+        self._failures = 0
+        self._opened_at = None
+        return result
+
+    def __call__(self, fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            return self.call(fn, *args, **kwargs)
+        return wrapper
+@@@ tests
+import pytest
+from solution import CircuitBreaker, CircuitOpenError
+
+
+class Clock:
+    t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+def failing():
+    raise ConnectionError("down")
+
+
+def trip(cb, n):
+    for _ in range(n):
+        with pytest.raises(ConnectionError):
+            cb.call(failing)
+
+
+def test_opens_after_threshold():
+    cb = CircuitBreaker(failure_threshold=3, clock=Clock())
+    trip(cb, 2)
+    assert cb.state == "closed"
+    trip(cb, 1)
+    assert cb.state == "open"
+    calls = []
+    with pytest.raises(CircuitOpenError):
+        cb.call(lambda: calls.append(1))
+    assert calls == []
+
+
+def test_success_resets_count():
+    cb = CircuitBreaker(failure_threshold=2, clock=Clock())
+    trip(cb, 1)
+    assert cb.call(lambda: "ok") == "ok"
+    trip(cb, 1)
+    assert cb.state == "closed"
+
+
+def test_half_open_success_closes():
+    clk = Clock()
+    cb = CircuitBreaker(failure_threshold=1, recovery_timeout=10, clock=clk)
+    trip(cb, 1)
+    clk.t = 9.9
+    assert cb.state == "open"
+    clk.t = 10
+    assert cb.state == "half_open"
+    assert cb.call(lambda: 1) == 1 and cb.state == "closed"
+
+
+def test_half_open_failure_reopens_full_timeout():
+    clk = Clock()
+    cb = CircuitBreaker(failure_threshold=3, recovery_timeout=10, clock=clk)
+    trip(cb, 3)
+    clk.t = 10
+    trip(cb, 1)
+    assert cb.state == "open"
+    clk.t = 19
+    assert cb.state == "open"
+    clk.t = 20
+    assert cb.state == "half_open"
+
+
+def test_unexpected_exceptions_not_counted():
+    cb = CircuitBreaker(failure_threshold=1, expected_exceptions=(ConnectionError,), clock=Clock())
+    with pytest.raises(ValueError):
+        cb.call(lambda: int("x"))
+    assert cb.state == "closed"
+
+
+def test_decorator():
+    cb = CircuitBreaker(failure_threshold=1, clock=Clock())
+
+    @cb
+    def fetch(x):
+        """Fetch."""
+        if x < 0:
+            raise ConnectionError
+        return x
+    assert fetch(2) == 2 and fetch.__name__ == "fetch"
+    with pytest.raises(ConnectionError):
+        fetch(-1)
+    with pytest.raises(CircuitOpenError):
+        fetch(1)
+@@@ task run_with_timeout leaf=7 diff=3 entry=run_with_timeout
+@@@ prompt
+Write `run_with_timeout(fn, timeout: float, *args, **kwargs)` that runs a blocking function in a daemon worker thread and waits at most `timeout` seconds for it. Return its result if it finishes in time, re-raise its exception (the original exception object) if it fails, and raise `TimeoutError` if it is still running when the timeout expires. A thread cannot be killed, so on timeout simply stop waiting; the daemon thread must not keep the interpreter alive.
+@@@ reference
+import threading
+
+
+def run_with_timeout(fn, timeout: float, *args, **kwargs):
+    box = {}
+    done = threading.Event()
+
+    def work():
+        try:
+            box["result"] = fn(*args, **kwargs)
+        except BaseException as exc:
+            box["error"] = exc
+        finally:
+            done.set()
+
+    t = threading.Thread(target=work, daemon=True)
+    t.start()
+    if not done.wait(timeout):
+        raise TimeoutError(f"{getattr(fn, '__name__', 'call')} did not finish in {timeout}s")
+    if "error" in box:
+        raise box["error"]
+    return box["result"]
+@@@ tests
+import threading
+import time
+import pytest
+from solution import run_with_timeout
+
+
+def test_returns_result():
+    assert run_with_timeout(lambda a, b=0: a + b, 1, 2, b=3) == 5
+
+
+def test_reraises_same_exception():
+    err = ValueError("specific")
+
+    def fail():
+        raise err
+    with pytest.raises(ValueError) as ei:
+        run_with_timeout(fail, 1)
+    assert ei.value is err
+
+
+def test_times_out():
+    release = threading.Event()
+    t0 = time.monotonic()
+    try:
+        with pytest.raises(TimeoutError):
+            run_with_timeout(release.wait, 0.03, 5)
+        assert time.monotonic() - t0 < 2
+    finally:
+        release.set()
+
+
+def test_worker_is_daemon():
+    release = threading.Event()
+    try:
+        with pytest.raises(TimeoutError):
+            run_with_timeout(release.wait, 0.01, 5)
+        workers = [t for t in threading.enumerate() if t is not threading.main_thread() and t.is_alive()]
+        assert workers and all(t.daemon for t in workers)
+    finally:
+        release.set()
+
+
+def test_runs_in_other_thread():
+    main = threading.get_ident()
+    assert run_with_timeout(threading.get_ident, 1) != main
+
+
+def test_none_result():
+    assert run_with_timeout(lambda: None, 1) is None
+@@@ task drain_until_deadline leaf=7 diff=3 entry=drain_until
+@@@ prompt
+Write `drain_until(q: queue.Queue, deadline: float, max_items=None, clock=time.monotonic) -> list` that collects items from a `queue.Queue` until an overall deadline expires: `deadline` is a duration in seconds measured from the call. Each blocking `q.get(timeout=...)` must use only the remaining time of the overall budget, so the total wait never exceeds the deadline, no matter how items trickle in. Stop early once `max_items` items have been collected. Return the collected items in order (an empty list if nothing arrived).
+@@@ reference
+import queue
+import time
+
+
+def drain_until(q, deadline, max_items=None, clock=time.monotonic):
+    end = clock() + deadline
+    out = []
+    while max_items is None or len(out) < max_items:
+        remaining = end - clock()
+        if remaining <= 0:
+            break
+        try:
+            out.append(q.get(timeout=remaining))
+        except queue.Empty:
+            break
+    return out
+@@@ tests
+import queue
+import threading
+import time
+from solution import drain_until
+
+
+def test_collects_available_items():
+    q = queue.Queue()
+    for i in range(3):
+        q.put(i)
+    t0 = time.monotonic()
+    assert drain_until(q, 0.03) == [0, 1, 2]
+    assert time.monotonic() - t0 < 1
+
+
+def test_empty_queue_returns_after_deadline():
+    t0 = time.monotonic()
+    assert drain_until(queue.Queue(), 0.02) == []
+    assert 0.015 <= time.monotonic() - t0 < 1
+
+
+def test_max_items_stops_early():
+    q = queue.Queue()
+    for i in range(10):
+        q.put(i)
+    t0 = time.monotonic()
+    assert drain_until(q, 5, max_items=4) == [0, 1, 2, 3]
+    assert time.monotonic() - t0 < 1 and q.qsize() == 6
+
+
+def test_trickle_cannot_extend_deadline():
+    q = queue.Queue()
+    stop = threading.Event()
+
+    def producer():
+        while not stop.is_set():
+            q.put("x")
+            stop.wait(0.005)
+    t = threading.Thread(target=producer, daemon=True)
+    t.start()
+    try:
+        t0 = time.monotonic()
+        items = drain_until(q, 0.05)
+        assert time.monotonic() - t0 < 0.5 and items
+    finally:
+        stop.set()
+        t.join(2)
+
+
+def test_uses_remaining_time_with_fake_clock():
+    class Q:
+        def __init__(self):
+            self.timeouts = []
+
+        def get(self, timeout):
+            self.timeouts.append(timeout)
+            clock.t += 3
+            return "item"
+
+    class Clock:
+        t = 0.0
+
+        def __call__(self):
+            return self.t
+    clock = Clock()
+    q = Q()
+    assert drain_until(q, 10, clock=clock) == ["item"] * 4
+    assert q.timeouts == [10, 7, 4, 1]
+@@@ task parse_port_validation leaf=8 diff=2 entry=parse_port
+@@@ prompt
+Write `parse_port(value) -> int` that validates a TCP port number from untrusted input and raises clear errors. Accept an `int`, or a `str` of decimal digits with optional surrounding whitespace. Raise `TypeError` for any other type, including `bool` and `float` (the message must name the received type, e.g. "port must be int or str, got float"). Raise `ValueError` for a string that is not all digits, and for numbers outside 1-65535; the message must include the offending value with `repr()`, e.g. `port out of range 1-65535: 70000`.
+@@@ reference
+def parse_port(value):
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise TypeError(f"port must be int or str, got {type(value).__name__}")
+    if isinstance(value, str):
+        s = value.strip()
+        if not s.isdigit() or not s.isascii():
+            raise ValueError(f"port is not a number: {value!r}")
+        n = int(s)
+    else:
+        n = value
+    if not 1 <= n <= 65535:
+        raise ValueError(f"port out of range 1-65535: {value!r}")
+    return n
+@@@ tests
+import pytest
+from solution import parse_port
+
+
+def test_valid():
+    assert parse_port(80) == 80
+    assert parse_port(" 8080 ") == 8080
+    assert parse_port("65535") == 65535 and parse_port(1) == 1
+
+
+@pytest.mark.parametrize("bad", [True, 80.0, None, [80], b"80"])
+def test_type_errors_name_type(bad):
+    with pytest.raises(TypeError) as ei:
+        parse_port(bad)
+    assert type(bad).__name__ in str(ei.value)
+
+
+@pytest.mark.parametrize("bad", ["", "http", "80a", "-1", "8 0", "١٢"])
+def test_bad_strings(bad):
+    with pytest.raises(ValueError) as ei:
+        parse_port(bad)
+    assert repr(bad) in str(ei.value)
+
+
+@pytest.mark.parametrize("bad", [0, -5, 65536, "70000"])
+def test_out_of_range(bad):
+    with pytest.raises(ValueError) as ei:
+        parse_port(bad)
+    assert repr(bad) in str(ei.value)
+
+
+def test_errors_are_distinct_kinds():
+    with pytest.raises(ValueError):
+        parse_port("0")
+    with pytest.raises(TypeError):
+        parse_port(3.5)
+@@@ task validate_payload leaf=8 diff=3 entry=validate_user,ValidationError
+@@@ prompt
+Write `validate_user(payload) -> dict` and an exception `ValidationError` whose `errors` attribute is a dict mapping field name to message. Validate everything and report all problems at once rather than stopping at the first. Rules: `payload` must be a dict (otherwise raise `TypeError`); `name` is required, a non-empty string after stripping, at most 50 characters; `email` is required and must match `^[^@\s]+@[^@\s]+\.[a-z]{2,}$` (case-insensitive); `age` is optional, but if present must be an int (not bool) between 0 and 150; any other key is an error under its own name with message `"unknown field"`. On success return a normalised dict with the stripped name, lowercased email and `age` (None if absent). `str(ValidationError)` lists the fields with problems in sorted order.
+@@@ reference
+import re
+
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[a-z]{2,}$", re.IGNORECASE)
+_FIELDS = {"name", "email", "age"}
+
+
+class ValidationError(Exception):
+    def __init__(self, errors):
+        self.errors = errors
+        super().__init__("invalid fields: " + ", ".join(sorted(errors)))
+
+
+def validate_user(payload):
+    if not isinstance(payload, dict):
+        raise TypeError(f"payload must be a dict, got {type(payload).__name__}")
+    errors = {}
+    name = payload.get("name")
+    if name is None:
+        errors["name"] = "required"
+    elif not isinstance(name, str) or not name.strip():
+        errors["name"] = "must be a non-empty string"
+    elif len(name.strip()) > 50:
+        errors["name"] = "must be at most 50 characters"
+    email = payload.get("email")
+    if email is None:
+        errors["email"] = "required"
+    elif not isinstance(email, str) or not _EMAIL.match(email):
+        errors["email"] = "must be a valid email address"
+    age = payload.get("age")
+    if "age" in payload and age is not None:
+        if isinstance(age, bool) or not isinstance(age, int):
+            errors["age"] = "must be an integer"
+        elif not 0 <= age <= 150:
+            errors["age"] = "must be between 0 and 150"
+    for key in payload:
+        if key not in _FIELDS:
+            errors[key] = "unknown field"
+    if errors:
+        raise ValidationError(errors)
+    return {"name": name.strip(), "email": email.lower(), "age": age}
+@@@ tests
+import pytest
+from solution import validate_user, ValidationError
+
+
+def test_valid_and_normalised():
+    out = validate_user({"name": "  Ann ", "email": "Ann@Example.COM", "age": 30})
+    assert out == {"name": "Ann", "email": "ann@example.com", "age": 30}
+    assert validate_user({"name": "Bo", "email": "b@x.io"})["age"] is None
+
+
+def test_collects_all_errors():
+    with pytest.raises(ValidationError) as ei:
+        validate_user({"name": "", "email": "nope", "age": 200, "admin": True})
+    assert set(ei.value.errors) == {"name", "email", "age", "admin"}
+    assert ei.value.errors["admin"] == "unknown field"
+
+
+def test_missing_required():
+    with pytest.raises(ValidationError) as ei:
+        validate_user({})
+    assert set(ei.value.errors) == {"name", "email"}
+
+
+@pytest.mark.parametrize("age", [True, "30", 3.5, -1, 151])
+def test_bad_age(age):
+    with pytest.raises(ValidationError) as ei:
+        validate_user({"name": "a", "email": "a@b.co", "age": age})
+    assert set(ei.value.errors) == {"age"}
+
+
+def test_name_length():
+    with pytest.raises(ValidationError):
+        validate_user({"name": "x" * 51, "email": "a@b.co"})
+    assert validate_user({"name": "x" * 50, "email": "a@b.co"})["name"] == "x" * 50
+
+
+def test_message_lists_fields_sorted():
+    with pytest.raises(ValidationError) as ei:
+        validate_user({"zeta": 1, "email": "bad"})
+    s = str(ei.value)
+    assert s.index("email") < s.index("name") < s.index("zeta")
+
+
+def test_non_dict_is_type_error():
+    with pytest.raises(TypeError):
+        validate_user(["name", "email"])
+@@@ task exception_group_runner leaf=9 diff=3 entry=run_all min_python=3.11
+@@@ prompt
+Write `run_all(tasks: dict) -> dict` that runs every zero-argument callable in `tasks` (name to callable), even if earlier ones fail, and returns a dict of name to result. If one or more raised an `Exception`, raise a single `ExceptionGroup` with the message `"<n> of <total> tasks failed"` containing all the exceptions in task order, after attaching a note to each with `add_note(f"task: {name}")` so the failing task can be identified. Callers can then handle failures by type with `except*`.
+@@@ reference
+def run_all(tasks):
+    results, errors = {}, []
+    for name, fn in tasks.items():
+        try:
+            results[name] = fn()
+        except Exception as exc:
+            exc.add_note(f"task: {name}")
+            errors.append(exc)
+    if errors:
+        raise ExceptionGroup(f"{len(errors)} of {len(tasks)} tasks failed", errors)
+    return results
+@@@ tests
+import pytest
+from solution import run_all
+
+
+def boom(exc):
+    def f():
+        raise exc
+    return f
+
+
+def test_all_succeed():
+    assert run_all({"a": lambda: 1, "b": lambda: 2}) == {"a": 1, "b": 2}
+
+
+def test_group_message_and_order():
+    with pytest.raises(ExceptionGroup) as ei:
+        run_all({"a": boom(ValueError("v")), "b": lambda: 2, "c": boom(KeyError("k"))})
+    eg = ei.value
+    assert eg.message == "2 of 3 tasks failed"
+    assert [type(e) for e in eg.exceptions] == [ValueError, KeyError]
+
+
+def test_notes_identify_task():
+    with pytest.raises(ExceptionGroup) as ei:
+        run_all({"load": boom(OSError("disk")), "parse": boom(ValueError("x"))})
+    assert [e.__notes__ for e in ei.value.exceptions] == [["task: load"], ["task: parse"]]
+
+
+def test_runs_all_even_after_failure():
+    ran = []
+    with pytest.raises(ExceptionGroup):
+        run_all({"a": boom(RuntimeError()), "b": lambda: ran.append("b")})
+    assert ran == ["b"]
+
+
+def test_except_star_split():
+    handled = {}
+    try:
+        run_all({"a": boom(ValueError("1")), "b": boom(TypeError("2")), "c": boom(ValueError("3"))})
+    except* ValueError as g:
+        handled["value"] = len(g.exceptions)
+    except* TypeError as g:
+        handled["type"] = len(g.exceptions)
+    assert handled == {"value": 2, "type": 1}
+
+
+def test_empty():
+    assert run_all({}) == {}
+@@@ task except_star_handler leaf=9 diff=4 entry=process min_python=3.11
+@@@ prompt
+Write `process(fn) -> list[str]` that calls `fn()` and uses `except*` to handle `ValueError`s selectively. `fn` may return normally, raise a single exception, or raise an `ExceptionGroup` (possibly nested). Every `ValueError` anywhere in what was raised is handled: return the sorted list of their messages (`str(e)`). All other exceptions must keep propagating, which is exactly what `except*` does: the remainder of a group is re-raised as an exception group containing only the unhandled ones, and a single non-ValueError exception propagates unchanged. If `fn` raises nothing, return `[]`.
+@@@ reference
+def process(fn):
+    messages = []
+    try:
+        fn()
+    except* ValueError as group:
+        stack = [group]
+        while stack:
+            g = stack.pop()
+            for e in g.exceptions:
+                if isinstance(e, BaseExceptionGroup):
+                    stack.append(e)
+                else:
+                    messages.append(str(e))
+    return sorted(messages)
+@@@ tests
+import pytest
+from solution import process
+
+
+def raiser(exc):
+    def f():
+        raise exc
+    return f
+
+
+def test_no_error():
+    assert process(lambda: 42) == []
+
+
+def test_naked_value_error():
+    assert process(raiser(ValueError("bad"))) == ["bad"]
+
+
+def test_group_of_value_errors():
+    eg = ExceptionGroup("g", [ValueError("b"), ValueError("a")])
+    assert process(raiser(eg)) == ["a", "b"]
+
+
+def test_nested_groups():
+    eg = ExceptionGroup("outer", [ValueError("x"), ExceptionGroup("inner", [ValueError("y"), ValueError("z")])])
+    assert process(raiser(eg)) == ["x", "y", "z"]
+
+
+def test_other_errors_propagate():
+    eg = ExceptionGroup("g", [ValueError("handled"), KeyError("k"), TypeError("t")])
+    with pytest.raises(ExceptionGroup) as ei:
+        process(raiser(eg))
+    remaining = ei.value.exceptions
+    assert sorted(type(e).__name__ for e in remaining) == ["KeyError", "TypeError"]
+
+
+def test_naked_other_error_propagates_unwrapped():
+    with pytest.raises(KeyError):
+        process(raiser(KeyError("k")))

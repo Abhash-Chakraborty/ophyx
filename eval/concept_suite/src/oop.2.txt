@@ -1,0 +1,1778 @@
+@@@ task lazy_module_settings leaf=14 diff=3 entry=Settings,configure,get_settings,override_settings,reset_settings
+@@@ prompt
+Replace a `Settings` singleton class with module-level state plus explicit functions, which is the idiomatic Python alternative and keeps tests isolated. `Settings` is a frozen dataclass with `debug: bool = False`, `db_url: str = "sqlite://"`. `configure(loader)` sets a zero-argument loader function that returns a `Settings`. `get_settings()` calls the loader lazily on first use and caches the result (with no loader configured it returns `Settings()`); later calls return the same object. `reset_settings()` clears the cache and the loader. `override_settings(settings)` is a context manager that makes `get_settings()` return the given object inside the block and restores the previous state afterwards, even on error.
+@@@ reference
+from contextlib import contextmanager
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Settings:
+    debug: bool = False
+    db_url: str = "sqlite://"
+
+
+_loader = None
+_cached = None
+
+
+def configure(loader):
+    global _loader, _cached
+    _loader = loader
+    _cached = None
+
+
+def get_settings():
+    global _cached
+    if _cached is None:
+        _cached = _loader() if _loader is not None else Settings()
+    return _cached
+
+
+def reset_settings():
+    global _loader, _cached
+    _loader = None
+    _cached = None
+
+
+@contextmanager
+def override_settings(settings):
+    global _cached
+    previous = _cached
+    _cached = settings
+    try:
+        yield settings
+    finally:
+        _cached = previous
+@@@ tests
+import pytest
+from solution import Settings, configure, get_settings, override_settings, reset_settings
+
+
+@pytest.fixture(autouse=True)
+def clean():
+    reset_settings()
+    yield
+    reset_settings()
+
+
+def test_default():
+    s = get_settings()
+    assert s == Settings() and get_settings() is s
+
+
+def test_lazy_loader_called_once():
+    calls = []
+
+    def loader():
+        calls.append(1)
+        return Settings(debug=True)
+    configure(loader)
+    assert calls == []
+    assert get_settings().debug is True and get_settings().debug is True
+    assert calls == [1]
+
+
+def test_reset():
+    configure(lambda: Settings(db_url="pg://"))
+    get_settings()
+    reset_settings()
+    assert get_settings().db_url == "sqlite://"
+
+
+def test_override_restores():
+    configure(lambda: Settings(db_url="pg://"))
+    base = get_settings()
+    with override_settings(Settings(debug=True)) as s:
+        assert get_settings() is s
+    assert get_settings() is base
+    with pytest.raises(RuntimeError):
+        with override_settings(Settings(db_url="x")):
+            raise RuntimeError
+    assert get_settings() is base
+
+
+def test_frozen():
+    with pytest.raises(Exception):
+        get_settings().debug = True
+@@@ task subject_observers leaf=15 diff=3 entry=Subject
+@@@ prompt
+Write an observer-pattern `Subject`. `subscribe(callback)` registers a callable and returns an `unsubscribe` function (calling it twice is harmless). `notify(*args, **kwargs) -> list` calls every subscribed callback in subscription order and returns a list of the exceptions raised by callbacks: one failing observer must not prevent the others from being notified. Callbacks may subscribe or unsubscribe (themselves or others) while a notification is in progress; such changes take effect from the next `notify` call. `len(subject)` is the number of subscribers. The same callback may be subscribed twice and is then called twice.
+@@@ reference
+class Subject:
+    def __init__(self):
+        self._subs = []
+
+    def subscribe(self, callback):
+        token = [callback]
+        self._subs.append(token)
+
+        def unsubscribe():
+            try:
+                self._subs.remove(token)
+            except ValueError:
+                pass
+        return unsubscribe
+
+    def notify(self, *args, **kwargs):
+        errors = []
+        for token in list(self._subs):
+            try:
+                token[0](*args, **kwargs)
+            except Exception as exc:
+                errors.append(exc)
+        return errors
+
+    def __len__(self):
+        return len(self._subs)
+@@@ tests
+from solution import Subject
+
+
+def test_order_and_args():
+    s = Subject()
+    log = []
+    s.subscribe(lambda *a, **k: log.append(("first", a, k)))
+    s.subscribe(lambda *a, **k: log.append(("second", a, k)))
+    assert s.notify(1, x=2) == []
+    assert log == [("first", (1,), {"x": 2}), ("second", (1,), {"x": 2})]
+
+
+def test_unsubscribe():
+    s = Subject()
+    log = []
+    unsub = s.subscribe(log.append)
+    s.notify("a")
+    unsub()
+    unsub()
+    s.notify("b")
+    assert log == ["a"] and len(s) == 0
+
+
+def test_failing_observer_isolated():
+    s = Subject()
+    log = []
+
+    def bad(x):
+        raise ValueError(x)
+    s.subscribe(bad)
+    s.subscribe(log.append)
+    errors = s.notify(5)
+    assert log == [5] and len(errors) == 1 and isinstance(errors[0], ValueError)
+
+
+def test_unsubscribe_during_notify():
+    s = Subject()
+    log = []
+    holder = {}
+
+    def once(x):
+        log.append(("once", x))
+        holder["unsub"]()
+    holder["unsub"] = s.subscribe(once)
+    s.subscribe(lambda x: log.append(("always", x)))
+    s.notify(1)
+    s.notify(2)
+    assert log == [("once", 1), ("always", 1), ("always", 2)]
+
+
+def test_subscribe_during_notify_takes_effect_next_time():
+    s = Subject()
+    log = []
+
+    def adder(x):
+        s.subscribe(lambda y: log.append(("new", y)))
+    s.subscribe(adder)
+    s.notify(1)
+    assert log == []
+    s.notify(2)
+    assert log == [("new", 2)]
+
+
+def test_duplicate_callbacks():
+    s = Subject()
+    log = []
+    u1 = s.subscribe(log.append)
+    s.subscribe(log.append)
+    s.notify(1)
+    u1()
+    s.notify(2)
+    assert log == [1, 1, 2]
+@@@ task observable_properties leaf=15 diff=4 entry=Observable,observable
+@@@ prompt
+Write change notifications for attributes. `observable(default=None)` is a descriptor for use as a class attribute (use `__set_name__` to learn its name and store values in the instance `__dict__` under a private key); reading an unset attribute returns the default. `Observable` is a base class providing `on_change(attr_name, callback)`, where `callback(obj, old, new)` is called after an observable attribute is assigned a value that compares unequal to the current one (assigning an equal value notifies nobody). Listeners are per instance and per attribute; listeners registered for the special name `"*"` receive every change as `callback(obj, name, old, new)`. Accessing the descriptor on the class returns the descriptor itself.
+@@@ reference
+class observable:
+    def __init__(self, default=None):
+        self.default = default
+        self.name = None
+
+    def __set_name__(self, owner, name):
+        self.name = name
+        self.key = f"_observable_{name}"
+
+    def __get__(self, obj, objtype=None):
+        if obj is None:
+            return self
+        return obj.__dict__.get(self.key, self.default)
+
+    def __set__(self, obj, value):
+        old = self.__get__(obj)
+        obj.__dict__[self.key] = value
+        if old != value and isinstance(obj, Observable):
+            obj._fire(self.name, old, value)
+
+
+class Observable:
+    def on_change(self, attr_name, callback):
+        listeners = self.__dict__.setdefault("_listeners", {})
+        listeners.setdefault(attr_name, []).append(callback)
+
+    def _fire(self, name, old, new):
+        listeners = self.__dict__.get("_listeners", {})
+        for cb in list(listeners.get(name, [])):
+            cb(self, old, new)
+        for cb in list(listeners.get("*", [])):
+            cb(self, name, old, new)
+@@@ tests
+from solution import Observable, observable
+
+
+class User(Observable):
+    name = observable("anon")
+    age = observable(0)
+
+
+def test_defaults_and_storage():
+    u = User()
+    assert u.name == "anon" and u.age == 0
+    u.name = "ann"
+    assert u.name == "ann" and User().name == "anon"
+
+
+def test_change_callback():
+    u = User()
+    seen = []
+    u.on_change("name", lambda obj, old, new: seen.append((obj, old, new)))
+    u.name = "ann"
+    u.name = "bob"
+    assert seen == [(u, "anon", "ann"), (u, "ann", "bob")]
+
+
+def test_equal_value_does_not_notify():
+    u = User()
+    seen = []
+    u.on_change("age", lambda *a: seen.append(a))
+    u.age = 0
+    u.age = 1
+    u.age = 1
+    assert len(seen) == 1
+
+
+def test_listeners_per_instance_and_attribute():
+    a, b = User(), User()
+    seen = []
+    a.on_change("name", lambda *x: seen.append("a.name"))
+    b.name = "zed"
+    a.age = 5
+    assert seen == []
+
+
+def test_wildcard():
+    u = User()
+    seen = []
+    u.on_change("*", lambda obj, name, old, new: seen.append((name, old, new)))
+    u.name = "x"
+    u.age = 3
+    assert seen == [("name", "anon", "x"), ("age", 0, 3)]
+
+
+def test_class_access_returns_descriptor():
+    assert isinstance(User.__dict__["name"], observable) and User.name is User.__dict__["name"]
+@@@ task sort_strategies leaf=16 diff=2 entry=sort_records,register_strategy
+@@@ prompt
+Write `sort_records(records, strategy)` that sorts a list of dicts according to a pluggable strategy, returning a new list. A strategy can be given three ways: as the name of a registered strategy (a string), as a plain function used as the sort key, or as an object with a `key(record)` method. `register_strategy(name)` is a decorator that registers a key function under a name. Built in are `"by_name"` (case-insensitive name), `"by_age_desc"` (age descending, ties by name ascending) and `"by_created"` (the `created` field). An unknown name raises `ValueError`; anything else that is neither callable nor has a `key` method raises `TypeError`.
+@@@ reference
+_STRATEGIES = {}
+
+
+def register_strategy(name):
+    def deco(fn):
+        _STRATEGIES[name] = fn
+        return fn
+    return deco
+
+
+@register_strategy("by_name")
+def _by_name(r):
+    return r["name"].lower()
+
+
+@register_strategy("by_age_desc")
+def _by_age_desc(r):
+    return (-r["age"], r["name"])
+
+
+@register_strategy("by_created")
+def _by_created(r):
+    return r["created"]
+
+
+def sort_records(records, strategy):
+    if isinstance(strategy, str):
+        try:
+            key = _STRATEGIES[strategy]
+        except KeyError:
+            raise ValueError(f"unknown strategy {strategy!r}") from None
+    elif hasattr(strategy, "key") and callable(strategy.key):
+        key = strategy.key
+    elif callable(strategy):
+        key = strategy
+    else:
+        raise TypeError("strategy must be a name, a key function or an object with key()")
+    return sorted(records, key=key)
+@@@ tests
+import pytest
+from solution import sort_records, register_strategy
+
+PEOPLE = [{"name": "bob", "age": 30, "created": 3}, {"name": "Ann", "age": 25, "created": 1},
+          {"name": "cy", "age": 30, "created": 2}]
+
+
+def names(rs):
+    return [r["name"] for r in rs]
+
+
+def test_builtin_named_strategies():
+    assert names(sort_records(PEOPLE, "by_name")) == ["Ann", "bob", "cy"]
+    assert names(sort_records(PEOPLE, "by_age_desc")) == ["bob", "cy", "Ann"]
+    assert names(sort_records(PEOPLE, "by_created")) == ["Ann", "cy", "bob"]
+
+
+def test_function_strategy():
+    assert names(sort_records(PEOPLE, lambda r: len(r["name"]))) == ["cy", "bob", "Ann"]
+
+
+def test_object_strategy():
+    class ByAgeThenCreated:
+        def key(self, r):
+            return (r["age"], r["created"])
+    assert names(sort_records(PEOPLE, ByAgeThenCreated())) == ["Ann", "cy", "bob"]
+
+
+def test_register_new_strategy():
+    @register_strategy("by_name_desc_len")
+    def k(r):
+        return -len(r["name"])
+    assert callable(k)
+    assert names(sort_records(PEOPLE, "by_name_desc_len"))[-1] == "cy"
+
+
+def test_errors_and_purity():
+    with pytest.raises(ValueError):
+        sort_records(PEOPLE, "by_magic")
+    with pytest.raises(TypeError):
+        sort_records(PEOPLE, 42)
+    original = list(PEOPLE)
+    sort_records(PEOPLE, "by_name")
+    assert PEOPLE == original
+@@@ task editor_commands leaf=17 diff=3 entry=TextDocument,Insert,Delete,Editor
+@@@ prompt
+Implement the command pattern with undo for a text editor. `TextDocument` holds a string in `text`. Commands have `execute(doc)` and `undo(doc)`: `Insert(pos, s)` inserts `s` at `pos`; `Delete(pos, length)` deletes `length` characters starting at `pos` and remembers what it removed so `undo` can restore it. `Editor(doc)` has `run(command)` (executes it, pushes it on the undo stack and clears the redo stack), `undo()` and `redo()`, which return False when there is nothing to undo or redo and True otherwise. A position outside the text raises `IndexError` in `execute`, and a failed command is not recorded.
+@@@ reference
+class TextDocument:
+    def __init__(self, text=""):
+        self.text = text
+
+
+class Insert:
+    def __init__(self, pos, s):
+        self.pos, self.s = pos, s
+
+    def execute(self, doc):
+        if not 0 <= self.pos <= len(doc.text):
+            raise IndexError("position out of range")
+        doc.text = doc.text[:self.pos] + self.s + doc.text[self.pos:]
+
+    def undo(self, doc):
+        doc.text = doc.text[:self.pos] + doc.text[self.pos + len(self.s):]
+
+
+class Delete:
+    def __init__(self, pos, length):
+        self.pos, self.length = pos, length
+        self.removed = None
+
+    def execute(self, doc):
+        if not 0 <= self.pos <= len(doc.text) or self.pos + self.length > len(doc.text):
+            raise IndexError("range out of bounds")
+        self.removed = doc.text[self.pos:self.pos + self.length]
+        doc.text = doc.text[:self.pos] + doc.text[self.pos + self.length:]
+
+    def undo(self, doc):
+        doc.text = doc.text[:self.pos] + self.removed + doc.text[self.pos:]
+
+
+class Editor:
+    def __init__(self, doc):
+        self.doc = doc
+        self._undo = []
+        self._redo = []
+
+    def run(self, command):
+        command.execute(self.doc)
+        self._undo.append(command)
+        self._redo.clear()
+
+    def undo(self):
+        if not self._undo:
+            return False
+        cmd = self._undo.pop()
+        cmd.undo(self.doc)
+        self._redo.append(cmd)
+        return True
+
+    def redo(self):
+        if not self._redo:
+            return False
+        cmd = self._redo.pop()
+        cmd.execute(self.doc)
+        self._undo.append(cmd)
+        return True
+@@@ tests
+import pytest
+from solution import TextDocument, Insert, Delete, Editor
+
+
+def test_insert_delete_undo():
+    doc = TextDocument("hello")
+    ed = Editor(doc)
+    ed.run(Insert(5, " world"))
+    ed.run(Delete(0, 1))
+    assert doc.text == "ello world"
+    assert ed.undo() and doc.text == "hello world"
+    assert ed.undo() and doc.text == "hello"
+    assert ed.undo() is False
+
+
+def test_redo():
+    doc = TextDocument("ab")
+    ed = Editor(doc)
+    ed.run(Delete(0, 1))
+    ed.undo()
+    assert ed.redo() and doc.text == "b"
+    assert ed.redo() is False
+
+
+def test_new_command_clears_redo():
+    doc = TextDocument("")
+    ed = Editor(doc)
+    ed.run(Insert(0, "a"))
+    ed.undo()
+    ed.run(Insert(0, "b"))
+    assert ed.redo() is False and doc.text == "b"
+
+
+def test_invalid_positions_not_recorded():
+    doc = TextDocument("abc")
+    ed = Editor(doc)
+    with pytest.raises(IndexError):
+        ed.run(Insert(10, "x"))
+    with pytest.raises(IndexError):
+        ed.run(Delete(2, 5))
+    assert ed.undo() is False and doc.text == "abc"
+
+
+def test_many_undos_restore_original():
+    doc = TextDocument("start")
+    ed = Editor(doc)
+    for i in range(20):
+        ed.run(Insert(i % 3, str(i)))
+        if i % 4 == 0:
+            ed.run(Delete(0, 2))
+    while ed.undo():
+        pass
+    assert doc.text == "start"
+@@@ task macro_command_rollback leaf=17 diff=3 entry=Macro
+@@@ prompt
+Write a composite command `Macro(commands)`, where each command has `execute()` and `undo()` methods (no arguments). `Macro.execute()` executes the commands in order; if one of them raises, it undoes the commands that already succeeded, in reverse order, and then re-raises the original exception, leaving the system as it was. `Macro.undo()` undoes all commands in reverse order. A `Macro` is itself a command, so macros can be nested. Executing an empty macro does nothing.
+@@@ reference
+class Macro:
+    def __init__(self, commands):
+        self.commands = list(commands)
+
+    def execute(self):
+        done = []
+        try:
+            for cmd in self.commands:
+                cmd.execute()
+                done.append(cmd)
+        except BaseException:
+            for cmd in reversed(done):
+                cmd.undo()
+            raise
+
+    def undo(self):
+        for cmd in reversed(self.commands):
+            cmd.undo()
+@@@ tests
+import pytest
+from solution import Macro
+
+
+class Cmd:
+    def __init__(self, name, log, fail=False):
+        self.name, self.log, self.fail = name, log, fail
+
+    def execute(self):
+        if self.fail:
+            raise RuntimeError(f"{self.name} failed")
+        self.log.append(f"do {self.name}")
+
+    def undo(self):
+        self.log.append(f"undo {self.name}")
+
+
+def test_executes_in_order():
+    log = []
+    Macro([Cmd("a", log), Cmd("b", log)]).execute()
+    assert log == ["do a", "do b"]
+
+
+def test_undo_reverse():
+    log = []
+    m = Macro([Cmd("a", log), Cmd("b", log)])
+    m.execute()
+    m.undo()
+    assert log == ["do a", "do b", "undo b", "undo a"]
+
+
+def test_failure_rolls_back_done_commands():
+    log = []
+    m = Macro([Cmd("a", log), Cmd("b", log), Cmd("c", log, fail=True), Cmd("d", log)])
+    with pytest.raises(RuntimeError, match="c failed"):
+        m.execute()
+    assert log == ["do a", "do b", "undo b", "undo a"]
+
+
+def test_nested_macros():
+    log = []
+    inner = Macro([Cmd("x", log), Cmd("y", log)])
+    outer = Macro([Cmd("a", log), inner, Cmd("boom", log, fail=True)])
+    with pytest.raises(RuntimeError):
+        outer.execute()
+    assert log == ["do a", "do x", "do y", "undo y", "undo x", "undo a"]
+
+
+def test_empty():
+    m = Macro([])
+    m.execute()
+    m.undo()
+@@@ task legacy_log_adapter leaf=18 diff=3 entry=LegacyLogHandler
+@@@ prompt
+Write an adapter that lets the standard `logging` module write to a legacy logging object. The legacy object has a single method `write_line(severity: str, text: str)` where severity is one letter. Write `LegacyLogHandler(legacy, level=logging.NOTSET)`, a `logging.Handler` subclass whose `emit(record)` maps levels to letters (`DEBUG` to `"D"`, `INFO` to `"I"`, `WARNING` to `"W"`, `ERROR` to `"E"`, `CRITICAL` to `"C"`; custom levels map to the letter of the nearest standard level at or below them, and anything below DEBUG to `"D"`) and passes `self.format(record)` as the text. If `write_line` raises, call `self.handleError(record)` instead of letting the exception escape, as handlers must.
+@@@ reference
+import bisect
+import logging
+
+_LEVELS = [(logging.DEBUG, "D"), (logging.INFO, "I"), (logging.WARNING, "W"), (logging.ERROR, "E"),
+           (logging.CRITICAL, "C")]
+
+
+class LegacyLogHandler(logging.Handler):
+    def __init__(self, legacy, level=logging.NOTSET):
+        super().__init__(level)
+        self.legacy = legacy
+
+    @staticmethod
+    def letter(levelno):
+        i = bisect.bisect_right([lv for lv, _ in _LEVELS], levelno) - 1
+        return _LEVELS[max(i, 0)][1]
+
+    def emit(self, record):
+        try:
+            self.legacy.write_line(self.letter(record.levelno), self.format(record))
+        except Exception:
+            self.handleError(record)
+@@@ tests
+import logging
+from solution import LegacyLogHandler
+
+
+class Legacy:
+    def __init__(self, fail=False):
+        self.lines = []
+        self.fail = fail
+
+    def write_line(self, severity, text):
+        if self.fail:
+            raise IOError("legacy sink broken")
+        self.lines.append((severity, text))
+
+
+def make(name, legacy, fmt=None):
+    lg = logging.getLogger(name)
+    lg.handlers.clear()
+    lg.propagate = False
+    lg.setLevel(1)
+    h = LegacyLogHandler(legacy)
+    if fmt:
+        h.setFormatter(logging.Formatter(fmt))
+    lg.addHandler(h)
+    return lg, h
+
+
+def test_level_mapping():
+    legacy = Legacy()
+    lg, _ = make("legacy1", legacy)
+    lg.debug("d")
+    lg.info("i")
+    lg.warning("w")
+    lg.error("e")
+    lg.critical("c")
+    assert legacy.lines == [("D", "d"), ("I", "i"), ("W", "w"), ("E", "e"), ("C", "c")]
+
+
+def test_custom_levels():
+    legacy = Legacy()
+    lg, _ = make("legacy2", legacy)
+    lg.log(25, "between info and warning")
+    lg.log(5, "very low")
+    lg.log(60, "above critical")
+    assert [s for s, _ in legacy.lines] == ["I", "D", "C"]
+
+
+def test_uses_formatter():
+    legacy = Legacy()
+    lg, _ = make("legacy3", legacy, fmt="%(name)s|%(message)s")
+    lg.info("x=%d", 5)
+    assert legacy.lines == [("I", "legacy3|x=5")]
+
+
+def test_errors_go_to_handle_error():
+    legacy = Legacy(fail=True)
+    lg, h = make("legacy4", legacy)
+    seen = []
+    h.handleError = lambda record: seen.append(record.getMessage())
+    lg.error("lost")
+    assert seen == ["lost"]
+
+
+def test_is_a_handler_and_respects_level():
+    legacy = Legacy()
+    h = LegacyLogHandler(legacy, level=logging.WARNING)
+    assert isinstance(h, logging.Handler)
+    lg = logging.getLogger("legacy5")
+    lg.handlers.clear()
+    lg.propagate = False
+    lg.setLevel(logging.DEBUG)
+    lg.addHandler(h)
+    lg.info("skip")
+    lg.warning("keep")
+    assert legacy.lines == [("W", "keep")]
+@@@ task checkout_facade leaf=18 diff=3 entry=CheckoutFacade,CheckoutError
+@@@ prompt
+Write a facade `CheckoutFacade(inventory, payments, shipping)` that hides three subsystems behind one call, plus `CheckoutError`. The subsystems have these interfaces: `inventory.reserve(order_id, items) -> reservation_id` and `inventory.release(reservation_id)`; `payments.charge(order_id, amount, card) -> charge_id` and `payments.refund(charge_id)`; `shipping.create_shipment(order_id, items) -> tracking_id`. `place_order(order_id, items: dict[str, int], prices: dict[str, Decimal], card) -> str` reserves stock, charges the total (sum of price * qty), creates the shipment and returns the tracking id. It must compensate on failure: if charging fails, release the reservation; if shipping fails, refund the charge and release the reservation; in both cases raise `CheckoutError` chained (`from`) to the subsystem's exception. If reserving fails, nothing needs undoing and the error is wrapped the same way.
+@@@ reference
+from decimal import Decimal
+
+
+class CheckoutError(Exception):
+    pass
+
+
+class CheckoutFacade:
+    def __init__(self, inventory, payments, shipping):
+        self.inventory = inventory
+        self.payments = payments
+        self.shipping = shipping
+
+    def place_order(self, order_id, items, prices, card):
+        total = sum((Decimal(prices[sku]) * qty for sku, qty in items.items()), Decimal("0"))
+        try:
+            reservation = self.inventory.reserve(order_id, items)
+        except Exception as exc:
+            raise CheckoutError(f"could not reserve stock for {order_id}") from exc
+        try:
+            charge = self.payments.charge(order_id, total, card)
+        except Exception as exc:
+            self.inventory.release(reservation)
+            raise CheckoutError(f"payment failed for {order_id}") from exc
+        try:
+            return self.shipping.create_shipment(order_id, items)
+        except Exception as exc:
+            self.payments.refund(charge)
+            self.inventory.release(reservation)
+            raise CheckoutError(f"shipping failed for {order_id}") from exc
+@@@ tests
+from decimal import Decimal
+import pytest
+from solution import CheckoutFacade, CheckoutError
+
+
+class Recorder:
+    def __init__(self, log, fail=None):
+        self.log, self.fail = log, fail
+
+
+class Inventory(Recorder):
+    def reserve(self, order_id, items):
+        if self.fail == "reserve":
+            raise LookupError("out of stock")
+        self.log.append(("reserve", order_id, dict(items)))
+        return "res-1"
+
+    def release(self, rid):
+        self.log.append(("release", rid))
+
+
+class Payments(Recorder):
+    def charge(self, order_id, amount, card):
+        if self.fail == "charge":
+            raise PermissionError("card declined")
+        self.log.append(("charge", order_id, amount, card))
+        return "ch-1"
+
+    def refund(self, cid):
+        self.log.append(("refund", cid))
+
+
+class Shipping(Recorder):
+    def create_shipment(self, order_id, items):
+        if self.fail == "ship":
+            raise ConnectionError("carrier down")
+        self.log.append(("ship", order_id))
+        return "TRACK-9"
+
+
+def make(fail=None):
+    log = []
+    return CheckoutFacade(Inventory(log, fail), Payments(log, fail), Shipping(log, fail)), log
+
+
+ITEMS = {"a": 2, "b": 1}
+PRICES = {"a": Decimal("1.50"), "b": Decimal("4")}
+
+
+def test_happy_path():
+    f, log = make()
+    assert f.place_order("o1", ITEMS, PRICES, "visa") == "TRACK-9"
+    assert log == [("reserve", "o1", ITEMS), ("charge", "o1", Decimal("7.00"), "visa"), ("ship", "o1")]
+
+
+def test_payment_failure_releases_stock():
+    f, log = make("charge")
+    with pytest.raises(CheckoutError) as ei:
+        f.place_order("o1", ITEMS, PRICES, "visa")
+    assert isinstance(ei.value.__cause__, PermissionError)
+    assert log == [("reserve", "o1", ITEMS), ("release", "res-1")]
+
+
+def test_shipping_failure_refunds_and_releases():
+    f, log = make("ship")
+    with pytest.raises(CheckoutError) as ei:
+        f.place_order("o1", ITEMS, PRICES, "visa")
+    assert isinstance(ei.value.__cause__, ConnectionError)
+    assert log[-2:] == [("refund", "ch-1"), ("release", "res-1")]
+
+
+def test_reserve_failure_wrapped():
+    f, log = make("reserve")
+    with pytest.raises(CheckoutError) as ei:
+        f.place_order("o1", ITEMS, PRICES, "visa")
+    assert isinstance(ei.value.__cause__, LookupError) and log == []
+
+
+def test_total_is_decimal_exact():
+    f, log = make()
+    f.place_order("o2", {"x": 3}, {"x": Decimal("0.10")}, "mc")
+    assert log[1][2] == Decimal("0.30")
+@@@ task stacked_data_sources leaf=19 diff=3 entry=DataSource,MemorySource,SourceDecorator,Base64Decorator,CompressionDecorator
+@@@ prompt
+Implement the structural decorator pattern (wrapping objects, not Python's `@decorator` syntax). `DataSource` is an `abc.ABC` with abstract `write(data: bytes)` and `read() -> bytes`. `MemorySource` stores the last written bytes in an attribute `stored` (initially `b""`). `SourceDecorator(DataSource)` wraps another `DataSource` (attribute `wrapped`) and by default delegates both methods. `Base64Decorator` encodes with `base64.b64encode` on write and decodes on read; `CompressionDecorator` uses `zlib.compress`/`zlib.decompress`. Decorators can be stacked in any order, and each one transforms data before passing it to the object it wraps on write, and after reading from it on read. Reading an empty underlying source returns `b""` through every decorator.
+@@@ reference
+import abc
+import base64
+import zlib
+
+
+class DataSource(abc.ABC):
+    @abc.abstractmethod
+    def write(self, data: bytes):
+        ...
+
+    @abc.abstractmethod
+    def read(self) -> bytes:
+        ...
+
+
+class MemorySource(DataSource):
+    def __init__(self):
+        self.stored = b""
+
+    def write(self, data):
+        self.stored = bytes(data)
+
+    def read(self):
+        return self.stored
+
+
+class SourceDecorator(DataSource):
+    def __init__(self, wrapped):
+        self.wrapped = wrapped
+
+    def write(self, data):
+        self.wrapped.write(data)
+
+    def read(self):
+        return self.wrapped.read()
+
+
+class Base64Decorator(SourceDecorator):
+    def write(self, data):
+        self.wrapped.write(base64.b64encode(data))
+
+    def read(self):
+        raw = self.wrapped.read()
+        return base64.b64decode(raw) if raw else b""
+
+
+class CompressionDecorator(SourceDecorator):
+    def write(self, data):
+        self.wrapped.write(zlib.compress(data))
+
+    def read(self):
+        raw = self.wrapped.read()
+        return zlib.decompress(raw) if raw else b""
+@@@ tests
+import base64
+import zlib
+import pytest
+from solution import DataSource, MemorySource, SourceDecorator, Base64Decorator, CompressionDecorator
+
+DATA = b"hello hello hello hello \x00\xff"
+
+
+def test_plain_memory():
+    m = MemorySource()
+    m.write(DATA)
+    assert m.read() == DATA and m.stored == DATA
+
+
+def test_single_decorators():
+    m = MemorySource()
+    Base64Decorator(m).write(DATA)
+    assert m.stored == base64.b64encode(DATA)
+    m2 = MemorySource()
+    CompressionDecorator(m2).write(DATA)
+    assert m2.stored == zlib.compress(DATA)
+
+
+def test_stack_order_matters():
+    m = MemorySource()
+    src = CompressionDecorator(Base64Decorator(m))
+    src.write(DATA)
+    assert m.stored == base64.b64encode(zlib.compress(DATA))
+    assert src.read() == DATA
+    m2 = MemorySource()
+    src2 = Base64Decorator(CompressionDecorator(m2))
+    src2.write(DATA)
+    assert m2.stored == zlib.compress(base64.b64encode(DATA)) and src2.read() == DATA
+
+
+def test_decorators_are_data_sources():
+    d = SourceDecorator(MemorySource())
+    assert isinstance(d, DataSource) and isinstance(Base64Decorator(d), DataSource)
+    d.write(b"x")
+    assert d.read() == b"x" and d.wrapped.read() == b"x"
+
+
+def test_abstract_base():
+    with pytest.raises(TypeError):
+        DataSource()
+
+
+def test_empty_reads():
+    assert CompressionDecorator(Base64Decorator(MemorySource())).read() == b""
+@@@ task order_state_machine leaf=20 diff=3 entry=Order,InvalidTransition
+@@@ prompt
+Write an order workflow as a table-driven state machine. `Order()` starts in state `"new"`. Methods `pay()`, `ship()`, `deliver()` and `cancel()` perform transitions: new to paid (pay), paid to shipped (ship), shipped to delivered (deliver), and cancel is allowed from new or paid to `"cancelled"`. Any other action raises `InvalidTransition`, whose attributes `state` and `action` describe the rejected request, and leaves the order unchanged. Keep the allowed transitions in one dict mapping `(state, action)` to the next state rather than scattering `if` checks. `history` is a list of `(from_state, to_state)` pairs, `state` is read-only, and `allowed_actions()` returns the sorted list of actions valid in the current state.
+@@@ reference
+class InvalidTransition(Exception):
+    def __init__(self, state, action):
+        super().__init__(f"cannot {action} an order that is {state}")
+        self.state = state
+        self.action = action
+
+
+_TRANSITIONS = {
+    ("new", "pay"): "paid",
+    ("paid", "ship"): "shipped",
+    ("shipped", "deliver"): "delivered",
+    ("new", "cancel"): "cancelled",
+    ("paid", "cancel"): "cancelled",
+}
+
+
+class Order:
+    def __init__(self):
+        self._state = "new"
+        self.history = []
+
+    @property
+    def state(self):
+        return self._state
+
+    def _do(self, action):
+        nxt = _TRANSITIONS.get((self._state, action))
+        if nxt is None:
+            raise InvalidTransition(self._state, action)
+        self.history.append((self._state, nxt))
+        self._state = nxt
+
+    def pay(self):
+        self._do("pay")
+
+    def ship(self):
+        self._do("ship")
+
+    def deliver(self):
+        self._do("deliver")
+
+    def cancel(self):
+        self._do("cancel")
+
+    def allowed_actions(self):
+        return sorted(a for (s, a) in _TRANSITIONS if s == self._state)
+@@@ tests
+import pytest
+from solution import Order, InvalidTransition
+
+
+def test_happy_path():
+    o = Order()
+    o.pay()
+    o.ship()
+    o.deliver()
+    assert o.state == "delivered"
+    assert o.history == [("new", "paid"), ("paid", "shipped"), ("shipped", "delivered")]
+
+
+def test_cancel_rules():
+    a = Order()
+    a.cancel()
+    assert a.state == "cancelled"
+    b = Order()
+    b.pay()
+    b.cancel()
+    assert b.state == "cancelled"
+    c = Order()
+    c.pay()
+    c.ship()
+    with pytest.raises(InvalidTransition):
+        c.cancel()
+
+
+def test_invalid_transition_details_and_no_change():
+    o = Order()
+    with pytest.raises(InvalidTransition) as ei:
+        o.ship()
+    assert (ei.value.state, ei.value.action) == ("new", "ship")
+    assert o.state == "new" and o.history == []
+
+
+def test_terminal_states():
+    o = Order()
+    o.cancel()
+    for action in ("pay", "ship", "deliver", "cancel"):
+        with pytest.raises(InvalidTransition):
+            getattr(o, action)()
+    assert o.allowed_actions() == []
+
+
+def test_allowed_actions():
+    o = Order()
+    assert o.allowed_actions() == ["cancel", "pay"]
+    o.pay()
+    assert o.allowed_actions() == ["cancel", "ship"]
+
+
+def test_state_read_only():
+    with pytest.raises(AttributeError):
+        Order().state = "delivered"
+@@@ task turnstile_state_objects leaf=20 diff=3 entry=Turnstile,Locked,Unlocked
+@@@ prompt
+Implement the state pattern with one class per state. A coin-operated `Turnstile` delegates events to its current state object (attribute `state`). There are two state classes, `Locked` and `Unlocked`, each with methods `coin(turnstile)` and `push(turnstile)` that perform the behaviour and set `turnstile.state` to the next state object. Locked + coin: count the coin and unlock. Locked + push: sound the alarm (increment `alarms`) and stay locked. Unlocked + coin: count the coin and refund it (increment `refunds`), staying unlocked. Unlocked + push: let a person through (increment `passed`) and lock. `Turnstile()` starts locked with counters `coins`, `refunds`, `alarms` and `passed` at 0, and exposes `coin()` and `push()` that delegate to the current state.
+@@@ reference
+class Locked:
+    def coin(self, t):
+        t.coins += 1
+        t.state = Unlocked()
+
+    def push(self, t):
+        t.alarms += 1
+
+
+class Unlocked:
+    def coin(self, t):
+        t.coins += 1
+        t.refunds += 1
+
+    def push(self, t):
+        t.passed += 1
+        t.state = Locked()
+
+
+class Turnstile:
+    def __init__(self):
+        self.state = Locked()
+        self.coins = self.refunds = self.alarms = self.passed = 0
+
+    def coin(self):
+        self.state.coin(self)
+
+    def push(self):
+        self.state.push(self)
+@@@ tests
+from solution import Turnstile, Locked, Unlocked
+
+
+def counters(t):
+    return (t.coins, t.refunds, t.alarms, t.passed)
+
+
+def test_starts_locked():
+    t = Turnstile()
+    assert isinstance(t.state, Locked) and counters(t) == (0, 0, 0, 0)
+
+
+def test_coin_then_push():
+    t = Turnstile()
+    t.coin()
+    assert isinstance(t.state, Unlocked)
+    t.push()
+    assert isinstance(t.state, Locked) and counters(t) == (1, 0, 0, 1)
+
+
+def test_push_when_locked_alarms():
+    t = Turnstile()
+    t.push()
+    t.push()
+    assert isinstance(t.state, Locked) and t.alarms == 2 and t.passed == 0
+
+
+def test_extra_coin_refunded():
+    t = Turnstile()
+    t.coin()
+    t.coin()
+    assert isinstance(t.state, Unlocked) and counters(t) == (2, 1, 0, 0)
+
+
+def test_state_objects_drive_behaviour():
+    t = Turnstile()
+    Locked().coin(t)
+    assert isinstance(t.state, Unlocked) and t.coins == 1
+    Unlocked().push(t)
+    assert isinstance(t.state, Locked) and t.passed == 1
+
+
+def test_sequence():
+    t = Turnstile()
+    for ev in "cpcpppccp":
+        (t.coin if ev == "c" else t.push)()
+    assert counters(t) == (4, 1, 2, 3)
+@@@ task template_method_export leaf=21 diff=2 entry=ReportExporter,CsvReport,MarkdownReport
+@@@ prompt
+Use the template method pattern for report exporters. `ReportExporter` has a non-overridable algorithm `export(columns, rows) -> str` that returns `"\n".join` of: `self.header(columns)` if it is not None, then `self.format_row(row)` for each row (a row is a tuple of values), then `self.footer(len(rows))` if it is not None. `format_row` is abstract (use `abc.ABC`); `header` and `footer` are hooks that return None by default. `CsvReport` formats the header and rows as comma-joined `str()` values, with no footer. `MarkdownReport` produces `| a | b |` for the header followed by a separator line `| --- | --- |` (both lines form the header), rows as `| 1 | x |`, and the footer `"_<n> rows_"`.
+@@@ reference
+import abc
+
+
+class ReportExporter(abc.ABC):
+    def export(self, columns, rows):
+        parts = []
+        head = self.header(columns)
+        if head is not None:
+            parts.append(head)
+        parts.extend(self.format_row(r) for r in rows)
+        foot = self.footer(len(rows))
+        if foot is not None:
+            parts.append(foot)
+        return "\n".join(parts)
+
+    def header(self, columns):
+        return None
+
+    @abc.abstractmethod
+    def format_row(self, row):
+        ...
+
+    def footer(self, count):
+        return None
+
+
+class CsvReport(ReportExporter):
+    def header(self, columns):
+        return ",".join(map(str, columns))
+
+    def format_row(self, row):
+        return ",".join(map(str, row))
+
+
+class MarkdownReport(ReportExporter):
+    def header(self, columns):
+        return "| " + " | ".join(map(str, columns)) + " |\n" + "| " + " | ".join("---" for _ in columns) + " |"
+
+    def format_row(self, row):
+        return "| " + " | ".join(map(str, row)) + " |"
+
+    def footer(self, count):
+        return f"_{count} rows_"
+@@@ tests
+import pytest
+from solution import ReportExporter, CsvReport, MarkdownReport
+
+COLS = ["id", "name"]
+ROWS = [(1, "ann"), (2, "bob")]
+
+
+def test_csv():
+    assert CsvReport().export(COLS, ROWS) == "id,name\n1,ann\n2,bob"
+
+
+def test_markdown():
+    assert MarkdownReport().export(COLS, ROWS) == (
+        "| id | name |\n| --- | --- |\n| 1 | ann |\n| 2 | bob |\n_2 rows_")
+
+
+def test_empty_rows():
+    assert CsvReport().export(COLS, []) == "id,name"
+    assert MarkdownReport().export(["x"], []).endswith("_0 rows_")
+
+
+def test_abstract_format_row():
+    with pytest.raises(TypeError):
+        ReportExporter()
+
+
+def test_minimal_subclass_uses_hooks_defaults():
+    class Bare(ReportExporter):
+        def format_row(self, row):
+            return "-".join(map(str, row))
+    assert Bare().export(COLS, ROWS) == "1-ann\n2-bob"
+
+
+def test_override_only_footer():
+    class Counted(CsvReport):
+        def footer(self, count):
+            return f"# {count}"
+    assert Counted().export(COLS, ROWS[:1]) == "id,name\n1,ann\n# 1"
+@@@ task user_repository leaf=22 diff=3 entry=User,UserRepository,InMemoryUserRepository,SqliteUserRepository
+@@@ prompt
+Implement the repository pattern for users. `User` is a dataclass `(name: str, email: str, id: int | None = None)`. `UserRepository` is an `abc.ABC` with abstract methods `add(user) -> User` (assigns the next integer id starting at 1 when `id` is None and returns the stored user; a duplicate email, compared case-insensitively, raises `ValueError`), `get(user_id) -> User | None`, `find_by_email(email) -> User | None` (case-insensitive) and `list() -> list[User]` (ordered by id). Provide `InMemoryUserRepository()` and `SqliteUserRepository(conn)` (creates its table if missing and uses parameterised queries) with identical behaviour, so the service layer does not care which one it gets. Returned users are new `User` objects, not internal state.
+@@@ reference
+import abc
+import sqlite3
+from dataclasses import dataclass, replace
+from typing import Optional
+
+
+@dataclass
+class User:
+    name: str
+    email: str
+    id: Optional[int] = None
+
+
+class UserRepository(abc.ABC):
+    @abc.abstractmethod
+    def add(self, user):
+        ...
+
+    @abc.abstractmethod
+    def get(self, user_id):
+        ...
+
+    @abc.abstractmethod
+    def find_by_email(self, email):
+        ...
+
+    @abc.abstractmethod
+    def list(self):
+        ...
+
+
+class InMemoryUserRepository(UserRepository):
+    def __init__(self):
+        self._users = {}
+        self._next = 1
+
+    def add(self, user):
+        if self.find_by_email(user.email) is not None:
+            raise ValueError(f"duplicate email {user.email}")
+        uid = user.id if user.id is not None else self._next
+        self._next = max(self._next, uid + 1)
+        stored = replace(user, id=uid)
+        self._users[uid] = stored
+        return replace(stored)
+
+    def get(self, user_id):
+        u = self._users.get(user_id)
+        return replace(u) if u else None
+
+    def find_by_email(self, email):
+        for u in self._users.values():
+            if u.email.lower() == email.lower():
+                return replace(u)
+        return None
+
+    def list(self):
+        return [replace(self._users[k]) for k in sorted(self._users)]
+
+
+class SqliteUserRepository(UserRepository):
+    def __init__(self, conn):
+        self.conn = conn
+        conn.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, "
+                     "email TEXT NOT NULL, email_key TEXT NOT NULL UNIQUE)")
+
+    @staticmethod
+    def _row(r):
+        return User(r[1], r[2], r[0]) if r else None
+
+    def add(self, user):
+        try:
+            with self.conn:
+                cur = self.conn.execute("INSERT INTO users (id, name, email, email_key) VALUES (?, ?, ?, ?)",
+                                        (user.id, user.name, user.email, user.email.lower()))
+        except sqlite3.IntegrityError:
+            raise ValueError(f"duplicate email {user.email}") from None
+        return self.get(cur.lastrowid if user.id is None else user.id)
+
+    def get(self, user_id):
+        return self._row(self.conn.execute("SELECT id, name, email FROM users WHERE id = ?", (user_id,)).fetchone())
+
+    def find_by_email(self, email):
+        return self._row(self.conn.execute("SELECT id, name, email FROM users WHERE email_key = ?",
+                                           (email.lower(),)).fetchone())
+
+    def list(self):
+        return [self._row(r) for r in self.conn.execute("SELECT id, name, email FROM users ORDER BY id")]
+@@@ tests
+import sqlite3
+import pytest
+from solution import User, UserRepository, InMemoryUserRepository, SqliteUserRepository
+
+
+@pytest.fixture(params=["memory", "sqlite"])
+def repo(request):
+    if request.param == "memory":
+        return InMemoryUserRepository()
+    return SqliteUserRepository(sqlite3.connect(":memory:"))
+
+
+def test_is_repository(repo):
+    assert isinstance(repo, UserRepository)
+
+
+def test_add_assigns_ids(repo):
+    a = repo.add(User("Ann", "ann@x.com"))
+    b = repo.add(User("Bob", "bob@x.com"))
+    assert (a.id, b.id) == (1, 2) and repo.get(2) == User("Bob", "bob@x.com", 2)
+    assert repo.get(99) is None
+
+
+def test_duplicate_email_case_insensitive(repo):
+    repo.add(User("Ann", "ann@x.com"))
+    with pytest.raises(ValueError):
+        repo.add(User("Imposter", "ANN@x.com"))
+    assert len(repo.list()) == 1
+
+
+def test_find_by_email(repo):
+    repo.add(User("Ann", "Ann@X.com"))
+    assert repo.find_by_email("ann@x.COM").name == "Ann"
+    assert repo.find_by_email("nobody@x.com") is None
+
+
+def test_list_ordered_and_copies(repo):
+    for n in ("c", "a", "b"):
+        repo.add(User(n, f"{n}@x.com"))
+    users = repo.list()
+    assert [u.name for u in users] == ["c", "a", "b"]
+    users[0].name = "changed"
+    assert repo.get(1).name == "c"
+
+
+def test_abstract():
+    with pytest.raises(TypeError):
+        UserRepository()
+@@@ task value_vs_entity leaf=23 diff=3 entry=EmailAddress,Customer
+@@@ prompt
+Model a value object and an entity. `EmailAddress(value: str)` is an immutable value object: it validates the address (exactly one `@`, non-empty local part, a dot in the domain, otherwise `ValueError`), normalises it by stripping whitespace and lowercasing the domain only (the local part keeps its case), and compares and hashes by that normalised value; it exposes `local`, `domain` and `str()`, and assigning attributes raises an error. `Customer(id, name, email: EmailAddress)` is an entity: two customers are equal if and only if they have the same `id` and same class, regardless of other attributes, and hash by id; `name` and `email` are mutable (`rename(new_name)`, `change_email(email)`).
+@@@ reference
+from dataclasses import dataclass, field
+
+
+@dataclass(frozen=True)
+class EmailAddress:
+    value: str
+    local: str = field(init=False, compare=False, repr=False)
+    domain: str = field(init=False, compare=False, repr=False)
+
+    def __post_init__(self):
+        raw = self.value.strip() if isinstance(self.value, str) else ""
+        if raw.count("@") != 1:
+            raise ValueError(f"invalid email {self.value!r}")
+        local, domain = raw.split("@")
+        if not local or "." not in domain or domain.startswith(".") or domain.endswith("."):
+            raise ValueError(f"invalid email {self.value!r}")
+        object.__setattr__(self, "local", local)
+        object.__setattr__(self, "domain", domain.lower())
+        object.__setattr__(self, "value", f"{local}@{domain.lower()}")
+
+    def __str__(self):
+        return self.value
+
+
+class Customer:
+    def __init__(self, id, name, email):
+        self.id = id
+        self.name = name
+        self.email = email
+
+    def rename(self, new_name):
+        self.name = new_name
+
+    def change_email(self, email):
+        self.email = email
+
+    def __eq__(self, other):
+        if type(other) is not type(self):
+            return NotImplemented
+        return self.id == other.id
+
+    def __hash__(self):
+        return hash((type(self).__name__, self.id))
+@@@ tests
+import pytest
+from solution import EmailAddress, Customer
+
+
+def test_normalisation_and_equality():
+    a = EmailAddress("  Ann@Example.COM ")
+    assert str(a) == "Ann@example.com" and a.local == "Ann" and a.domain == "example.com"
+    assert a == EmailAddress("Ann@example.com") and hash(a) == hash(EmailAddress("Ann@EXAMPLE.com"))
+    assert a != EmailAddress("ann@example.com")
+
+
+@pytest.mark.parametrize("bad", ["", "no-at", "a@b", "@x.com", "a@@x.com", "a@x.com@y.org"])
+def test_validation(bad):
+    with pytest.raises(ValueError):
+        EmailAddress(bad)
+
+
+def test_value_object_immutable():
+    a = EmailAddress("a@x.io")
+    with pytest.raises(Exception):
+        a.value = "b@x.io"
+
+
+def test_entity_identity():
+    e1 = EmailAddress("a@x.io")
+    c1 = Customer(1, "Ann", e1)
+    c2 = Customer(1, "Annie", EmailAddress("other@x.io"))
+    c3 = Customer(2, "Ann", e1)
+    assert c1 == c2 and c1 != c3 and len({c1, c2, c3}) == 2
+
+
+def test_entity_mutation_keeps_identity():
+    c = Customer(7, "Bo", EmailAddress("bo@x.io"))
+    before = hash(c)
+    c.rename("Robert")
+    c.change_email(EmailAddress("rob@x.io"))
+    assert hash(c) == before and c == Customer(7, "x", EmailAddress("y@z.io"))
+    assert c.name == "Robert"
+
+
+def test_usable_as_dict_keys():
+    d = {EmailAddress("a@X.io"): 1}
+    assert d[EmailAddress("a@x.io")] == 1
+@@@ task immutable_records leaf=24 diff=3 entry=Point,Config
+@@@ prompt
+Write two immutable record types. `Point` is a `typing.NamedTuple` with fields `x: float` and `y: float` and methods `distance_to(other)` (Euclidean, via `math.hypot`) and `moved(dx, dy)` returning a new Point. `Config` is a `@dataclass(frozen=True)` with fields `name: str`, `hosts: tuple = ()` and `options: tuple = ()`; because callers often pass lists, `__post_init__` converts `hosts` to a tuple and `options` (given as a dict or iterable of pairs) to a tuple of `(key, value)` pairs sorted by key, using `object.__setattr__` since the instance is frozen. That keeps `Config` deeply immutable and hashable. Add `with_changes(**changes)` returning a modified copy via `dataclasses.replace`, and `option(key, default=None)`.
+@@@ reference
+import math
+from dataclasses import dataclass, replace
+from typing import NamedTuple
+
+
+class Point(NamedTuple):
+    x: float
+    y: float
+
+    def distance_to(self, other):
+        return math.hypot(self.x - other.x, self.y - other.y)
+
+    def moved(self, dx, dy):
+        return Point(self.x + dx, self.y + dy)
+
+
+@dataclass(frozen=True)
+class Config:
+    name: str
+    hosts: tuple = ()
+    options: tuple = ()
+
+    def __post_init__(self):
+        object.__setattr__(self, "hosts", tuple(self.hosts))
+        opts = self.options.items() if isinstance(self.options, dict) else self.options
+        object.__setattr__(self, "options", tuple(sorted((k, v) for k, v in opts)))
+
+    def with_changes(self, **changes):
+        return replace(self, **changes)
+
+    def option(self, key, default=None):
+        return dict(self.options).get(key, default)
+@@@ tests
+import dataclasses
+import pytest
+from solution import Point, Config
+
+
+def test_point_behaviour():
+    p = Point(0, 0)
+    q = p.moved(3, 4)
+    assert q == Point(3, 4) and p == (0, 0) and p.distance_to(q) == 5
+    x, y = q
+    assert (x, y) == (3, 4) and q._asdict() == {"x": 3, "y": 4}
+
+
+def test_point_immutable():
+    p = Point(1, 2)
+    with pytest.raises(AttributeError):
+        p.x = 5
+
+
+def test_config_normalises_inputs():
+    hosts = ["a", "b"]
+    c = Config("svc", hosts=hosts, options={"timeout": 3, "retries": 2})
+    hosts.append("c")
+    assert c.hosts == ("a", "b") and c.options == (("retries", 2), ("timeout", 3))
+    assert c.option("timeout") == 3 and c.option("missing", "d") == "d"
+
+
+def test_config_hashable_and_equal():
+    a = Config("svc", ["h"], {"x": 1})
+    b = Config("svc", ("h",), [("x", 1)])
+    assert a == b and hash(a) == hash(b) and len({a, b}) == 1
+
+
+def test_config_frozen_and_with_changes():
+    c = Config("svc", ["h1"])
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        c.name = "other"
+    d = c.with_changes(hosts=["h2", "h3"])
+    assert d.hosts == ("h2", "h3") and c.hosts == ("h1",) and d.name == "svc"
+
+
+def test_defaults():
+    c = Config("x")
+    assert c.hosts == () and c.options == ()
+@@@ task alternative_constructors leaf=25 diff=2 entry=Color
+@@@ prompt
+Write a `Color(r, g, b)` class with integer channels 0-255 (otherwise `ValueError`) and two alternative constructors implemented as classmethods that return `cls(...)`, so subclasses get instances of the subclass: `from_hex(text)` accepts `"#ff8800"`, `"ff8800"` or the short form `"#f80"` (each digit doubled), case-insensitive, raising `ValueError` for anything else; `from_rgb_string(text)` parses `"rgb(255, 136, 0)"` with optional spaces. Also add `to_hex()` returning lowercase `"#rrggbb"`, `__eq__` comparing channels, and `__repr__` as `Color(255, 136, 0)` (using the actual class name).
+@@@ reference
+import re
+
+_HEX = re.compile(r"#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})")
+_RGB = re.compile(r"\s*rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)\s*")
+
+
+class Color:
+    def __init__(self, r, g, b):
+        for c in (r, g, b):
+            if not isinstance(c, int) or isinstance(c, bool) or not 0 <= c <= 255:
+                raise ValueError(f"channel out of range: {c!r}")
+        self.r, self.g, self.b = r, g, b
+
+    @classmethod
+    def from_hex(cls, text):
+        m = _HEX.fullmatch(text.strip()) if isinstance(text, str) else None
+        if not m:
+            raise ValueError(f"not a hex colour: {text!r}")
+        digits = m.group(1)
+        if len(digits) == 3:
+            digits = "".join(ch * 2 for ch in digits)
+        return cls(*(int(digits[i:i + 2], 16) for i in (0, 2, 4)))
+
+    @classmethod
+    def from_rgb_string(cls, text):
+        m = _RGB.fullmatch(text)
+        if not m:
+            raise ValueError(f"not an rgb() string: {text!r}")
+        return cls(*(int(x) for x in m.groups()))
+
+    def to_hex(self):
+        return f"#{self.r:02x}{self.g:02x}{self.b:02x}"
+
+    def __eq__(self, other):
+        if not isinstance(other, Color):
+            return NotImplemented
+        return (self.r, self.g, self.b) == (other.r, other.g, other.b)
+
+    def __hash__(self):
+        return hash((self.r, self.g, self.b))
+
+    def __repr__(self):
+        return f"{type(self).__name__}({self.r}, {self.g}, {self.b})"
+@@@ tests
+import pytest
+from solution import Color
+
+
+def test_from_hex_forms():
+    assert Color.from_hex("#ff8800") == Color(255, 136, 0)
+    assert Color.from_hex("FF8800") == Color(255, 136, 0)
+    assert Color.from_hex("#f80") == Color(255, 136, 0)
+
+
+@pytest.mark.parametrize("bad", ["#ff88", "#gg0000", "", "#ff88000", "rgb(1,2,3)"])
+def test_from_hex_invalid(bad):
+    with pytest.raises(ValueError):
+        Color.from_hex(bad)
+
+
+def test_from_rgb_string():
+    assert Color.from_rgb_string("rgb(255, 136, 0)") == Color(255, 136, 0)
+    assert Color.from_rgb_string("rgb(1,2,3)") == Color(1, 2, 3)
+    with pytest.raises(ValueError):
+        Color.from_rgb_string("rgb(1, 2)")
+    with pytest.raises(ValueError):
+        Color.from_rgb_string("rgb(300, 0, 0)")
+
+
+def test_subclass_gets_subclass():
+    class Brand(Color):
+        pass
+    c = Brand.from_hex("#000")
+    assert type(c) is Brand and repr(c) == "Brand(0, 0, 0)"
+    assert type(Brand.from_rgb_string("rgb(1,1,1)")) is Brand
+
+
+def test_roundtrip_and_validation():
+    assert Color(10, 200, 255).to_hex() == "#0ac8ff"
+    assert Color.from_hex(Color(1, 2, 3).to_hex()) == Color(1, 2, 3)
+    with pytest.raises(ValueError):
+        Color(256, 0, 0)
+    assert repr(Color(1, 2, 3)) == "Color(1, 2, 3)"
+@@@ task static_vs_module_function leaf=26 diff=2 entry=ISBN,normalize
+@@@ prompt
+Write ISBN-10 helpers that show when to use a static method and when a plain module function. Module-level `normalize(code: str) -> str` removes hyphens and spaces and uppercases a trailing `x`; it is generic text cleanup that other modules may reuse, so it is a module function. Class `ISBN(code)` stores the normalised code and raises `ValueError` if it is invalid. `ISBN.is_valid(code) -> bool` is a `@staticmethod` (it needs no instance or class state but conceptually belongs to the class): after normalising, the code must be 9 digits followed by a digit or `X` (worth 10), and the sum of digit*weight with weights 10 down to 1 must be divisible by 11. `ISBN.parse(code)` is a classmethod returning an instance or None if invalid. `str(isbn)` gives the hyphen-free code.
+@@@ reference
+import re
+
+
+def normalize(code):
+    s = code.replace("-", "").replace(" ", "")
+    if s.endswith("x"):
+        s = s[:-1] + "X"
+    return s
+
+
+class ISBN:
+    def __init__(self, code):
+        if not ISBN.is_valid(code):
+            raise ValueError(f"invalid ISBN-10: {code!r}")
+        self.code = normalize(code)
+
+    @staticmethod
+    def is_valid(code):
+        s = normalize(code)
+        if not re.fullmatch(r"\d{9}[\dX]", s):
+            return False
+        total = sum((10 - i) * (10 if ch == "X" else int(ch)) for i, ch in enumerate(s))
+        return total % 11 == 0
+
+    @classmethod
+    def parse(cls, code):
+        return cls(code) if cls.is_valid(code) else None
+
+    def __str__(self):
+        return self.code
+@@@ tests
+import inspect
+import pytest
+from solution import ISBN, normalize
+
+
+def test_normalize():
+    assert normalize("0-306-40615-2") == "0306406152"
+    assert normalize("0 8044 2957 x") == "080442957X"
+
+
+@pytest.mark.parametrize("code", ["0-306-40615-2", "080442957X", "0-8044-2957-x", "0306406152"])
+def test_valid(code):
+    assert ISBN.is_valid(code)
+    assert str(ISBN(code)) == normalize(code)
+
+
+@pytest.mark.parametrize("code", ["0-306-40615-3", "12345", "X306406152", "03064061522", ""])
+def test_invalid(code):
+    assert not ISBN.is_valid(code)
+    with pytest.raises(ValueError):
+        ISBN(code)
+    assert ISBN.parse(code) is None
+
+
+def test_is_static_method():
+    assert isinstance(inspect.getattr_static(ISBN, "is_valid"), staticmethod)
+    assert ISBN.is_valid("0306406152") == ISBN("0306406152").is_valid("0306406152")
+
+
+def test_parse_is_classmethod():
+    class MyISBN(ISBN):
+        pass
+    assert isinstance(inspect.getattr_static(ISBN, "parse"), classmethod)
+    assert type(MyISBN.parse("0306406152")) is MyISBN
+@@@ task card_ordering leaf=27 diff=3 entry=Card
+@@@ prompt
+Write a playing `Card(rank, suit)` using `functools.total_ordering`. Ranks are `"2"`..`"10"`, `"J"`, `"Q"`, `"K"`, `"A"` (in that order) and suits `"clubs" < "diamonds" < "hearts" < "spades"`; anything else raises `ValueError`. Cards order by rank first, then suit. Define `__eq__` and `__lt__` only (let `total_ordering` derive the rest); both return `NotImplemented` for non-Card operands, so `card == "A"` is False and `card < 3` raises `TypeError`. Define `__hash__` consistent with equality, so cards work in sets and as dict keys, and `__repr__` as `Card('Q', 'hearts')`.
+@@@ reference
+import functools
+
+RANKS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"]
+SUITS = ["clubs", "diamonds", "hearts", "spades"]
+
+
+@functools.total_ordering
+class Card:
+    def __init__(self, rank, suit):
+        if rank not in RANKS or suit not in SUITS:
+            raise ValueError(f"invalid card {rank!r} of {suit!r}")
+        self.rank, self.suit = rank, suit
+
+    def _key(self):
+        return (RANKS.index(self.rank), SUITS.index(self.suit))
+
+    def __eq__(self, other):
+        if not isinstance(other, Card):
+            return NotImplemented
+        return self._key() == other._key()
+
+    def __lt__(self, other):
+        if not isinstance(other, Card):
+            return NotImplemented
+        return self._key() < other._key()
+
+    def __hash__(self):
+        return hash(self._key())
+
+    def __repr__(self):
+        return f"Card({self.rank!r}, {self.suit!r})"
+@@@ tests
+import pytest
+from solution import Card
+
+
+def test_rank_then_suit():
+    assert Card("10", "clubs") > Card("9", "spades")
+    assert Card("A", "clubs") > Card("K", "spades")
+    assert Card("Q", "hearts") > Card("Q", "diamonds")
+    assert Card("2", "clubs") <= Card("2", "clubs")
+
+
+def test_sorting():
+    hand = [Card("A", "spades"), Card("2", "hearts"), Card("10", "clubs"), Card("2", "clubs")]
+    assert sorted(hand) == [Card("2", "clubs"), Card("2", "hearts"), Card("10", "clubs"), Card("A", "spades")]
+    assert max(hand) == Card("A", "spades")
+
+
+def test_hash_consistent():
+    assert len({Card("J", "hearts"), Card("J", "hearts"), Card("J", "spades")}) == 2
+    assert {Card("K", "clubs"): 1}[Card("K", "clubs")] == 1
+
+
+def test_foreign_types():
+    c = Card("A", "spades")
+    assert (c == "A") is False and c != 1
+    with pytest.raises(TypeError):
+        c < 3
+
+
+def test_validation_and_repr():
+    with pytest.raises(ValueError):
+        Card("1", "clubs")
+    with pytest.raises(ValueError):
+        Card("A", "stars")
+    assert repr(Card("Q", "hearts")) == "Card('Q', 'hearts')"
+
+
+def test_only_eq_and_lt_defined_by_hand():
+    assert "__lt__" in Card.__dict__ and "__eq__" in Card.__dict__
+    assert Card("3", "clubs") >= Card("2", "spades")
+@@@ task normalised_tag_equality leaf=27 diff=3 entry=Tag
+@@@ prompt
+Write a `Tag(name)` value whose equality ignores case and whitespace differences: two tags are equal when their names are equal after `casefold()`, stripping, and collapsing internal runs of whitespace to a single space (so `Tag(" Machine   Learning")` equals `Tag("machine learning")`). Keep the original spelling in `name` and use it in `repr` (`Tag('Machine Learning')`), but expose the normalised form as `key`. `__hash__` must be consistent with `__eq__` (hash the key), so tags deduplicate in sets. Ordering with `<` compares keys. Comparisons with non-`Tag` objects return `NotImplemented` (a `Tag` is never equal to a plain string, which keeps the hash/eq contract safe). Empty or whitespace-only names raise `ValueError`.
+@@@ reference
+class Tag:
+    __slots__ = ("name", "key")
+
+    def __init__(self, name):
+        key = " ".join(name.split()).casefold()
+        if not key:
+            raise ValueError("tag name cannot be empty")
+        self.name = name
+        self.key = key
+
+    def __eq__(self, other):
+        if not isinstance(other, Tag):
+            return NotImplemented
+        return self.key == other.key
+
+    def __lt__(self, other):
+        if not isinstance(other, Tag):
+            return NotImplemented
+        return self.key < other.key
+
+    def __hash__(self):
+        return hash(self.key)
+
+    def __repr__(self):
+        return f"Tag({self.name!r})"
+@@@ tests
+import pytest
+from solution import Tag
+
+
+def test_normalised_equality():
+    assert Tag(" Machine   Learning") == Tag("machine learning")
+    assert Tag("Straße") == Tag("STRASSE")
+    assert Tag("python") != Tag("pythons")
+
+
+def test_hash_dedup():
+    tags = {Tag("Python"), Tag(" python "), Tag("PYTHON"), Tag("Rust")}
+    assert len(tags) == 2
+
+
+def test_repr_keeps_original_and_key():
+    t = Tag("Machine Learning")
+    assert repr(t) == "Tag('Machine Learning')" and t.key == "machine learning" and t.name == "Machine Learning"
+
+
+def test_not_equal_to_strings():
+    assert (Tag("python") == "python") is False
+    assert Tag("a") != "a"
+
+
+def test_ordering():
+    assert sorted([Tag("b"), Tag("A"), Tag("c")]) == [Tag("a"), Tag("B"), Tag("C")]
+    with pytest.raises(TypeError):
+        Tag("a") < "b"
+
+
+def test_empty_rejected():
+    for bad in ("", "   ", "\t\n"):
+        with pytest.raises(ValueError):
+            Tag(bad)

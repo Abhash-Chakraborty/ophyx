@@ -1,0 +1,1420 @@
+@@@ task run_in_threads leaf=0 diff=2 entry=run_in_threads
+@@@ prompt
+Write `run_in_threads(fn, args_list) -> list` that calls `fn(*args)` for every tuple in `args_list`, each in its own `threading.Thread`, all running at the same time, and returns the results in input order. Threads release the GIL while blocked on I/O, which is why this helps for I/O-bound work. Always join every thread before returning. If any call raised, re-raise the exception of the lowest-index failing call after all threads have finished. An empty list returns `[]`.
+@@@ reference
+import threading
+
+
+def run_in_threads(fn, args_list):
+    args_list = list(args_list)
+    results = [None] * len(args_list)
+    errors = [None] * len(args_list)
+
+    def work(i, args):
+        try:
+            results[i] = fn(*args)
+        except BaseException as exc:
+            errors[i] = exc
+
+    threads = [threading.Thread(target=work, args=(i, a)) for i, a in enumerate(args_list)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    for e in errors:
+        if e is not None:
+            raise e
+    return results
+@@@ tests
+import threading
+import pytest
+from solution import run_in_threads
+
+
+def test_results_in_order():
+    assert run_in_threads(lambda a, b: a * b, [(1, 2), (3, 4), (5, 6)]) == [2, 12, 30]
+
+
+def test_empty():
+    assert run_in_threads(lambda: 1, []) == []
+
+
+def test_calls_run_concurrently():
+    barrier = threading.Barrier(4, timeout=3)
+
+    def meet(i):
+        barrier.wait()  # only passes if all four run at once
+        return i
+    assert run_in_threads(meet, [(i,) for i in range(4)]) == [0, 1, 2, 3]
+
+
+def test_uses_other_threads():
+    main = threading.get_ident()
+    idents = run_in_threads(threading.get_ident, [()] * 3)
+    assert main not in idents
+
+
+def test_lowest_index_error_after_all_finish():
+    done = []
+
+    def work(i):
+        if i in (1, 3):
+            raise ValueError(f"bad {i}")
+        done.append(i)
+        return i
+    with pytest.raises(ValueError, match="bad 1"):
+        run_in_threads(work, [(i,) for i in range(5)])
+    assert sorted(done) == [0, 2, 4]
+
+
+def test_no_threads_left_running():
+    before = threading.active_count()
+    run_in_threads(lambda: None, [()] * 10)
+    assert threading.active_count() == before
+@@@ task atomic_withdraw leaf=1 diff=3 entry=Account
+@@@ prompt
+Write a thread-safe bank `Account(balance: int)` with `deposit(amount)`, `withdraw(amount) -> bool` and a read-only `balance` property. `withdraw` checks that the balance covers the amount (returning False and changing nothing if not), then calls the hook method `self.before_commit()` (a no-op by default that subclasses or tests may override), then subtracts the amount and returns True. The whole check, hook and update sequence must be atomic with respect to other `withdraw` and `deposit` calls, so two concurrent withdrawals can never overdraw the account. Use `threading.Lock`.
+@@@ reference
+import threading
+
+
+class Account:
+    def __init__(self, balance: int):
+        self._balance = balance
+        self._lock = threading.Lock()
+
+    @property
+    def balance(self):
+        return self._balance
+
+    def before_commit(self):
+        pass
+
+    def deposit(self, amount):
+        with self._lock:
+            self._balance += amount
+
+    def withdraw(self, amount) -> bool:
+        with self._lock:
+            if self._balance < amount:
+                return False
+            self.before_commit()
+            self._balance -= amount
+            return True
+@@@ tests
+import threading
+import pytest
+from solution import Account
+
+
+def test_basic():
+    a = Account(100)
+    assert a.withdraw(30) is True and a.balance == 70
+    assert a.withdraw(100) is False and a.balance == 70
+    a.deposit(5)
+    assert a.balance == 75
+
+
+def test_balance_read_only():
+    with pytest.raises(AttributeError):
+        Account(1).balance = 5
+
+
+class Probe(Account):
+    def __init__(self, balance):
+        super().__init__(balance)
+        self.first_inside = threading.Event()
+        self.second_inside = threading.Event()
+        self.calls = 0
+
+    def before_commit(self):
+        self.calls += 1
+        if self.calls == 1:
+            self.first_inside.set()
+            self.second_inside.wait(0.05)  # give a racing thread every chance to get in
+        else:
+            self.second_inside.set()
+
+
+def test_check_then_act_is_atomic():
+    acct = Probe(100)
+    results = []
+    t1 = threading.Thread(target=lambda: results.append(acct.withdraw(80)), daemon=True)
+    t1.start()
+    assert acct.first_inside.wait(3)
+    t2 = threading.Thread(target=lambda: results.append(acct.withdraw(80)), daemon=True)
+    t2.start()
+    t1.join(3)
+    t2.join(3)
+    assert sorted(results) == [False, True]
+    assert acct.balance == 20 and acct.calls == 1
+
+
+def test_deposit_waits_for_withdraw():
+    acct = Probe(10)
+    acct.second_inside.set()
+    t = threading.Thread(target=acct.withdraw, args=(10,), daemon=True)
+    t.start()
+    t.join(3)
+    acct.deposit(5)
+    assert acct.balance == 5
+
+
+def test_many_threads_never_overdraw():
+    acct = Account(1000)
+    ok = []
+    lock = threading.Lock()
+    barrier = threading.Barrier(8, timeout=3)
+
+    def worker():
+        barrier.wait()
+        for _ in range(300):
+            if acct.withdraw(1):
+                with lock:
+                    ok.append(1)
+    ts = [threading.Thread(target=worker, daemon=True) for _ in range(8)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(5)
+    assert len(ok) == 1000 and acct.balance == 0
+@@@ task reentrant_registry leaf=1 diff=3 entry=Registry
+@@@ prompt
+Write a thread-safe `Registry` mapping names to values. `register(name, value)` raises `KeyError` if the name already exists. `register_many(items: dict)` must be atomic: while holding the registry's lock it first checks that none of the names exist (raising `KeyError` and registering nothing if any do, including duplicates against existing entries), then registers each item by calling `self.register`. Because `register` takes the same lock, use a `threading.RLock` so the nested acquisition by the same thread does not deadlock. Also provide `get(name)`, `snapshot() -> dict` (a copy) and `len()`.
+@@@ reference
+import threading
+
+
+class Registry:
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._items = {}
+
+    def register(self, name, value):
+        with self._lock:
+            if name in self._items:
+                raise KeyError(f"{name!r} already registered")
+            self._items[name] = value
+
+    def register_many(self, items):
+        with self._lock:
+            clash = [n for n in items if n in self._items]
+            if clash:
+                raise KeyError(f"already registered: {clash}")
+            for name, value in items.items():
+                self.register(name, value)
+
+    def get(self, name):
+        with self._lock:
+            return self._items[name]
+
+    def snapshot(self):
+        with self._lock:
+            return dict(self._items)
+
+    def __len__(self):
+        with self._lock:
+            return len(self._items)
+@@@ tests
+import threading
+import pytest
+from solution import Registry
+
+
+def run(fn, *args):
+    t = threading.Thread(target=fn, args=args, daemon=True)
+    t.start()
+    t.join(3)
+    return t
+
+
+def test_register_many_does_not_deadlock():
+    r = Registry()
+    t = run(r.register_many, {"a": 1, "b": 2})
+    assert not t.is_alive(), "register_many deadlocked"
+    assert r.snapshot() == {"a": 1, "b": 2}
+
+
+def test_duplicates_rejected():
+    r = Registry()
+    r.register("a", 1)
+    with pytest.raises(KeyError):
+        r.register("a", 2)
+    assert r.get("a") == 1
+
+
+def test_register_many_atomic_on_clash():
+    r = Registry()
+    r.register("b", 0)
+    with pytest.raises(KeyError):
+        r.register_many({"a": 1, "b": 2, "c": 3})
+    assert r.snapshot() == {"b": 0}
+
+
+def test_snapshot_is_copy():
+    r = Registry()
+    r.register("x", 1)
+    s = r.snapshot()
+    s["y"] = 2
+    assert len(r) == 1
+
+
+def test_concurrent_batches():
+    r = Registry()
+    barrier = threading.Barrier(4, timeout=3)
+
+    def worker(k):
+        barrier.wait()
+        r.register_many({f"{k}-{i}": i for i in range(200)})
+    ts = [threading.Thread(target=worker, args=(k,), daemon=True) for k in range(4)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(5)
+    assert len(r) == 800
+
+
+def test_get_missing_and_arbitrary_values():
+    r = Registry()
+    obj = object()
+    r.register_many({"o": obj, "n": None})
+    assert r.get("o") is obj and r.get("n") is None
+    with pytest.raises(KeyError):
+        r.get("missing")
+@@@ task countdown_latch leaf=2 diff=3 entry=CountDownLatch
+@@@ prompt
+Write a `CountDownLatch(count: int)` using `threading.Condition`. `count_down()` decrements the count (it never goes below zero) and wakes all waiters when it reaches zero. `wait(timeout=None) -> bool` blocks until the count is zero and returns True, or returns False if the timeout expires first. A `count` property returns the current count. A negative initial count raises `ValueError`; a latch created with 0 is already open.
+@@@ reference
+import threading
+
+
+class CountDownLatch:
+    def __init__(self, count: int):
+        if count < 0:
+            raise ValueError("count must be >= 0")
+        self._count = count
+        self._cond = threading.Condition()
+
+    @property
+    def count(self):
+        with self._cond:
+            return self._count
+
+    def count_down(self):
+        with self._cond:
+            if self._count > 0:
+                self._count -= 1
+                if self._count == 0:
+                    self._cond.notify_all()
+
+    def wait(self, timeout=None):
+        with self._cond:
+            return self._cond.wait_for(lambda: self._count == 0, timeout)
+@@@ tests
+import threading
+import pytest
+from solution import CountDownLatch
+
+
+def test_zero_is_open():
+    assert CountDownLatch(0).wait(0) is True
+
+
+def test_negative_rejected():
+    with pytest.raises(ValueError):
+        CountDownLatch(-1)
+
+
+def test_timeout_returns_false():
+    latch = CountDownLatch(1)
+    assert latch.wait(timeout=0.01) is False
+    assert latch.count == 1
+
+
+def test_waiters_released_at_zero():
+    latch = CountDownLatch(3)
+    released = []
+    ready = threading.Barrier(5, timeout=3)
+
+    def waiter():
+        ready.wait()
+        released.append(latch.wait(timeout=5))
+    ts = [threading.Thread(target=waiter, daemon=True) for _ in range(4)]
+    for t in ts:
+        t.start()
+    ready.wait()
+    latch.count_down()
+    latch.count_down()
+    assert latch.count == 1 and released == []
+    latch.count_down()
+    for t in ts:
+        t.join(5)
+    assert released == [True] * 4
+
+
+def test_never_below_zero():
+    latch = CountDownLatch(1)
+    for _ in range(3):
+        latch.count_down()
+    assert latch.count == 0 and latch.wait(0)
+
+
+def test_workers_count_down():
+    latch = CountDownLatch(5)
+    for _ in range(5):
+        threading.Thread(target=latch.count_down, daemon=True).start()
+    assert latch.wait(timeout=5) is True
+@@@ task concurrency_limiter leaf=2 diff=3 entry=ConcurrencyLimiter
+@@@ prompt
+Write `ConcurrencyLimiter(max_concurrent: int)` using `threading.BoundedSemaphore`. `run(fn, *args, **kwargs)` blocks until fewer than `max_concurrent` calls are running, then calls `fn` and returns its result; the slot is released even if `fn` raises. Track the number of calls currently inside `fn` in an `active` property and the highest value ever reached in `peak` (update both under a lock).
+@@@ reference
+import threading
+
+
+class ConcurrencyLimiter:
+    def __init__(self, max_concurrent: int):
+        self._sem = threading.BoundedSemaphore(max_concurrent)
+        self._lock = threading.Lock()
+        self._active = 0
+        self._peak = 0
+
+    @property
+    def active(self):
+        with self._lock:
+            return self._active
+
+    @property
+    def peak(self):
+        with self._lock:
+            return self._peak
+
+    def run(self, fn, *args, **kwargs):
+        with self._sem:
+            with self._lock:
+                self._active += 1
+                self._peak = max(self._peak, self._active)
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                with self._lock:
+                    self._active -= 1
+@@@ tests
+import threading
+import time
+import pytest
+from solution import ConcurrencyLimiter
+
+
+def wait_until(cond, timeout=3):
+    end = time.monotonic() + timeout
+    while not cond():
+        assert time.monotonic() < end, "timed out"
+        time.sleep(0.001)
+
+
+def test_returns_result():
+    lim = ConcurrencyLimiter(2)
+    assert lim.run(lambda a, b=1: a + b, 1, b=2) == 3
+    assert lim.active == 0 and lim.peak == 1
+
+
+def test_limits_concurrency():
+    lim = ConcurrencyLimiter(3)
+    gate = threading.Event()
+    entered = []
+    ts = [threading.Thread(target=lim.run, args=(lambda: (entered.append(1), gate.wait(5)),), daemon=True)
+          for _ in range(6)]
+    for t in ts:
+        t.start()
+    wait_until(lambda: lim.active == 3)
+    gate.wait(0.05)
+    assert lim.active == 3 and len(entered) == 3
+    gate.set()
+    for t in ts:
+        t.join(5)
+    assert len(entered) == 6 and lim.peak == 3 and lim.active == 0
+
+
+def test_slot_released_on_error():
+    lim = ConcurrencyLimiter(1)
+    with pytest.raises(ZeroDivisionError):
+        lim.run(lambda: 1 / 0)
+    assert lim.run(lambda: "free") == "free"
+
+
+def test_one_at_a_time():
+    lim = ConcurrencyLimiter(1)
+    lock = threading.Lock()
+    overlap = []
+
+    def critical():
+        if not lock.acquire(blocking=False):
+            overlap.append(1)
+            return
+        time.sleep(0.001)
+        lock.release()
+    ts = [threading.Thread(target=lambda: [lim.run(critical) for _ in range(20)], daemon=True) for _ in range(4)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(5)
+    assert overlap == [] and lim.peak == 1
+
+
+def test_active_visible_during_call():
+    lim = ConcurrencyLimiter(2)
+    assert lim.run(lambda: lim.active) == 1
+@@@ task worker_pipeline leaf=3 diff=3 entry=run_pipeline
+@@@ prompt
+Write `run_pipeline(items, worker, n_workers=4) -> tuple[dict, dict]` implementing producer/consumer with `queue.Queue`. Start `n_workers` threads that take items from the queue and call `worker(item)`; the main thread is the producer and puts every item, then one sentinel per worker so each thread exits cleanly. Return `(results, errors)`: `results` maps each item to `worker(item)`, `errors` maps items whose call raised to the exception. A failing item must not stop its worker thread. Join all threads before returning. Items are hashable and distinct.
+@@@ reference
+import queue
+import threading
+
+_STOP = object()
+
+
+def run_pipeline(items, worker, n_workers=4):
+    q = queue.Queue()
+    results, errors = {}, {}
+    lock = threading.Lock()
+
+    def consume():
+        while True:
+            item = q.get()
+            try:
+                if item is _STOP:
+                    return
+                try:
+                    r = worker(item)
+                except Exception as exc:
+                    with lock:
+                        errors[item] = exc
+                else:
+                    with lock:
+                        results[item] = r
+            finally:
+                q.task_done()
+
+    threads = [threading.Thread(target=consume, daemon=True) for _ in range(n_workers)]
+    for t in threads:
+        t.start()
+    for item in items:
+        q.put(item)
+    for _ in threads:
+        q.put(_STOP)
+    for t in threads:
+        t.join()
+    return results, errors
+@@@ tests
+import threading
+from solution import run_pipeline
+
+
+def test_all_items_processed():
+    results, errors = run_pipeline(range(100), lambda x: x * x, n_workers=4)
+    assert results == {x: x * x for x in range(100)} and errors == {}
+
+
+def test_errors_collected_and_workers_survive():
+    def work(x):
+        if x % 10 == 0:
+            raise ValueError(x)
+        return -x
+    results, errors = run_pipeline(range(50), work, n_workers=2)
+    assert sorted(errors) == [0, 10, 20, 30, 40]
+    assert all(isinstance(e, ValueError) for e in errors.values())
+    assert len(results) == 45
+
+
+def test_workers_run_in_parallel():
+    barrier = threading.Barrier(3, timeout=3)
+
+    def work(x):
+        if x < 3:
+            barrier.wait()
+        return x
+    results, errors = run_pipeline(range(6), work, n_workers=3)
+    assert errors == {} and len(results) == 6
+
+
+def test_threads_cleaned_up():
+    before = threading.active_count()
+    run_pipeline(["a", "b"], str.upper, n_workers=5)
+    assert threading.active_count() == before
+
+
+def test_empty_input():
+    assert run_pipeline([], lambda x: x) == ({}, {})
+
+
+def test_generator_input_and_single_worker():
+    results, _ = run_pipeline((f"k{i}" for i in range(10)), len, n_workers=1)
+    assert results == {f"k{i}": len(f"k{i}") for i in range(10)}
+@@@ task bounded_buffer leaf=3 diff=4 entry=BoundedBuffer,Closed
+@@@ prompt
+Write a closable producer/consumer `BoundedBuffer(capacity)` using `threading.Condition` (do not use `queue.Queue`), plus an exception `Closed`. `put(item, timeout=None)` blocks while the buffer is full and raises `TimeoutError` if it is still full when the timeout expires. `get(timeout=None)` blocks while it is empty and raises `TimeoutError` likewise; items come out in FIFO order. `close()` wakes all waiters: after closing, `put` raises `Closed`, and `get` keeps returning the remaining items and raises `Closed` once the buffer is empty. `len()` gives the number of buffered items.
+@@@ reference
+import threading
+import time
+from collections import deque
+
+
+class Closed(Exception):
+    pass
+
+
+class BoundedBuffer:
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self._items = deque()
+        self._closed = False
+        self._cond = threading.Condition()
+
+    def _wait(self, pred, timeout):
+        if not self._cond.wait_for(pred, timeout):
+            raise TimeoutError
+
+    def put(self, item, timeout=None):
+        with self._cond:
+            self._wait(lambda: self._closed or len(self._items) < self.capacity, timeout)
+            if self._closed:
+                raise Closed
+            self._items.append(item)
+            self._cond.notify_all()
+
+    def get(self, timeout=None):
+        with self._cond:
+            self._wait(lambda: self._closed or self._items, timeout)
+            if self._items:
+                item = self._items.popleft()
+                self._cond.notify_all()
+                return item
+            raise Closed
+
+    def close(self):
+        with self._cond:
+            self._closed = True
+            self._cond.notify_all()
+
+    def __len__(self):
+        with self._cond:
+            return len(self._items)
+@@@ tests
+import threading
+import pytest
+from solution import BoundedBuffer, Closed
+
+
+def test_fifo():
+    b = BoundedBuffer(3)
+    for i in range(3):
+        b.put(i)
+    assert [b.get() for _ in range(3)] == [0, 1, 2]
+
+
+def test_put_times_out_when_full():
+    b = BoundedBuffer(1)
+    b.put("a")
+    with pytest.raises(TimeoutError):
+        b.put("b", timeout=0.01)
+    assert len(b) == 1
+
+
+def test_get_times_out_when_empty():
+    with pytest.raises(TimeoutError):
+        BoundedBuffer(1).get(timeout=0.01)
+
+
+def test_blocked_producer_resumes():
+    b = BoundedBuffer(1)
+    b.put(1)
+    done = threading.Event()
+
+    def producer():
+        b.put(2, timeout=5)
+        done.set()
+    t = threading.Thread(target=producer, daemon=True)
+    t.start()
+    assert not done.wait(0.02)
+    assert b.get() == 1
+    assert done.wait(3)
+    assert b.get() == 2
+    t.join(3)
+
+
+def test_close_drains_then_raises():
+    b = BoundedBuffer(5)
+    b.put("x")
+    b.close()
+    with pytest.raises(Closed):
+        b.put("y")
+    assert b.get() == "x"
+    with pytest.raises(Closed):
+        b.get()
+
+
+def test_close_wakes_waiters():
+    b = BoundedBuffer(1)
+    out = []
+
+    def consumer():
+        try:
+            b.get(timeout=5)
+        except Closed:
+            out.append("closed")
+    t = threading.Thread(target=consumer, daemon=True)
+    t.start()
+    t.join(0.02)
+    b.close()
+    t.join(3)
+    assert out == ["closed"]
+
+
+def test_many_producers_consumers():
+    b = BoundedBuffer(4)
+    got = []
+    lock = threading.Lock()
+
+    def produce(k):
+        for i in range(100):
+            b.put((k, i), timeout=5)
+
+    def consume():
+        while True:
+            try:
+                item = b.get(timeout=5)
+            except Closed:
+                return
+            with lock:
+                got.append(item)
+    ps = [threading.Thread(target=produce, args=(k,), daemon=True) for k in range(3)]
+    cs = [threading.Thread(target=consume, daemon=True) for _ in range(3)]
+    for t in ps + cs:
+        t.start()
+    for t in ps:
+        t.join(5)
+    b.close()
+    for t in cs:
+        t.join(5)
+    assert sorted(got) == sorted((k, i) for k in range(3) for i in range(100))
+@@@ task fetch_all_executor leaf=4 diff=2 entry=fetch_all
+@@@ prompt
+Write `fetch_all(urls, fetch, max_workers=8) -> dict` that calls `fetch(url)` for every URL concurrently using `concurrent.futures.ThreadPoolExecutor` and `as_completed`. Return a dict mapping each URL to its result, or to the exception instance if `fetch` raised; keys must be in the same order as `urls` even though results complete out of order. Duplicate URLs are fetched once. Shut the executor down before returning.
+@@@ reference
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+def fetch_all(urls, fetch, max_workers=8):
+    unique = list(dict.fromkeys(urls))
+    out = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futs = {ex.submit(fetch, u): u for u in unique}
+        for fut in as_completed(futs):
+            u = futs[fut]
+            try:
+                out[u] = fut.result()
+            except Exception as exc:
+                out[u] = exc
+    return {u: out[u] for u in unique}
+@@@ tests
+import threading
+from solution import fetch_all
+
+
+def test_results_and_order():
+    urls = ["c", "a", "b"]
+    res = fetch_all(urls, lambda u: u.upper())
+    assert list(res) == urls and res == {"c": "C", "a": "A", "b": "B"}
+
+
+def test_errors_mapped_to_exceptions():
+    def fetch(u):
+        if u == "bad":
+            raise ConnectionError("refused")
+        return len(u)
+    res = fetch_all(["ok", "bad"], fetch)
+    assert res["ok"] == 2 and isinstance(res["bad"], ConnectionError)
+
+
+def test_concurrent_execution():
+    barrier = threading.Barrier(3, timeout=3)
+
+    def fetch(u):
+        barrier.wait()
+        return u
+    assert fetch_all(["x", "y", "z"], fetch, max_workers=3) == {"x": "x", "y": "y", "z": "z"}
+
+
+def test_duplicates_fetched_once():
+    calls = []
+    lock = threading.Lock()
+
+    def fetch(u):
+        with lock:
+            calls.append(u)
+        return u
+    res = fetch_all(["a", "b", "a"], fetch)
+    assert sorted(calls) == ["a", "b"] and list(res) == ["a", "b"]
+
+
+def test_out_of_order_completion():
+    release_first = threading.Event()
+
+    def fetch(u):
+        if u == "slow":
+            release_first.wait(3)
+        else:
+            release_first.set()
+        return u
+    assert list(fetch_all(["slow", "fast"], fetch, max_workers=2)) == ["slow", "fast"]
+
+
+def test_empty():
+    assert fetch_all([], lambda u: u) == {}
+@@@ task first_successful leaf=4 diff=4 entry=first_successful,AllFailed
+@@@ prompt
+Write `first_successful(callables, timeout=None)` that runs every zero-argument callable concurrently in a `ThreadPoolExecutor` and returns the result of whichever finishes successfully first, without waiting for the slower ones (shut the executor down with `wait=False, cancel_futures=True`). If every callable raises, raise `AllFailed`, an exception with an `errors` attribute holding the exceptions in the order the calls were given. If nothing succeeds within `timeout` seconds, raise `TimeoutError`. An empty list raises `ValueError`.
+@@@ reference
+import concurrent.futures as cf
+
+
+class AllFailed(Exception):
+    def __init__(self, errors):
+        super().__init__(f"all {len(errors)} calls failed")
+        self.errors = errors
+
+
+def first_successful(callables, timeout=None):
+    callables = list(callables)
+    if not callables:
+        raise ValueError("no callables")
+    ex = cf.ThreadPoolExecutor(max_workers=len(callables))
+    try:
+        futs = [ex.submit(c) for c in callables]
+        try:
+            for fut in cf.as_completed(futs, timeout=timeout):
+                if fut.exception() is None:
+                    return fut.result()
+        except cf.TimeoutError:
+            raise TimeoutError("no call succeeded in time") from None
+        raise AllFailed([f.exception() for f in futs])
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
+@@@ tests
+import threading
+import time
+import pytest
+from solution import first_successful, AllFailed
+
+
+def test_returns_fastest_success():
+    release = threading.Event()
+
+    def slow():
+        release.wait(5)
+        return "slow"
+    t0 = time.monotonic()
+    try:
+        assert first_successful([slow, lambda: "fast"]) == "fast"
+        assert time.monotonic() - t0 < 2
+    finally:
+        release.set()
+
+
+def test_skips_failures():
+    def bad():
+        raise ValueError("x")
+    assert first_successful([bad, bad, lambda: 3]) == 3
+
+
+def test_all_failed_errors_in_order():
+    def fail(msg):
+        def f():
+            raise RuntimeError(msg)
+        return f
+    with pytest.raises(AllFailed) as ei:
+        first_successful([fail("a"), fail("b"), fail("c")])
+    assert [str(e) for e in ei.value.errors] == ["a", "b", "c"]
+
+
+def test_timeout():
+    release = threading.Event()
+    try:
+        with pytest.raises(TimeoutError):
+            first_successful([lambda: release.wait(5)], timeout=0.03)
+    finally:
+        release.set()
+
+
+def test_empty():
+    with pytest.raises(ValueError):
+        first_successful([])
+
+
+def test_success_after_some_failures_complete_first():
+    gate = threading.Event()
+
+    def bad():
+        gate.set()
+        raise KeyError("k")
+
+    def good():
+        gate.wait(3)
+        return "good"
+    assert first_successful([bad, good]) == "good"
+@@@ task process_pool_primes leaf=5 diff=3 entry=count_primes_in_range,count_primes_parallel
+@@@ prompt
+Write `count_primes_in_range(lo, hi) -> int` that counts primes p with lo <= p < hi by trial division, and `count_primes_parallel(limit, chunks=4, workers=2) -> int` that counts primes below `limit` by splitting `[0, limit)` into `chunks` contiguous ranges and evaluating them in parallel with `concurrent.futures.ProcessPoolExecutor(max_workers=workers)`. This is CPU-bound work, so threads would not help because of the GIL. The worker function must be defined at module level so it can be pickled. `limit <= 2` returns 0; `chunks` larger than `limit` must still work.
+@@@ reference
+import math
+from concurrent.futures import ProcessPoolExecutor
+
+
+def _is_prime(n):
+    if n < 2:
+        return False
+    if n % 2 == 0:
+        return n == 2
+    for d in range(3, math.isqrt(n) + 1, 2):
+        if n % d == 0:
+            return False
+    return True
+
+
+def count_primes_in_range(lo, hi):
+    return sum(1 for n in range(max(lo, 0), hi) if _is_prime(n))
+
+
+def count_primes_parallel(limit, chunks=4, workers=2):
+    if limit <= 2:
+        return 0
+    chunks = max(1, min(chunks, limit))
+    step = math.ceil(limit / chunks)
+    bounds = [(i, min(i + step, limit)) for i in range(0, limit, step)]
+    with ProcessPoolExecutor(max_workers=workers) as ex:
+        return sum(ex.map(count_primes_in_range, *zip(*bounds)))
+@@@ tests
+import pickle
+from solution import count_primes_in_range, count_primes_parallel
+
+
+def test_range_counts():
+    assert count_primes_in_range(0, 10) == 4
+    assert count_primes_in_range(10, 20) == 4
+    assert count_primes_in_range(2, 3) == 1
+    assert count_primes_in_range(0, 2) == 0
+
+
+def test_parallel_matches_known_value():
+    assert count_primes_parallel(100_000, chunks=4, workers=2) == 9592
+
+
+def test_chunk_boundaries():
+    for chunks in (1, 3, 7):
+        assert count_primes_parallel(1000, chunks=chunks, workers=2) == 168
+
+
+def test_small_limits():
+    assert count_primes_parallel(0) == 0
+    assert count_primes_parallel(2) == 0
+    assert count_primes_parallel(3) == 1
+    assert count_primes_parallel(5, chunks=50) == 2
+
+
+def test_worker_is_picklable():
+    assert pickle.loads(pickle.dumps(count_primes_in_range)) is count_primes_in_range
+@@@ task multiprocessing_shared_counter leaf=6 diff=3 entry=parallel_word_count,shared_counter
+@@@ prompt
+Write two `multiprocessing` helpers. `parallel_word_count(texts, processes=2) -> collections.Counter` counts lowercase words (split on whitespace) across all texts using `multiprocessing.Pool.map` with a module-level worker that returns a Counter per text, then merges the counters in the parent. `shared_counter(n_procs: int, increments: int) -> int` starts `n_procs` `multiprocessing.Process` workers that each add 1 to a shared `multiprocessing.Value("i", 0)` `increments` times, holding the value's lock for each increment (`+=` on shared memory is not atomic); join them and return the final value. Workers must be module-level functions.
+@@@ reference
+import multiprocessing
+from collections import Counter
+
+
+def _count_words(text):
+    return Counter(text.lower().split())
+
+
+def parallel_word_count(texts, processes=2):
+    total = Counter()
+    with multiprocessing.Pool(processes) as pool:
+        for c in pool.map(_count_words, list(texts)):
+            total.update(c)
+    return total
+
+
+def _bump(value, n):
+    for _ in range(n):
+        with value.get_lock():
+            value.value += 1
+
+
+def shared_counter(n_procs, increments):
+    value = multiprocessing.Value("i", 0)
+    procs = [multiprocessing.Process(target=_bump, args=(value, increments)) for _ in range(n_procs)]
+    for p in procs:
+        p.start()
+    for p in procs:
+        p.join()
+    return value.value
+@@@ tests
+from collections import Counter
+from solution import parallel_word_count, shared_counter
+
+
+def test_word_count():
+    texts = ["the cat", "The dog", "a cat and THE bird"]
+    c = parallel_word_count(texts, processes=2)
+    assert isinstance(c, Counter)
+    assert c["the"] == 3 and c["cat"] == 2 and c["bird"] == 1
+
+
+def test_word_count_empty():
+    assert parallel_word_count([], processes=2) == Counter()
+    assert parallel_word_count(["", "   "], processes=1) == Counter()
+
+
+def test_word_count_many_texts():
+    texts = [f"w{i % 7} common" for i in range(200)]
+    c = parallel_word_count(texts, processes=2)
+    assert c["common"] == 200 and sum(c.values()) == 400
+
+
+def test_shared_counter_exact():
+    assert shared_counter(3, 2000) == 6000
+
+
+def test_shared_counter_zero():
+    assert shared_counter(2, 0) == 0
+    assert shared_counter(1, 5) == 5
+@@@ task concurrent_awaits leaf=7 diff=3 entry=load_dashboard
+@@@ prompt
+Write `async def load_dashboard(user_id, get_profile, get_orders) -> dict` where `get_profile(user_id)` and `get_orders(user_id)` are coroutine functions. Run both concurrently (not one after the other) and return `{"profile": ..., "orders": ..., "order_count": len(orders)}`. If either call raises, cancel the other one, wait for it to finish cancelling, and re-raise the original exception itself (not wrapped in an ExceptionGroup).
+@@@ reference
+import asyncio
+
+
+async def load_dashboard(user_id, get_profile, get_orders):
+    p = asyncio.ensure_future(get_profile(user_id))
+    o = asyncio.ensure_future(get_orders(user_id))
+    try:
+        profile, orders = await asyncio.gather(p, o)
+    except BaseException:
+        for t in (p, o):
+            t.cancel()
+        await asyncio.gather(p, o, return_exceptions=True)
+        raise
+    return {"profile": profile, "orders": orders, "order_count": len(orders)}
+@@@ tests
+import asyncio
+import pytest
+from solution import load_dashboard
+
+
+def test_result_shape():
+    async def prof(uid):
+        return {"id": uid}
+
+    async def orders(uid):
+        return ["o1", "o2"]
+    res = asyncio.run(load_dashboard(7, prof, orders))
+    assert res == {"profile": {"id": 7}, "orders": ["o1", "o2"], "order_count": 2}
+
+
+def test_runs_concurrently():
+    async def scenario():
+        p_started, o_started = asyncio.Event(), asyncio.Event()
+
+        async def prof(uid):
+            p_started.set()
+            await asyncio.wait_for(o_started.wait(), 1)
+            return "p"
+
+        async def orders(uid):
+            o_started.set()
+            await asyncio.wait_for(p_started.wait(), 1)
+            return []
+        return await load_dashboard(1, prof, orders)
+    assert asyncio.run(scenario())["profile"] == "p"
+
+
+def test_error_cancels_sibling():
+    log = []
+
+    async def scenario():
+        never = asyncio.Event()
+
+        async def prof(uid):
+            try:
+                await never.wait()
+            except asyncio.CancelledError:
+                log.append("profile cancelled")
+                raise
+
+        async def orders(uid):
+            await asyncio.sleep(0)
+            raise LookupError("orders service down")
+        await load_dashboard(1, prof, orders)
+    with pytest.raises(LookupError):
+        asyncio.run(scenario())
+    assert log == ["profile cancelled"]
+
+
+def test_profile_error_propagates_unwrapped():
+    async def prof(uid):
+        raise PermissionError("no access")
+
+    async def orders(uid):
+        await asyncio.sleep(0)
+        return []
+    with pytest.raises(PermissionError):
+        asyncio.run(load_dashboard(1, prof, orders))
+
+
+def test_is_coroutine_function():
+    import inspect
+    assert inspect.iscoroutinefunction(load_dashboard)
+@@@ task taskgroup_fetch leaf=8 diff=3 entry=fetch_all_strict min_python=3.11
+@@@ prompt
+Write `async def fetch_all_strict(keys, fetch) -> dict` using `asyncio.TaskGroup` for structured concurrency: start one task per key calling the coroutine function `fetch(key)`, and return a dict mapping each key to its result in the order of `keys`. If any fetch fails, the TaskGroup cancels the remaining tasks and an `ExceptionGroup` propagates to the caller; let it propagate unchanged so callers can handle it with `except*`.
+@@@ reference
+import asyncio
+
+
+async def fetch_all_strict(keys, fetch):
+    keys = list(keys)
+    tasks = {}
+    async with asyncio.TaskGroup() as tg:
+        for k in keys:
+            tasks[k] = tg.create_task(fetch(k))
+    return {k: tasks[k].result() for k in keys}
+@@@ tests
+import asyncio
+import pytest
+from solution import fetch_all_strict
+
+
+def test_results_in_key_order():
+    async def fetch(k):
+        await asyncio.sleep(0.01 if k == "a" else 0)
+        return k * 2
+    assert list(asyncio.run(fetch_all_strict(["a", "b", "c"], fetch)).items()) == [("a", "aa"), ("b", "bb"), ("c", "cc")]
+
+
+def test_concurrent():
+    async def scenario():
+        started = []
+        all_started = asyncio.Event()
+
+        async def fetch(k):
+            started.append(k)
+            if len(started) == 3:
+                all_started.set()
+            await asyncio.wait_for(all_started.wait(), 1)
+            return k
+        return await fetch_all_strict([1, 2, 3], fetch)
+    assert asyncio.run(scenario()) == {1: 1, 2: 2, 3: 3}
+
+
+def test_failure_cancels_others():
+    cancelled = []
+
+    async def scenario():
+        never = asyncio.Event()
+
+        async def fetch(k):
+            if k == "bad":
+                await asyncio.sleep(0)
+                raise ValueError("bad key")
+            try:
+                await never.wait()
+            except asyncio.CancelledError:
+                cancelled.append(k)
+                raise
+        await fetch_all_strict(["x", "bad", "y"], fetch)
+    with pytest.raises(ExceptionGroup) as ei:
+        asyncio.run(scenario())
+    assert sorted(cancelled) == ["x", "y"]
+    assert [type(e) for e in ei.value.exceptions] == [ValueError]
+
+
+def test_except_star():
+    async def fetch(k):
+        raise KeyError(k)
+    caught = []
+
+    async def main():
+        try:
+            await fetch_all_strict(["a"], fetch)
+        except* KeyError as eg:
+            caught.extend(eg.exceptions)
+    asyncio.run(main())
+    assert len(caught) == 1
+
+
+def test_empty():
+    async def fetch(k):
+        return k
+    assert asyncio.run(fetch_all_strict([], fetch)) == {}
+@@@ task gather_settled leaf=8 diff=2 entry=settle
+@@@ prompt
+Write `async def settle(awaitables) -> list[tuple[str, object]]` that awaits all the given coroutines or tasks concurrently with `asyncio.gather` and returns, in input order, `("ok", value)` for each one that succeeded and `("error", exception)` for each one that raised (including `asyncio.CancelledError` if an individual task was cancelled). One failure must not prevent the others from completing. An empty input returns `[]`.
+@@@ reference
+import asyncio
+
+
+async def settle(awaitables):
+    aws = list(awaitables)
+    if not aws:
+        return []
+    results = await asyncio.gather(*aws, return_exceptions=True)
+    return [("error", r) if isinstance(r, BaseException) else ("ok", r) for r in results]
+@@@ tests
+import asyncio
+from solution import settle
+
+
+async def ok(v):
+    await asyncio.sleep(0)
+    return v
+
+
+async def fail(exc):
+    await asyncio.sleep(0)
+    raise exc
+
+
+def test_mixed_results_in_order():
+    res = asyncio.run(settle([ok(1), fail(ValueError("v")), ok(3)]))
+    assert res[0] == ("ok", 1) and res[2] == ("ok", 3)
+    assert res[1][0] == "error" and isinstance(res[1][1], ValueError)
+
+
+def test_failure_does_not_stop_others():
+    done = []
+
+    async def slow_ok():
+        for _ in range(3):
+            await asyncio.sleep(0)
+        done.append(1)
+        return "late"
+    res = asyncio.run(settle([fail(KeyError("k")), slow_ok()]))
+    assert res[1] == ("ok", "late") and done == [1]
+
+
+def test_empty():
+    assert asyncio.run(settle([])) == []
+
+
+def test_cancelled_task_reported():
+    async def main():
+        never = asyncio.Event()
+        t = asyncio.ensure_future(never.wait())
+        await asyncio.sleep(0)
+        t.cancel()
+        return await settle([t, ok("x")])
+    res = asyncio.run(main())
+    assert res[0][0] == "error" and isinstance(res[0][1], asyncio.CancelledError)
+    assert res[1] == ("ok", "x")
+
+
+def test_none_value_is_ok():
+    assert asyncio.run(settle([ok(None)])) == [("ok", None)]
+@@@ task cancellation_cleanup leaf=9 diff=3 entry=run_with_cleanup
+@@@ prompt
+Write `async def run_with_cleanup(job, cleanup)` where `job` and `cleanup` are coroutine functions taking no arguments. It awaits `job()` and returns its result, and it always awaits `cleanup()` afterwards, whether the job succeeded, raised, or the task running `run_with_cleanup` was cancelled. After cleanup, a cancellation must still propagate as `asyncio.CancelledError` (never swallow it), and a job exception must propagate unchanged. Cleanup must run to completion even though it itself awaits.
+@@@ reference
+async def run_with_cleanup(job, cleanup):
+    try:
+        return await job()
+    finally:
+        await cleanup()
+@@@ tests
+import asyncio
+import pytest
+from solution import run_with_cleanup
+
+
+def make_cleanup(log):
+    async def cleanup():
+        log.append("cleanup-start")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        log.append("cleanup-done")
+    return cleanup
+
+
+def test_success_returns_and_cleans_up():
+    log = []
+
+    async def job():
+        return 42
+    assert asyncio.run(run_with_cleanup(job, make_cleanup(log))) == 42
+    assert log == ["cleanup-start", "cleanup-done"]
+
+
+def test_error_propagates_after_cleanup():
+    log = []
+
+    async def job():
+        raise ValueError("job failed")
+    with pytest.raises(ValueError):
+        asyncio.run(run_with_cleanup(job, make_cleanup(log)))
+    assert log[-1] == "cleanup-done"
+
+
+def test_cancellation_runs_cleanup_and_propagates():
+    log = []
+
+    async def main():
+        started = asyncio.Event()
+        never = asyncio.Event()
+
+        async def job():
+            started.set()
+            await never.wait()
+        task = asyncio.create_task(run_with_cleanup(job, make_cleanup(log)))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return task.cancelled()
+    assert asyncio.run(main()) is True
+    assert log == ["cleanup-start", "cleanup-done"]
+
+
+def test_cleanup_order_relative_to_job():
+    log = []
+
+    async def job():
+        log.append("job")
+        return None
+    asyncio.run(run_with_cleanup(job, make_cleanup(log)))
+    assert log[0] == "job"
+
+
+def test_cancel_observed_via_gather():
+    log = []
+
+    async def main():
+        started = asyncio.Event()
+
+        async def job():
+            started.set()
+            await asyncio.Event().wait()
+        task = asyncio.create_task(run_with_cleanup(job, make_cleanup(log)))
+        await started.wait()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    asyncio.run(main())
+    assert log == ["cleanup-start", "cleanup-done"]
+@@@ task graceful_cancel leaf=9 diff=4 entry=graceful_cancel
+@@@ prompt
+Write `async def graceful_cancel(tasks, timeout: float) -> dict` for shutting down a set of asyncio tasks. Tasks that are already done are reported under `"finished"`. Every other task is cancelled, then the function waits up to `timeout` seconds in total (use `asyncio.wait`) for them to end. Return a dict with three lists, in the order the tasks were given: `"finished"` (done before cancellation was requested), `"cancelled"` (ended after the cancel, whether by cancellation or by finishing their cleanup normally or with an error), and `"stuck"` (still running after the timeout, for example because they swallow `CancelledError`). Do not await stuck tasks.
+@@@ reference
+import asyncio
+
+
+async def graceful_cancel(tasks, timeout: float):
+    tasks = list(tasks)
+    finished = [t for t in tasks if t.done()]
+    pending = [t for t in tasks if not t.done()]
+    for t in pending:
+        t.cancel()
+    if pending:
+        await asyncio.wait(pending, timeout=timeout)
+    return {
+        "finished": finished,
+        "cancelled": [t for t in pending if t.done()],
+        "stuck": [t for t in pending if not t.done()],
+    }
+@@@ tests
+import asyncio
+from solution import graceful_cancel
+
+
+def test_classification():
+    async def main():
+        release = asyncio.Event()
+
+        async def quick():
+            return 1
+
+        async def waits():
+            await asyncio.Event().wait()
+
+        async def stubborn():
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    continue  # swallows cancellation
+
+        t_quick = asyncio.create_task(quick())
+        await asyncio.sleep(0)
+        t_wait = asyncio.create_task(waits())
+        t_stub = asyncio.create_task(stubborn())
+        await asyncio.sleep(0)
+        res = await graceful_cancel([t_quick, t_wait, t_stub], timeout=0.05)
+        release.set()
+        await t_stub
+        return res, (t_quick, t_wait, t_stub)
+    res, (q, w, s) = asyncio.run(main())
+    assert res["finished"] == [q] and res["cancelled"] == [w] and res["stuck"] == [s]
+
+
+def test_cleanup_that_finishes_counts_as_cancelled():
+    async def main():
+        log = []
+
+        async def cleans_up():
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await asyncio.sleep(0)
+                log.append("cleaned")
+                return "returned normally"
+        t = asyncio.create_task(cleans_up())
+        await asyncio.sleep(0)
+        res = await graceful_cancel([t], timeout=1)
+        return res, log, t
+    res, log, t = asyncio.run(main())
+    assert res["cancelled"] == [t] and log == ["cleaned"]
+
+
+def test_order_preserved():
+    async def main():
+        ts = [asyncio.create_task(asyncio.Event().wait()) for _ in range(5)]
+        await asyncio.sleep(0)
+        res = await graceful_cancel(ts, timeout=1)
+        return res, ts
+    res, ts = asyncio.run(main())
+    assert res["cancelled"] == ts and res["stuck"] == [] and res["finished"] == []
+
+
+def test_empty():
+    assert asyncio.run(graceful_cancel([], timeout=0.01)) == {"finished": [], "cancelled": [], "stuck": []}
+
+
+def test_does_not_wait_longer_than_timeout():
+    async def main():
+        release = asyncio.Event()
+
+        async def stubborn():
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    pass
+        t = asyncio.create_task(stubborn())
+        await asyncio.sleep(0)
+        loop = asyncio.get_running_loop()
+        t0 = loop.time()
+        res = await graceful_cancel([t], timeout=0.02)
+        elapsed = loop.time() - t0
+        release.set()
+        await t
+        return res, elapsed
+    res, elapsed = asyncio.run(main())
+    assert len(res["stuck"]) == 1 and elapsed < 1

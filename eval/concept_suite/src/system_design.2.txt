@@ -1,0 +1,2021 @@
+@@@ task wal_kv_store leaf=10 diff=4 entry=WALStore,CorruptLog
+@@@ prompt
+Write a durable key-value store `WALStore(path)` with a write-ahead log, plus an exception `CorruptLog`. `set(key, value)` (JSON-serialisable values) and `delete(key)` first append one record to the log file, flush and `os.fsync` it, and only then update the in-memory dict; `get(key, default=None)` reads memory. Each log line is `f"{crc:08x} {payload}\n"` where `payload` is compact JSON such as `{"op":"set","k":"a","v":1}` or `{"op":"del","k":"a"}` and `crc = zlib.crc32(payload.encode())`. Opening an existing path replays the log. A torn or corrupt *last* line (a crash mid-write) is ignored and truncated off the file so later appends stay clean; a corrupt line followed by valid lines raises `CorruptLog`. Support `close()`, `len()` and use as a context manager.
+@@@ reference
+import json
+import os
+import zlib
+
+
+class CorruptLog(Exception):
+    pass
+
+
+def _parse(line):
+    if not line.endswith(b"\n"):
+        return None
+    try:
+        crc_hex, payload = line[:-1].split(b" ", 1)
+        if int(crc_hex, 16) != zlib.crc32(payload):
+            return None
+        return json.loads(payload)
+    except ValueError:
+        return None
+
+
+class WALStore:
+    def __init__(self, path):
+        self.path = path
+        self._data = {}
+        self._replay()
+        self._f = open(path, "ab")
+
+    def _apply(self, rec):
+        if rec["op"] == "set":
+            self._data[rec["k"]] = rec["v"]
+        else:
+            self._data.pop(rec["k"], None)
+
+    def _replay(self):
+        if not os.path.exists(self.path):
+            return
+        with open(self.path, "rb") as f:
+            lines = f.readlines()
+        good_bytes = 0
+        for i, line in enumerate(lines):
+            rec = _parse(line)
+            if rec is None:
+                if i != len(lines) - 1:
+                    raise CorruptLog(f"corrupt record at line {i + 1}")
+                with open(self.path, "r+b") as f:
+                    f.truncate(good_bytes)
+                break
+            self._apply(rec)
+            good_bytes += len(line)
+
+    def _append(self, rec):
+        payload = json.dumps(rec, separators=(",", ":"))
+        line = f"{zlib.crc32(payload.encode()):08x} {payload}\n".encode()
+        self._f.write(line)
+        self._f.flush()
+        os.fsync(self._f.fileno())
+        self._apply(rec)
+
+    def set(self, key, value):
+        self._append({"op": "set", "k": key, "v": value})
+
+    def delete(self, key):
+        self._append({"op": "del", "k": key})
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+
+    def __len__(self):
+        return len(self._data)
+
+    def close(self):
+        self._f.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+@@@ tests
+import json
+import zlib
+import pytest
+from solution import WALStore, CorruptLog
+
+
+def test_roundtrip_and_replay(tmp_path):
+    p = tmp_path / "db.log"
+    with WALStore(str(p)) as s:
+        s.set("a", 1)
+        s.set("b", {"x": [1, 2]})
+        s.set("a", 2)
+        s.delete("b")
+    with WALStore(str(p)) as s:
+        assert s.get("a") == 2 and s.get("b") is None and len(s) == 1
+
+
+def test_log_format(tmp_path):
+    p = tmp_path / "db.log"
+    with WALStore(str(p)) as s:
+        s.set("k", "v")
+    line = p.read_text().splitlines()[0]
+    crc, payload = line.split(" ", 1)
+    assert int(crc, 16) == zlib.crc32(payload.encode())
+    assert json.loads(payload) == {"op": "set", "k": "k", "v": "v"}
+
+
+def test_torn_last_record_ignored_and_truncated(tmp_path):
+    p = tmp_path / "db.log"
+    with WALStore(str(p)) as s:
+        s.set("a", 1)
+        s.set("b", 2)
+    good = p.read_bytes()
+    with open(p, "ab") as f:
+        f.write(b'1234abcd {"op":"set","k":"c"')  # crash mid-write
+    with WALStore(str(p)) as s:
+        assert s.get("c") is None and s.get("b") == 2
+        s.set("d", 4)
+    assert p.read_bytes().startswith(good)
+    with WALStore(str(p)) as s:
+        assert s.get("d") == 4 and len(s) == 3
+
+
+def test_bad_checksum_on_last_line_ignored(tmp_path):
+    p = tmp_path / "db.log"
+    with WALStore(str(p)) as s:
+        s.set("a", 1)
+        s.set("b", 2)
+    lines = p.read_text().splitlines(keepends=True)
+    lines[-1] = lines[-1].replace('"v":2', '"v":3')
+    p.write_text("".join(lines))
+    with WALStore(str(p)) as s:
+        assert s.get("b") is None and s.get("a") == 1
+
+
+def test_corruption_in_middle_raises(tmp_path):
+    p = tmp_path / "db.log"
+    with WALStore(str(p)) as s:
+        for i in range(3):
+            s.set(f"k{i}", i)
+    lines = p.read_text().splitlines(keepends=True)
+    lines[1] = lines[1].replace('"v":1', '"v":9')
+    p.write_text("".join(lines))
+    with pytest.raises(CorruptLog):
+        WALStore(str(p))
+
+
+def test_new_file_and_delete_missing(tmp_path):
+    p = tmp_path / "fresh.log"
+    with WALStore(str(p)) as s:
+        assert len(s) == 0
+        s.delete("nothing")
+        assert s.get("nothing", "d") == "d"
+    assert p.exists()
+@@@ task snapshot_kv_store leaf=10 diff=4 entry=SnapshotStore
+@@@ prompt
+Write `SnapshotStore(directory)`, a key-value store that keeps a write-ahead log `wal.jsonl` (one JSON object per line: `{"op": "set", "k": ..., "v": ...}` or `{"op": "del", "k": ...}`, flushed after each write) and a snapshot file `snapshot.json` inside `directory`. On open it loads the snapshot (if any) and then replays the WAL, ignoring an incomplete last line. `checkpoint()` writes the full current state to the snapshot atomically (write a temporary file in the same directory, then `os.replace`) and then truncates the WAL to empty. Recovery must be correct even if a crash happened after the snapshot was replaced but before the WAL was truncated. Methods: `set`, `delete`, `get(key, default=None)`, `items()` (sorted list of pairs), `close()`.
+@@@ reference
+import json
+import os
+
+
+class SnapshotStore:
+    def __init__(self, directory):
+        self.dir = str(directory)
+        os.makedirs(self.dir, exist_ok=True)
+        self._wal_path = os.path.join(self.dir, "wal.jsonl")
+        self._snap_path = os.path.join(self.dir, "snapshot.json")
+        self._data = {}
+        if os.path.exists(self._snap_path):
+            with open(self._snap_path) as f:
+                self._data = json.load(f)
+        if os.path.exists(self._wal_path):
+            with open(self._wal_path) as f:
+                for line in f:
+                    if not line.endswith("\n"):
+                        break
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        break
+                    self._apply(rec)
+        self._wal = open(self._wal_path, "a")
+
+    def _apply(self, rec):
+        if rec["op"] == "set":
+            self._data[rec["k"]] = rec["v"]
+        else:
+            self._data.pop(rec["k"], None)
+
+    def _log(self, rec):
+        self._wal.write(json.dumps(rec) + "\n")
+        self._wal.flush()
+        self._apply(rec)
+
+    def set(self, key, value):
+        self._log({"op": "set", "k": key, "v": value})
+
+    def delete(self, key):
+        self._log({"op": "del", "k": key})
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+
+    def items(self):
+        return sorted(self._data.items())
+
+    def checkpoint(self):
+        tmp = self._snap_path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(self._data, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, self._snap_path)
+        self._wal.close()
+        self._wal = open(self._wal_path, "w")
+
+    def close(self):
+        self._wal.close()
+@@@ tests
+import json
+import shutil
+from solution import SnapshotStore
+
+
+def test_basic_persistence(tmp_path):
+    s = SnapshotStore(tmp_path)
+    s.set("a", 1)
+    s.set("b", 2)
+    s.delete("a")
+    s.close()
+    s = SnapshotStore(tmp_path)
+    assert s.items() == [("b", 2)]
+    s.close()
+
+
+def test_checkpoint_truncates_wal(tmp_path):
+    s = SnapshotStore(tmp_path)
+    for i in range(5):
+        s.set(f"k{i}", i)
+    s.checkpoint()
+    assert (tmp_path / "wal.jsonl").read_text() == ""
+    assert json.loads((tmp_path / "snapshot.json").read_text()) == {f"k{i}": i for i in range(5)}
+    s.set("after", True)
+    s.close()
+    s = SnapshotStore(tmp_path)
+    assert s.get("after") is True and s.get("k4") == 4
+    s.close()
+
+
+def test_crash_between_snapshot_and_truncate(tmp_path):
+    s = SnapshotStore(tmp_path)
+    s.set("a", 1)
+    s.set("b", 2)
+    s.delete("a")
+    s.set("c", 3)
+    s.close()
+    wal = (tmp_path / "wal.jsonl").read_text()
+    s = SnapshotStore(tmp_path)
+    s.checkpoint()
+    s.close()
+    (tmp_path / "wal.jsonl").write_text(wal)  # truncation "never happened"
+    s = SnapshotStore(tmp_path)
+    assert s.items() == [("b", 2), ("c", 3)]
+    s.close()
+
+
+def test_incomplete_last_line_ignored(tmp_path):
+    s = SnapshotStore(tmp_path)
+    s.set("a", 1)
+    s.close()
+    with open(tmp_path / "wal.jsonl", "a") as f:
+        f.write('{"op": "set", "k": "b"')
+    s = SnapshotStore(tmp_path)
+    assert s.items() == [("a", 1)]
+    s.close()
+
+
+def test_no_temp_files_left(tmp_path):
+    s = SnapshotStore(tmp_path)
+    s.set("x", [1, 2])
+    s.checkpoint()
+    s.checkpoint()
+    s.close()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["snapshot.json", "wal.jsonl"]
+
+
+def test_delete_after_checkpoint(tmp_path):
+    s = SnapshotStore(tmp_path)
+    s.set("x", 1)
+    s.checkpoint()
+    s.delete("x")
+    s.close()
+    s = SnapshotStore(tmp_path)
+    assert s.get("x", "gone") == "gone"
+    s.close()
+
+
+def test_creates_directory(tmp_path):
+    d = tmp_path / "nested" / "db"
+    s = SnapshotStore(d)
+    s.set("k", "v")
+    s.close()
+    assert (d / "wal.jsonl").exists()
+@@@ task append_only_log leaf=11 diff=4 entry=LogStore
+@@@ prompt
+Write `LogStore(path)`, a Bitcask-style append-only key-value store for string values. Every `put(key, value)` and `delete(key)` appends one JSON line to the file (`{"k": key, "v": value}` or a tombstone `{"k": key, "d": true}`); records are never modified in place. Keep an in-memory index from key to the byte offset of its latest record; `get(key)` seeks to that offset and reads the value from disk (raise `KeyError` if missing or deleted). Reopening the file rebuilds the index by scanning it. `compact() -> int` rewrites the file so it holds only the latest record of each live key (write a new file then atomically replace the old one), rebuilds the index, and returns the number of bytes reclaimed. Also `keys()` (sorted) and `close()`.
+@@@ reference
+import json
+import os
+
+
+class LogStore:
+    def __init__(self, path):
+        self.path = str(path)
+        self._index = {}
+        if os.path.exists(self.path):
+            self._scan()
+        self._f = open(self.path, "ab+")
+
+    def _scan(self):
+        self._index = {}
+        with open(self.path, "rb") as f:
+            off = 0
+            for line in f:
+                rec = json.loads(line)
+                if rec.get("d"):
+                    self._index.pop(rec["k"], None)
+                else:
+                    self._index[rec["k"]] = off
+                off += len(line)
+
+    def _append(self, rec):
+        self._f.seek(0, os.SEEK_END)
+        off = self._f.tell()
+        self._f.write((json.dumps(rec) + "\n").encode())
+        self._f.flush()
+        return off
+
+    def put(self, key, value):
+        self._index[key] = self._append({"k": key, "v": value})
+
+    def delete(self, key):
+        if key in self._index:
+            self._append({"k": key, "d": True})
+            del self._index[key]
+
+    def get(self, key):
+        off = self._index[key]
+        self._f.seek(off)
+        return json.loads(self._f.readline())["v"]
+
+    def keys(self):
+        return sorted(self._index)
+
+    def compact(self):
+        before = os.path.getsize(self.path)
+        tmp = self.path + ".compact"
+        with open(tmp, "wb") as out:
+            for k in sorted(self._index):
+                out.write((json.dumps({"k": k, "v": self.get(k)}) + "\n").encode())
+        self._f.close()
+        os.replace(tmp, self.path)
+        self._scan()
+        self._f = open(self.path, "ab+")
+        return before - os.path.getsize(self.path)
+
+    def close(self):
+        self._f.close()
+@@@ tests
+import json
+import pytest
+from solution import LogStore
+
+
+def test_put_get_overwrite(tmp_path):
+    s = LogStore(tmp_path / "data.log")
+    s.put("a", "1")
+    s.put("a", "2")
+    s.put("b", "x")
+    assert s.get("a") == "2" and s.keys() == ["a", "b"]
+    s.close()
+
+
+def test_append_only(tmp_path):
+    p = tmp_path / "data.log"
+    s = LogStore(p)
+    s.put("a", "1")
+    first = p.read_bytes()
+    s.put("a", "2")
+    s.delete("a")
+    s.close()
+    data = p.read_bytes()
+    assert data.startswith(first)
+    recs = [json.loads(l) for l in data.decode().splitlines()]
+    assert recs[-1] == {"k": "a", "d": True} and len(recs) == 3
+
+
+def test_delete_and_missing(tmp_path):
+    s = LogStore(tmp_path / "d.log")
+    s.put("a", "1")
+    s.delete("a")
+    with pytest.raises(KeyError):
+        s.get("a")
+    with pytest.raises(KeyError):
+        s.get("never")
+    s.close()
+
+
+def test_reopen_rebuilds_index(tmp_path):
+    p = tmp_path / "d.log"
+    s = LogStore(p)
+    s.put("k", "multi\nline é")
+    s.put("j", "v1")
+    s.delete("j")
+    s.close()
+    s = LogStore(p)
+    assert s.get("k") == "multi\nline é" and s.keys() == ["k"]
+    s.close()
+
+
+def test_compact_reclaims_space(tmp_path):
+    p = tmp_path / "d.log"
+    s = LogStore(p)
+    for i in range(100):
+        s.put("hot", f"value-{i}")
+    s.put("cold", "c")
+    s.put("gone", "g")
+    s.delete("gone")
+    size = p.stat().st_size
+    reclaimed = s.compact()
+    assert reclaimed == size - p.stat().st_size and reclaimed > 0
+    assert s.get("hot") == "value-99" and s.keys() == ["cold", "hot"]
+    assert len(p.read_text().splitlines()) == 2
+    s.put("new", "n")
+    s.close()
+    s = LogStore(p)
+    assert s.keys() == ["cold", "hot", "new"]
+    s.close()
+
+
+def test_values_read_from_disk(tmp_path):
+    p = tmp_path / "d.log"
+    s = LogStore(p)
+    s.put("a", "short")
+    s.put("b", "x" * 1000)
+    assert s.get("b") == "x" * 1000 and s.get("a") == "short"
+    s.close()
+@@@ task url_shortener leaf=12 diff=2 entry=Shortener,encode,decode
+@@@ prompt
+Write the core of a URL shortener. Module functions `encode(n: int) -> str` and `decode(s: str) -> int` convert between non-negative integers and base62 using the alphabet `0-9a-zA-Z` (so `encode(0) == "0"`, `encode(61) == "Z"`, `encode(62) == "10"`); negative numbers or invalid characters raise `ValueError`. A class `Shortener(base_url="https://sho.rt/")` has `shorten(url) -> str` returning `base_url + code`, where codes are base62 of a counter starting at 1; shortening the same URL again returns the same short URL. Only absolute `http`/`https` URLs with a host are accepted (use `urllib.parse`), others raise `ValueError`. `resolve(code_or_short_url) -> str` accepts either the bare code or the full short URL and raises `KeyError` for unknown codes.
+@@@ reference
+import string
+from urllib.parse import urlsplit
+
+ALPHABET = string.digits + string.ascii_lowercase + string.ascii_uppercase
+_INDEX = {c: i for i, c in enumerate(ALPHABET)}
+
+
+def encode(n: int) -> str:
+    if n < 0:
+        raise ValueError("negative")
+    if n == 0:
+        return "0"
+    out = []
+    while n:
+        n, r = divmod(n, 62)
+        out.append(ALPHABET[r])
+    return "".join(reversed(out))
+
+
+def decode(s: str) -> int:
+    if not s:
+        raise ValueError("empty code")
+    n = 0
+    for ch in s:
+        if ch not in _INDEX:
+            raise ValueError(f"invalid character {ch!r}")
+        n = n * 62 + _INDEX[ch]
+    return n
+
+
+class Shortener:
+    def __init__(self, base_url="https://sho.rt/"):
+        self.base_url = base_url
+        self._next = 1
+        self._by_code = {}
+        self._by_url = {}
+
+    def shorten(self, url):
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            raise ValueError(f"not an absolute http(s) URL: {url!r}")
+        if url not in self._by_url:
+            code = encode(self._next)
+            self._next += 1
+            self._by_url[url] = code
+            self._by_code[code] = url
+        return self.base_url + self._by_url[url]
+
+    def resolve(self, code_or_short_url):
+        code = code_or_short_url
+        if code.startswith(self.base_url):
+            code = code[len(self.base_url):]
+        return self._by_code[code]
+@@@ tests
+import pytest
+from solution import Shortener, encode, decode
+
+
+def test_encode_known_values():
+    assert encode(0) == "0" and encode(9) == "9" and encode(10) == "a"
+    assert encode(61) == "Z" and encode(62) == "10" and encode(62 ** 2) == "100"
+
+
+def test_roundtrip():
+    for n in [0, 1, 61, 62, 12345, 2 ** 40, 10 ** 18]:
+        assert decode(encode(n)) == n
+
+
+def test_invalid():
+    with pytest.raises(ValueError):
+        encode(-1)
+    with pytest.raises(ValueError):
+        decode("ab-c")
+    with pytest.raises(ValueError):
+        decode("")
+
+
+def test_shorten_idempotent_and_sequential():
+    s = Shortener()
+    a = s.shorten("https://example.com/a")
+    b = s.shorten("https://example.com/b")
+    assert a == "https://sho.rt/1" and b == "https://sho.rt/2"
+    assert s.shorten("https://example.com/a") == a
+
+
+def test_resolve_code_or_url():
+    s = Shortener(base_url="http://x.y/")
+    short = s.shorten("http://example.org/path?q=1")
+    code = short.rsplit("/", 1)[1]
+    assert s.resolve(code) == "http://example.org/path?q=1"
+    assert s.resolve(short) == "http://example.org/path?q=1"
+    with pytest.raises(KeyError):
+        s.resolve("zzz")
+
+
+@pytest.mark.parametrize("bad", ["ftp://example.com/x", "example.com", "/relative/path", "https://", "javascript:alert(1)"])
+def test_rejects_bad_urls(bad):
+    with pytest.raises(ValueError):
+        Shortener().shorten(bad)
+
+
+def test_codes_grow_in_length():
+    s = Shortener(base_url="")
+    codes = [s.shorten(f"https://e.com/{i}") for i in range(70)]
+    assert codes[60] == "Z" and codes[61] == "10"
+    assert len(set(codes)) == 70
+@@@ task link_service leaf=12 diff=3 entry=LinkService,AliasTaken,LinkExpired
+@@@ prompt
+Write a `LinkService(clock=time.time)` for a URL shortener with custom aliases, expiry and click stats, plus exceptions `AliasTaken` and `LinkExpired`. `create(url, alias=None, ttl=None) -> str` returns the code: either the given alias, which must match `[A-Za-z0-9_-]{3,32}` (else `ValueError`) and must not already be in use (else `AliasTaken`), or a generated 6-character code from the alphabet `0-9a-zA-Z` that does not collide with any existing code. `ttl` (seconds) makes the link expire once `clock() >= created + ttl`. `visit(code) -> str` returns the URL and increments its click count; unknown codes raise `KeyError`, expired ones `LinkExpired`. `stats(code) -> dict` with keys `url`, `clicks`, `created`, `expires` (None if no ttl). Generated codes should not be guessable sequences; use the `secrets` module.
+@@@ reference
+import re
+import secrets
+import string
+import time
+
+_ALPHA = string.digits + string.ascii_letters
+_ALIAS_RE = re.compile(r"[A-Za-z0-9_-]{3,32}")
+
+
+class AliasTaken(Exception):
+    pass
+
+
+class LinkExpired(Exception):
+    pass
+
+
+class LinkService:
+    def __init__(self, clock=time.time):
+        self.clock = clock
+        self._links = {}
+
+    def create(self, url, alias=None, ttl=None):
+        if alias is not None:
+            if not _ALIAS_RE.fullmatch(alias):
+                raise ValueError(f"invalid alias {alias!r}")
+            if alias in self._links:
+                raise AliasTaken(alias)
+            code = alias
+        else:
+            while True:
+                code = "".join(secrets.choice(_ALPHA) for _ in range(6))
+                if code not in self._links:
+                    break
+        now = self.clock()
+        self._links[code] = {"url": url, "clicks": 0, "created": now,
+                             "expires": None if ttl is None else now + ttl}
+        return code
+
+    def _get(self, code):
+        link = self._links[code]
+        if link["expires"] is not None and self.clock() >= link["expires"]:
+            raise LinkExpired(code)
+        return link
+
+    def visit(self, code):
+        link = self._get(code)
+        link["clicks"] += 1
+        return link["url"]
+
+    def stats(self, code):
+        return dict(self._links[code])
+@@@ tests
+import re
+import pytest
+from solution import LinkService, AliasTaken, LinkExpired
+
+
+class Clock:
+    t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+def test_generated_codes():
+    svc = LinkService(clock=Clock())
+    codes = {svc.create(f"https://e.com/{i}") for i in range(200)}
+    assert len(codes) == 200
+    assert all(re.fullmatch(r"[0-9a-zA-Z]{6}", c) for c in codes)
+
+
+def test_alias_rules():
+    svc = LinkService(clock=Clock())
+    assert svc.create("https://a.com", alias="my-link_1") == "my-link_1"
+    with pytest.raises(AliasTaken):
+        svc.create("https://b.com", alias="my-link_1")
+    for bad in ["ab", "x" * 33, "has space", "slash/"]:
+        with pytest.raises(ValueError):
+            svc.create("https://c.com", alias=bad)
+
+
+def test_alias_cannot_take_generated_code():
+    svc = LinkService(clock=Clock())
+    code = svc.create("https://a.com")
+    with pytest.raises(AliasTaken):
+        svc.create("https://b.com", alias=code)
+
+
+def test_visit_counts_clicks():
+    svc = LinkService(clock=Clock())
+    code = svc.create("https://a.com/x")
+    for _ in range(3):
+        assert svc.visit(code) == "https://a.com/x"
+    st = svc.stats(code)
+    assert st == {"url": "https://a.com/x", "clicks": 3, "created": 1000.0, "expires": None}
+    with pytest.raises(KeyError):
+        svc.visit("nope00")
+
+
+def test_expiry():
+    clk = Clock()
+    svc = LinkService(clock=clk)
+    code = svc.create("https://a.com", ttl=60)
+    clk.t = 1059.9
+    svc.visit(code)
+    clk.t = 1060
+    with pytest.raises(LinkExpired):
+        svc.visit(code)
+    assert svc.stats(code)["expires"] == 1060 and svc.stats(code)["clicks"] == 1
+
+
+def test_stats_is_a_copy():
+    svc = LinkService(clock=Clock())
+    code = svc.create("https://a.com")
+    svc.stats(code)["clicks"] = 99
+    assert svc.stats(code)["clicks"] == 0
+@@@ task event_sourced_account leaf=13 diff=4 entry=Account,Opened,Deposited,Withdrawn,Closed,DomainError
+@@@ prompt
+Implement an event-sourced bank account. Define frozen dataclass events `Opened(account_id: str, owner: str)`, `Deposited(amount: int)`, `Withdrawn(amount: int)`, `Closed()` and an exception `DomainError`. The aggregate `Account` has a classmethod `Account.open(account_id, owner)` and command methods `deposit(amount)`, `withdraw(amount)` and `close()`. Commands validate business rules (amount must be a positive int, cannot withdraw more than the balance, cannot act on a closed account, can only close with zero balance; violations raise `DomainError`), then record an event; state changes happen only by applying events. The account exposes `id`, `owner`, `balance`, `closed`, `version` (number of events applied) and `pending_events` (new events since loading, in order). `Account.from_events(events)` rebuilds an account from history with an empty `pending_events`.
+@@@ reference
+from dataclasses import dataclass
+
+
+class DomainError(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class Opened:
+    account_id: str
+    owner: str
+
+
+@dataclass(frozen=True)
+class Deposited:
+    amount: int
+
+
+@dataclass(frozen=True)
+class Withdrawn:
+    amount: int
+
+
+@dataclass(frozen=True)
+class Closed:
+    pass
+
+
+class Account:
+    def __init__(self):
+        self.id = None
+        self.owner = None
+        self.balance = 0
+        self.closed = False
+        self.version = 0
+        self.pending_events = []
+
+    @classmethod
+    def open(cls, account_id, owner):
+        acc = cls()
+        acc._record(Opened(account_id, owner))
+        return acc
+
+    @classmethod
+    def from_events(cls, events):
+        acc = cls()
+        for e in events:
+            acc._apply(e)
+        return acc
+
+    def _apply(self, e):
+        if isinstance(e, Opened):
+            self.id, self.owner = e.account_id, e.owner
+        elif isinstance(e, Deposited):
+            self.balance += e.amount
+        elif isinstance(e, Withdrawn):
+            self.balance -= e.amount
+        elif isinstance(e, Closed):
+            self.closed = True
+        else:
+            raise DomainError(f"unknown event {e!r}")
+        self.version += 1
+
+    def _record(self, e):
+        self._apply(e)
+        self.pending_events.append(e)
+
+    def _check_open(self):
+        if self.closed:
+            raise DomainError("account is closed")
+
+    @staticmethod
+    def _check_amount(amount):
+        if not isinstance(amount, int) or isinstance(amount, bool) or amount <= 0:
+            raise DomainError("amount must be a positive int")
+
+    def deposit(self, amount):
+        self._check_open()
+        self._check_amount(amount)
+        self._record(Deposited(amount))
+
+    def withdraw(self, amount):
+        self._check_open()
+        self._check_amount(amount)
+        if amount > self.balance:
+            raise DomainError("insufficient funds")
+        self._record(Withdrawn(amount))
+
+    def close(self):
+        self._check_open()
+        if self.balance != 0:
+            raise DomainError("balance must be zero to close")
+        self._record(Closed())
+@@@ tests
+import dataclasses
+import pytest
+from solution import Account, Opened, Deposited, Withdrawn, Closed, DomainError
+
+
+def test_commands_record_events():
+    acc = Account.open("A1", "ann")
+    acc.deposit(100)
+    acc.withdraw(30)
+    assert acc.pending_events == [Opened("A1", "ann"), Deposited(100), Withdrawn(30)]
+    assert acc.balance == 70 and acc.version == 3
+
+
+def test_rebuild_from_events():
+    acc = Account.open("A1", "ann")
+    acc.deposit(50)
+    acc.withdraw(50)
+    acc.close()
+    again = Account.from_events(acc.pending_events)
+    assert (again.id, again.owner, again.balance, again.closed, again.version) == ("A1", "ann", 0, True, 4)
+    assert again.pending_events == []
+
+
+def test_rules_enforced_without_recording():
+    acc = Account.open("A1", "ann")
+    acc.deposit(10)
+    for bad in (lambda: acc.withdraw(11), lambda: acc.deposit(0), lambda: acc.deposit(-5),
+                lambda: acc.deposit(2.5), lambda: acc.close()):
+        with pytest.raises(DomainError):
+            bad()
+    assert len(acc.pending_events) == 2 and acc.balance == 10
+
+
+def test_closed_account_rejects_commands():
+    acc = Account.open("A1", "ann")
+    acc.close()
+    with pytest.raises(DomainError):
+        acc.deposit(1)
+    with pytest.raises(DomainError):
+        acc.close()
+
+
+def test_pending_events_only_new_after_load():
+    history = [Opened("B", "bob"), Deposited(5)]
+    acc = Account.from_events(history)
+    acc.deposit(7)
+    assert acc.pending_events == [Deposited(7)] and acc.version == 3 and acc.balance == 12
+
+
+def test_events_are_frozen():
+    e = Deposited(5)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        e.amount = 6
+    assert Closed() == Closed()
+@@@ task event_store_projection leaf=13 diff=4 entry=EventStore,ConcurrencyError,CartTotals
+@@@ prompt
+Write an in-memory `EventStore` with optimistic concurrency, plus `ConcurrencyError` and a projection `CartTotals`. Events are dicts with a `"type"` key. `append(stream_id, events, expected_version)` appends a list of events to a stream only if the stream currently has exactly `expected_version` events (0 for a new stream), otherwise raises `ConcurrencyError` and appends nothing; it returns the new version. `load(stream_id)` returns a copy of the stream's events; `all_events()` returns `(stream_id, event)` pairs in global append order. `subscribe(projection)` registers an object whose `handle(stream_id, event)` is called for each newly appended event. `CartTotals` tracks per cart (stream id): `"ItemAdded"` with `sku`, `price`, `qty` adds a line (adding an existing sku increases its qty), `"ItemRemoved"` with `sku` removes the line, `"CheckedOut"` freezes the cart (later events for that cart are ignored). `total(cart_id)` returns the sum of price*qty (0 for unknown carts); `CartTotals.rebuild(store)` is a classmethod that builds a projection by replaying `all_events()`.
+@@@ reference
+class ConcurrencyError(Exception):
+    pass
+
+
+class EventStore:
+    def __init__(self):
+        self._streams = {}
+        self._log = []
+        self._subs = []
+
+    def append(self, stream_id, events, expected_version):
+        stream = self._streams.setdefault(stream_id, [])
+        if len(stream) != expected_version:
+            raise ConcurrencyError(f"{stream_id}: expected {expected_version}, at {len(stream)}")
+        for e in events:
+            stream.append(e)
+            self._log.append((stream_id, e))
+        for e in events:
+            for p in self._subs:
+                p.handle(stream_id, e)
+        return len(stream)
+
+    def load(self, stream_id):
+        return list(self._streams.get(stream_id, []))
+
+    def all_events(self):
+        return list(self._log)
+
+    def subscribe(self, projection):
+        self._subs.append(projection)
+
+
+class CartTotals:
+    def __init__(self):
+        self._lines = {}
+        self._frozen = set()
+
+    def handle(self, stream_id, event):
+        if stream_id in self._frozen:
+            return
+        lines = self._lines.setdefault(stream_id, {})
+        t = event["type"]
+        if t == "ItemAdded":
+            price, qty = lines.get(event["sku"], (event["price"], 0))
+            lines[event["sku"]] = (event["price"], qty + event["qty"])
+        elif t == "ItemRemoved":
+            lines.pop(event["sku"], None)
+        elif t == "CheckedOut":
+            self._frozen.add(stream_id)
+
+    def total(self, cart_id):
+        return sum(p * q for p, q in self._lines.get(cart_id, {}).values())
+
+    @classmethod
+    def rebuild(cls, store):
+        proj = cls()
+        for sid, e in store.all_events():
+            proj.handle(sid, e)
+        return proj
+@@@ tests
+import pytest
+from solution import EventStore, ConcurrencyError, CartTotals
+
+
+def add(sku, price, qty=1):
+    return {"type": "ItemAdded", "sku": sku, "price": price, "qty": qty}
+
+
+def test_append_and_load():
+    s = EventStore()
+    assert s.append("c1", [add("a", 5)], 0) == 1
+    assert s.append("c1", [add("b", 3, 2)], 1) == 2
+    assert [e["sku"] for e in s.load("c1")] == ["a", "b"]
+    assert s.load("unknown") == []
+
+
+def test_optimistic_concurrency():
+    s = EventStore()
+    s.append("c1", [add("a", 1)], 0)
+    with pytest.raises(ConcurrencyError):
+        s.append("c1", [add("b", 1), add("c", 1)], 0)
+    assert len(s.load("c1")) == 1 and len(s.all_events()) == 1
+
+
+def test_load_returns_copy():
+    s = EventStore()
+    s.append("c1", [add("a", 1)], 0)
+    s.load("c1").append("junk")
+    assert len(s.load("c1")) == 1
+
+
+def test_projection_live_updates():
+    s = EventStore()
+    p = CartTotals()
+    s.subscribe(p)
+    s.append("c1", [add("a", 5, 2), add("b", 3)], 0)
+    s.append("c2", [add("a", 5)], 0)
+    s.append("c1", [add("a", 5, 1), {"type": "ItemRemoved", "sku": "b"}], 2)
+    assert p.total("c1") == 15 and p.total("c2") == 5 and p.total("nope") == 0
+
+
+def test_checkout_freezes_cart():
+    s = EventStore()
+    p = CartTotals()
+    s.subscribe(p)
+    s.append("c1", [add("a", 10), {"type": "CheckedOut"}], 0)
+    s.append("c1", [add("b", 99)], 2)
+    assert p.total("c1") == 10
+
+
+def test_rebuild_matches_live():
+    s = EventStore()
+    live = CartTotals()
+    s.subscribe(live)
+    s.append("x", [add("a", 2, 3)], 0)
+    s.append("y", [add("b", 7)], 0)
+    s.append("x", [{"type": "ItemRemoved", "sku": "a"}, add("c", 1, 4)], 1)
+    rebuilt = CartTotals.rebuild(s)
+    for cart in ("x", "y"):
+        assert rebuilt.total(cart) == live.total(cart)
+    assert [sid for sid, _ in s.all_events()] == ["x", "y", "x", "x"]
+@@@ task plugin_directory_loader leaf=14 diff=3 entry=PluginRegistry
+@@@ prompt
+Write a `PluginRegistry` that discovers plugins from a directory of Python files. `register(name, obj)` adds a plugin (a duplicate name raises `ValueError`); `get(name)` returns it (`KeyError` if unknown); `names()` returns sorted names. `load_directory(path)` imports every `*.py` file in that directory whose name does not start with `_`, in sorted order, as a uniquely named module using `importlib.util.spec_from_file_location` (do not modify `sys.path`). After import it calls the module's `register(registry)` function. Modules without a `register` function are skipped and their file stem is appended to `registry.skipped`; if importing or registering raises, store the exception in `registry.errors[stem]` and continue with the next file. Return the list of stems that loaded successfully.
+@@@ reference
+import importlib.util
+import itertools
+import os
+
+_counter = itertools.count()
+
+
+class PluginRegistry:
+    def __init__(self):
+        self._plugins = {}
+        self.skipped = []
+        self.errors = {}
+
+    def register(self, name, obj):
+        if name in self._plugins:
+            raise ValueError(f"duplicate plugin {name!r}")
+        self._plugins[name] = obj
+
+    def get(self, name):
+        return self._plugins[name]
+
+    def names(self):
+        return sorted(self._plugins)
+
+    def load_directory(self, path):
+        loaded = []
+        for fname in sorted(os.listdir(path)):
+            if not fname.endswith(".py") or fname.startswith("_"):
+                continue
+            stem = fname[:-3]
+            modname = f"_plugin_{next(_counter)}_{stem}"
+            try:
+                spec = importlib.util.spec_from_file_location(modname, os.path.join(path, fname))
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                reg = getattr(mod, "register", None)
+                if not callable(reg):
+                    self.skipped.append(stem)
+                    continue
+                reg(self)
+            except Exception as exc:
+                self.errors[stem] = exc
+                continue
+            loaded.append(stem)
+        return loaded
+@@@ tests
+import sys
+import pytest
+from solution import PluginRegistry
+
+
+def write(d, name, body):
+    (d / name).write_text(body)
+
+
+def test_loads_plugins(tmp_path):
+    write(tmp_path, "greet.py", "def register(r):\n    r.register('greet', lambda n: 'hi ' + n)\n")
+    write(tmp_path, "shout.py", "def register(r):\n    r.register('shout', str.upper)\n")
+    reg = PluginRegistry()
+    assert reg.load_directory(str(tmp_path)) == ["greet", "shout"]
+    assert reg.get("greet")("bo") == "hi bo" and reg.names() == ["greet", "shout"]
+
+
+def test_skips_private_and_non_python(tmp_path):
+    write(tmp_path, "_helper.py", "raise RuntimeError('must not import')\n")
+    write(tmp_path, "notes.txt", "x")
+    write(tmp_path, "ok.py", "def register(r):\n    r.register('ok', 1)\n")
+    reg = PluginRegistry()
+    assert reg.load_directory(str(tmp_path)) == ["ok"]
+    assert reg.errors == {}
+
+
+def test_missing_register_is_skipped(tmp_path):
+    write(tmp_path, "lib.py", "VALUE = 3\n")
+    reg = PluginRegistry()
+    assert reg.load_directory(str(tmp_path)) == []
+    assert reg.skipped == ["lib"]
+
+
+def test_errors_are_recorded_and_loading_continues(tmp_path):
+    write(tmp_path, "a_broken.py", "import does_not_exist_xyz\n")
+    write(tmp_path, "b_fails.py", "def register(r):\n    raise ValueError('bad config')\n")
+    write(tmp_path, "c_good.py", "def register(r):\n    r.register('good', True)\n")
+    reg = PluginRegistry()
+    assert reg.load_directory(str(tmp_path)) == ["c_good"]
+    assert isinstance(reg.errors["a_broken"], ImportError)
+    assert isinstance(reg.errors["b_fails"], ValueError)
+
+
+def test_duplicate_names(tmp_path):
+    reg = PluginRegistry()
+    reg.register("x", 1)
+    with pytest.raises(ValueError):
+        reg.register("x", 2)
+    with pytest.raises(KeyError):
+        reg.get("y")
+
+
+def test_does_not_touch_sys_path_and_isolates_modules(tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    write(a, "same.py", "def register(r):\n    r.register('from_a', 'A')\n")
+    write(b, "same.py", "def register(r):\n    r.register('from_b', 'B')\n")
+    before = list(sys.path)
+    reg = PluginRegistry()
+    reg.load_directory(str(a))
+    reg.load_directory(str(b))
+    assert sys.path == before
+    assert reg.get("from_a") == "A" and reg.get("from_b") == "B"
+@@@ task entry_point_loader leaf=14 diff=3 entry=load_object,PluginLoader
+@@@ prompt
+Write `load_object(spec: str)` that resolves entry-point style strings like `"package.module:attr.sub"`: import the module part with `importlib.import_module` and walk the dotted attribute path. A spec without exactly one `:` or with an empty side raises `ValueError`; a missing module raises `ModuleNotFoundError` (let it propagate); a missing attribute raises `AttributeError` whose message contains the full spec. Also write `PluginLoader(specs: dict[str, str])` mapping plugin names to specs: `available()` returns sorted names, `get(name)` loads lazily on first use and caches the object (an unknown name raises `KeyError`), and `loaded()` returns the sorted names loaded so far.
+@@@ reference
+import importlib
+
+
+def load_object(spec: str):
+    if spec.count(":") != 1:
+        raise ValueError(f"spec must look like 'module:attr', got {spec!r}")
+    mod_name, attr_path = spec.split(":")
+    if not mod_name or not attr_path:
+        raise ValueError(f"spec must look like 'module:attr', got {spec!r}")
+    obj = importlib.import_module(mod_name)
+    for part in attr_path.split("."):
+        try:
+            obj = getattr(obj, part)
+        except AttributeError:
+            raise AttributeError(f"{spec!r}: no attribute {part!r}") from None
+    return obj
+
+
+class PluginLoader:
+    def __init__(self, specs):
+        self._specs = dict(specs)
+        self._cache = {}
+
+    def available(self):
+        return sorted(self._specs)
+
+    def get(self, name):
+        if name not in self._cache:
+            self._cache[name] = load_object(self._specs[name])
+        return self._cache[name]
+
+    def loaded(self):
+        return sorted(self._cache)
+@@@ tests
+import json
+import os.path
+import pytest
+from solution import load_object, PluginLoader
+
+
+def test_loads_stdlib_objects():
+    assert load_object("json:dumps") is json.dumps
+    assert load_object("os.path:join") is os.path.join
+    assert load_object("json:JSONDecoder.decode") is json.JSONDecoder.decode
+
+
+@pytest.mark.parametrize("bad", ["json", "json:", ":dumps", "a:b:c", ""])
+def test_bad_specs(bad):
+    with pytest.raises(ValueError):
+        load_object(bad)
+
+
+def test_missing_module():
+    with pytest.raises(ModuleNotFoundError):
+        load_object("no_such_module_qq:thing")
+
+
+def test_missing_attribute_message():
+    with pytest.raises(AttributeError) as ei:
+        load_object("json:nothing_here")
+    assert "json:nothing_here" in str(ei.value)
+
+
+def test_plugin_loader_lazy_and_cached(tmp_path, monkeypatch):
+    (tmp_path / "myplug.py").write_text("LOADS = []\nLOADS.append(1)\nclass Plugin:\n    name = 'p'\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    loader = PluginLoader({"p": "myplug:Plugin", "j": "json:loads"})
+    assert loader.available() == ["j", "p"] and loader.loaded() == []
+    cls = loader.get("p")
+    assert cls.name == "p" and loader.get("p") is cls
+    import myplug
+    assert myplug.LOADS == [1]
+    assert loader.loaded() == ["p"]
+
+
+def test_plugin_loader_unknown_name():
+    with pytest.raises(KeyError):
+        PluginLoader({}).get("x")
+@@@ task layered_config_loader leaf=15 diff=3 entry=load_config
+@@@ prompt
+Write `load_config(defaults: dict, file_path=None, env=None, overrides=None, prefix="APP_") -> dict` that merges configuration layers with precedence overrides > environment > JSON file > defaults. Nested dicts are merged key by key (deep merge), never replaced wholesale, and none of the inputs may be mutated. `env` is a mapping like `os.environ`: a variable `APP_DB__PORT=5433` maps to `["db"]["port"]` (strip the prefix, split on `__`, lowercase). Only keys that already exist in `defaults` are taken from the environment, and their string values are converted to the type of the default: int, float, bool (`1/true/yes/on` and `0/false/no/off`, case-insensitive; anything else raises `ValueError`) or str. If `file_path` is given but does not exist, raise `FileNotFoundError`. `overrides` is a nested dict applied last.
+@@@ reference
+import copy
+import json
+
+
+def _merge(base, extra):
+    for k, v in extra.items():
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            _merge(base[k], v)
+        else:
+            base[k] = copy.deepcopy(v)
+    return base
+
+
+_TRUE = {"1", "true", "yes", "on"}
+_FALSE = {"0", "false", "no", "off"}
+
+
+def _coerce(raw, default):
+    if isinstance(default, bool):
+        low = raw.strip().lower()
+        if low in _TRUE:
+            return True
+        if low in _FALSE:
+            return False
+        raise ValueError(f"not a boolean: {raw!r}")
+    if isinstance(default, int):
+        return int(raw)
+    if isinstance(default, float):
+        return float(raw)
+    return raw
+
+
+def load_config(defaults, file_path=None, env=None, overrides=None, prefix="APP_"):
+    cfg = copy.deepcopy(defaults)
+    if file_path is not None:
+        with open(file_path) as f:
+            _merge(cfg, json.load(f))
+    for name, raw in (env or {}).items():
+        if not name.startswith(prefix):
+            continue
+        path = name[len(prefix):].lower().split("__")
+        node, ref = cfg, defaults
+        ok = True
+        for p in path[:-1]:
+            if not isinstance(ref, dict) or not isinstance(ref.get(p), dict):
+                ok = False
+                break
+            node, ref = node.setdefault(p, {}), ref[p]
+        leaf = path[-1]
+        if ok and isinstance(ref, dict) and leaf in ref and not isinstance(ref[leaf], dict):
+            node[leaf] = _coerce(raw, ref[leaf])
+    if overrides:
+        _merge(cfg, overrides)
+    return cfg
+@@@ tests
+import copy
+import json
+import pytest
+from solution import load_config
+
+DEFAULTS = {"debug": False, "db": {"host": "localhost", "port": 5432, "timeout": 1.5}, "name": "app"}
+
+
+def test_defaults_only_is_a_copy():
+    cfg = load_config(DEFAULTS)
+    assert cfg == DEFAULTS
+    cfg["db"]["port"] = 1
+    assert DEFAULTS["db"]["port"] == 5432
+
+
+def test_file_deep_merges(tmp_path):
+    p = tmp_path / "c.json"
+    p.write_text(json.dumps({"db": {"host": "db.prod"}}))
+    cfg = load_config(DEFAULTS, file_path=str(p))
+    assert cfg["db"] == {"host": "db.prod", "port": 5432, "timeout": 1.5}
+
+
+def test_env_coercion_and_nesting():
+    env = {"APP_DB__PORT": "6000", "APP_DEBUG": "Yes", "APP_DB__TIMEOUT": "2.5", "APP_NAME": "svc",
+           "OTHER_DEBUG": "0", "APP_UNKNOWN": "x"}
+    cfg = load_config(DEFAULTS, env=env)
+    assert cfg["db"]["port"] == 6000 and cfg["db"]["timeout"] == 2.5
+    assert cfg["debug"] is True and cfg["name"] == "svc" and "unknown" not in cfg
+
+
+def test_precedence(tmp_path):
+    p = tmp_path / "c.json"
+    p.write_text(json.dumps({"db": {"port": 1111}, "name": "file"}))
+    cfg = load_config(DEFAULTS, file_path=str(p), env={"APP_DB__PORT": "2222"},
+                      overrides={"name": "cli"})
+    assert cfg["db"]["port"] == 2222 and cfg["name"] == "cli"
+    cfg = load_config(DEFAULTS, file_path=str(p), env={"APP_DB__PORT": "2222"}, overrides={"db": {"port": 3333}})
+    assert cfg["db"] == {"host": "localhost", "port": 3333, "timeout": 1.5}
+
+
+def test_bad_bool_raises():
+    with pytest.raises(ValueError):
+        load_config(DEFAULTS, env={"APP_DEBUG": "maybe"})
+
+
+def test_missing_file(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        load_config(DEFAULTS, file_path=str(tmp_path / "missing.json"))
+
+
+def test_inputs_not_mutated(tmp_path):
+    over = {"db": {"host": "h"}}
+    snap = copy.deepcopy(over)
+    d = copy.deepcopy(DEFAULTS)
+    load_config(d, env={"APP_DB__PORT": "1"}, overrides=over)
+    assert over == snap and d == DEFAULTS
+@@@ task config_with_sources leaf=15 diff=3 entry=LayeredConfig
+@@@ prompt
+Write `LayeredConfig(*layers)` where each layer is a `(name, mapping)` pair and earlier layers take priority (for example `("cli", ...), ("env", ...), ("defaults", ...)`). Mappings may be nested dicts. `get(dotted_key, default=...)` looks up keys like `"db.port"`: the highest-priority layer that has the key wins; if no layer has it, return the default if one was given, otherwise raise `KeyError`. `source(dotted_key)` returns the name of the layer that supplies the value (`KeyError` if none). When a key holds a dict in several layers, `get` returns the deep merge of those dicts with higher layers winning; a non-dict in a higher layer replaces a dict below it. `as_dict()` returns the fully merged configuration.
+@@@ reference
+_MISSING = object()
+
+
+def _lookup(mapping, parts):
+    node = mapping
+    for p in parts:
+        if not isinstance(node, dict) or p not in node:
+            return _MISSING
+        node = node[p]
+    return node
+
+
+def _merge(low, high):
+    out = dict(low)
+    for k, v in high.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+class LayeredConfig:
+    def __init__(self, *layers):
+        self.layers = list(layers)
+
+    def _values(self, key):
+        parts = key.split(".")
+        return [(name, v) for name, m in self.layers if (v := _lookup(m, parts)) is not _MISSING]
+
+    def get(self, key, default=_MISSING):
+        vals = self._values(key)
+        if not vals:
+            if default is _MISSING:
+                raise KeyError(key)
+            return default
+        top = vals[0][1]
+        if not isinstance(top, dict):
+            return top
+        result = {}
+        for _, v in reversed(vals):
+            result = _merge(result, v) if isinstance(v, dict) else {}
+        return result
+
+    def source(self, key):
+        vals = self._values(key)
+        if not vals:
+            raise KeyError(key)
+        return vals[0][0]
+
+    def as_dict(self):
+        result = {}
+        for _, m in reversed(self.layers):
+            result = _merge(result, m)
+        return result
+@@@ tests
+import pytest
+from solution import LayeredConfig
+
+
+def make():
+    return LayeredConfig(
+        ("cli", {"db": {"port": 9999}}),
+        ("env", {"db": {"host": "envhost"}, "debug": True}),
+        ("defaults", {"db": {"host": "localhost", "port": 5432, "pool": {"size": 5}}, "debug": False, "name": "app"}),
+    )
+
+
+def test_priority():
+    c = make()
+    assert c.get("db.port") == 9999 and c.get("db.host") == "envhost"
+    assert c.get("debug") is True and c.get("name") == "app"
+
+
+def test_source():
+    c = make()
+    assert c.source("db.port") == "cli"
+    assert c.source("db.host") == "env"
+    assert c.source("db.pool.size") == "defaults"
+    with pytest.raises(KeyError):
+        c.source("nope")
+
+
+def test_missing_and_default():
+    c = make()
+    with pytest.raises(KeyError):
+        c.get("db.user")
+    assert c.get("db.user", None) is None
+    assert c.get("name.first", "x") == "x"
+
+
+def test_dict_values_are_merged():
+    c = make()
+    assert c.get("db") == {"host": "envhost", "port": 9999, "pool": {"size": 5}}
+
+
+def test_scalar_replaces_dict():
+    c = LayeredConfig(("top", {"db": "sqlite:///x"}), ("base", {"db": {"host": "h"}}))
+    assert c.get("db") == "sqlite:///x"
+    assert c.as_dict() == {"db": "sqlite:///x"}
+
+
+def test_as_dict():
+    assert make().as_dict() == {"db": {"host": "envhost", "port": 9999, "pool": {"size": 5}},
+                                "debug": True, "name": "app"}
+
+
+def test_falsy_values_count_as_present():
+    c = LayeredConfig(("a", {"x": 0, "y": None}), ("b", {"x": 5, "y": 1}))
+    assert c.get("x") == 0 and c.get("y") is None and c.source("y") == "a"
+@@@ task feature_flags_rollout leaf=16 diff=3 entry=FeatureFlags
+@@@ prompt
+Write a `FeatureFlags` class. `define(name, enabled=True, rollout=100, allow=(), deny=())` adds or replaces a flag; `rollout` is a percentage 0-100 (outside that range raises `ValueError`). `is_enabled(name, user_id=None) -> bool` returns False for unknown or disabled flags; otherwise a user in `deny` gets False, a user in `allow` gets True, and everyone else is in the rollout if `int(hashlib.sha256(f"{name}:{user_id}".encode()).hexdigest(), 16) % 100 < rollout`. With `rollout < 100` and no user id the answer is False. The bucketing must be stable across processes (no `hash()`), so raising the rollout only ever adds users.
+@@@ reference
+import hashlib
+
+
+class FeatureFlags:
+    def __init__(self):
+        self._flags = {}
+
+    def define(self, name, enabled=True, rollout=100, allow=(), deny=()):
+        if not 0 <= rollout <= 100:
+            raise ValueError("rollout must be between 0 and 100")
+        self._flags[name] = {"enabled": enabled, "rollout": rollout, "allow": set(allow), "deny": set(deny)}
+
+    @staticmethod
+    def bucket(name, user_id):
+        return int(hashlib.sha256(f"{name}:{user_id}".encode()).hexdigest(), 16) % 100
+
+    def is_enabled(self, name, user_id=None):
+        f = self._flags.get(name)
+        if f is None or not f["enabled"]:
+            return False
+        if user_id is not None:
+            if user_id in f["deny"]:
+                return False
+            if user_id in f["allow"]:
+                return True
+        if f["rollout"] >= 100:
+            return True
+        if user_id is None:
+            return False
+        return self.bucket(name, user_id) < f["rollout"]
+@@@ tests
+import hashlib
+import pytest
+from solution import FeatureFlags
+
+
+def test_unknown_and_disabled():
+    ff = FeatureFlags()
+    assert ff.is_enabled("nope", "u1") is False
+    ff.define("f", enabled=False)
+    assert ff.is_enabled("f", "u1") is False
+
+
+def test_full_rollout_and_anonymous():
+    ff = FeatureFlags()
+    ff.define("f")
+    assert ff.is_enabled("f") and ff.is_enabled("f", "u1")
+    ff.define("g", rollout=50)
+    assert ff.is_enabled("g") is False
+
+
+def test_bucket_formula():
+    ff = FeatureFlags()
+    ff.define("beta", rollout=30)
+    for i in range(200):
+        uid = f"user{i}"
+        expected = int(hashlib.sha256(f"beta:{uid}".encode()).hexdigest(), 16) % 100 < 30
+        assert ff.is_enabled("beta", uid) is expected
+
+
+def test_rollout_fraction_and_monotonic():
+    ff = FeatureFlags()
+    ff.define("x", rollout=20)
+    users = [f"u{i}" for i in range(2000)]
+    at20 = {u for u in users if ff.is_enabled("x", u)}
+    ff.define("x", rollout=50)
+    at50 = {u for u in users if ff.is_enabled("x", u)}
+    assert at20 <= at50
+    assert 300 < len(at20) < 500 and 850 < len(at50) < 1150
+
+
+def test_allow_and_deny_lists():
+    ff = FeatureFlags()
+    ff.define("f", rollout=0, allow=["vip"], deny=["banned"])
+    assert ff.is_enabled("f", "vip") and not ff.is_enabled("f", "someone")
+    ff.define("g", rollout=100, deny=["banned"], allow=["banned"])
+    assert ff.is_enabled("g", "banned") is False
+
+
+def test_invalid_rollout():
+    ff = FeatureFlags()
+    for bad in (-1, 101):
+        with pytest.raises(ValueError):
+            ff.define("f", rollout=bad)
+@@@ task targeting_rules leaf=16 diff=3 entry=Flag,evaluate
+@@@ prompt
+Write rule-based feature flag targeting. `Flag(name, rules, default=False)` holds a list of rule dicts like `{"attribute": "country", "op": "in", "value": ["DE", "FR"], "result": True}`. Supported ops are `eq`, `neq`, `in`, `not_in`, `gte`, `lt` and `contains` (the attribute is a string or list that contains the value); an unknown op or a rule missing one of the four keys raises `ValueError` when the `Flag` is constructed. `evaluate(flag, context: dict) -> bool` returns the `result` of the first rule that matches, or `flag.default` if none do. A rule whose attribute is missing from the context does not match, and neither does a comparison that raises `TypeError` (for example comparing a str with an int).
+@@@ reference
+import operator
+
+_OPS = {
+    "eq": operator.eq,
+    "neq": operator.ne,
+    "in": lambda a, v: a in v,
+    "not_in": lambda a, v: a not in v,
+    "gte": operator.ge,
+    "lt": operator.lt,
+    "contains": lambda a, v: v in a,
+}
+_KEYS = {"attribute", "op", "value", "result"}
+
+
+class Flag:
+    def __init__(self, name, rules, default=False):
+        for r in rules:
+            if not _KEYS <= set(r):
+                raise ValueError(f"rule missing keys: {_KEYS - set(r)}")
+            if r["op"] not in _OPS:
+                raise ValueError(f"unknown op {r['op']!r}")
+        self.name = name
+        self.rules = list(rules)
+        self.default = default
+
+
+def evaluate(flag, context):
+    for r in flag.rules:
+        if r["attribute"] not in context:
+            continue
+        try:
+            matched = _OPS[r["op"]](context[r["attribute"]], r["value"])
+        except TypeError:
+            continue
+        if matched:
+            return r["result"]
+    return flag.default
+@@@ tests
+import pytest
+from solution import Flag, evaluate
+
+
+def rule(attr, op, value, result=True):
+    return {"attribute": attr, "op": op, "value": value, "result": result}
+
+
+def test_first_match_wins():
+    f = Flag("new_ui", [rule("country", "in", ["DE"], False), rule("plan", "eq", "pro", True)])
+    assert evaluate(f, {"country": "DE", "plan": "pro"}) is False
+    assert evaluate(f, {"country": "US", "plan": "pro"}) is True
+    assert evaluate(f, {"country": "US", "plan": "free"}) is False
+
+
+def test_default():
+    f = Flag("x", [rule("age", "gte", 18)], default=True)
+    assert evaluate(f, {}) is True
+    f2 = Flag("x", [rule("age", "gte", 18, False)])
+    assert evaluate(f2, {"age": 30}) is False
+
+
+@pytest.mark.parametrize("op,value,ctx,expected", [
+    ("eq", 3, 3, True), ("neq", 3, 3, False), ("in", [1, 2], 2, True), ("not_in", [1, 2], 2, False),
+    ("gte", 10, 10, True), ("lt", 10, 10, False), ("contains", "beta", ["alpha", "beta"], True),
+    ("contains", "@corp.com", "a@corp.com", True),
+])
+def test_ops(op, value, ctx, expected):
+    f = Flag("f", [rule("a", op, value)])
+    assert evaluate(f, {"a": ctx}) is expected
+
+
+def test_type_errors_do_not_match():
+    f = Flag("f", [rule("age", "gte", 18), rule("age", "eq", "old", True)], default=None)
+    assert evaluate(f, {"age": "old"}) is True
+    assert evaluate(Flag("g", [rule("age", "lt", 5)]), {"age": None}) is False
+
+
+def test_construction_validation():
+    with pytest.raises(ValueError):
+        Flag("f", [rule("a", "regex", ".*")])
+    with pytest.raises(ValueError):
+        Flag("f", [{"attribute": "a", "op": "eq", "value": 1}])
+
+
+def test_missing_attribute_skips_rule():
+    f = Flag("f", [rule("team", "eq", "core", True), rule("country", "eq", "FR", True)])
+    assert evaluate(f, {"country": "FR"}) is True
+@@@ task consistent_hash_ring leaf=17 diff=4 entry=HashRing
+@@@ prompt
+Write a consistent hashing ring `HashRing(nodes=(), replicas=100)`. Each node is placed at `replicas` points on the ring, at positions `int(hashlib.md5(f"{node}#{i}".encode()).hexdigest(), 16)` for i in range(replicas); a key is hashed with `int(hashlib.md5(key.encode()).hexdigest(), 16)` and belongs to the first node point clockwise from it (wrapping around). Methods: `add_node(node)`, `remove_node(node)` (`KeyError` if absent), `get_node(key)` and `get_nodes(key, n)` which returns up to `n` distinct nodes walking clockwise (for replication). Lookups on an empty ring raise `LookupError`. Use `bisect` for O(log n) lookups.
+@@@ reference
+import bisect
+import hashlib
+
+
+def _h(s):
+    return int(hashlib.md5(s.encode()).hexdigest(), 16)
+
+
+class HashRing:
+    def __init__(self, nodes=(), replicas=100):
+        self.replicas = replicas
+        self._points = []
+        self._owner = {}
+        self._nodes = set()
+        for n in nodes:
+            self.add_node(n)
+
+    def add_node(self, node):
+        if node in self._nodes:
+            return
+        self._nodes.add(node)
+        for i in range(self.replicas):
+            p = _h(f"{node}#{i}")
+            self._owner[p] = node
+            bisect.insort(self._points, p)
+
+    def remove_node(self, node):
+        if node not in self._nodes:
+            raise KeyError(node)
+        self._nodes.discard(node)
+        dead = {p for p, n in self._owner.items() if n == node}
+        for p in dead:
+            del self._owner[p]
+        self._points = [p for p in self._points if p not in dead]
+
+    def _start(self, key):
+        if not self._points:
+            raise LookupError("empty ring")
+        return bisect.bisect_right(self._points, _h(key)) % len(self._points)
+
+    def get_node(self, key):
+        return self._owner[self._points[self._start(key)]]
+
+    def get_nodes(self, key, n):
+        i = self._start(key)
+        out = []
+        for k in range(len(self._points)):
+            node = self._owner[self._points[(i + k) % len(self._points)]]
+            if node not in out:
+                out.append(node)
+                if len(out) == n:
+                    break
+        return out
+@@@ tests
+import bisect
+import hashlib
+from collections import Counter
+import pytest
+from solution import HashRing
+
+KEYS = [f"key-{i}" for i in range(2000)]
+
+
+def test_empty_ring():
+    with pytest.raises(LookupError):
+        HashRing().get_node("x")
+
+
+def test_matches_specified_hashing():
+    ring = HashRing(["a", "b", "c"], replicas=10)
+    pts = sorted((int(hashlib.md5(f"{n}#{i}".encode()).hexdigest(), 16), n) for n in "abc" for i in range(10))
+    for k in KEYS[:200]:
+        h = int(hashlib.md5(k.encode()).hexdigest(), 16)
+        idx = bisect.bisect_right([p for p, _ in pts], h) % len(pts)
+        assert ring.get_node(k) == pts[idx][1]
+
+
+def test_distribution_reasonable():
+    ring = HashRing(["n1", "n2", "n3", "n4"])
+    counts = Counter(ring.get_node(k) for k in KEYS)
+    assert set(counts) == {"n1", "n2", "n3", "n4"}
+    assert all(250 < c < 800 for c in counts.values())
+
+
+def test_removal_only_moves_that_nodes_keys():
+    ring = HashRing(["n1", "n2", "n3", "n4"])
+    before = {k: ring.get_node(k) for k in KEYS}
+    ring.remove_node("n3")
+    after = {k: ring.get_node(k) for k in KEYS}
+    for k in KEYS:
+        if before[k] != "n3":
+            assert after[k] == before[k]
+        else:
+            assert after[k] != "n3"
+    with pytest.raises(KeyError):
+        ring.remove_node("n3")
+
+
+def test_adding_moves_about_one_fifth():
+    ring = HashRing(["n1", "n2", "n3", "n4"])
+    before = {k: ring.get_node(k) for k in KEYS}
+    ring.add_node("n5")
+    moved = [k for k in KEYS if ring.get_node(k) != before[k]]
+    assert all(ring.get_node(k) == "n5" for k in moved)
+    assert 0.08 < len(moved) / len(KEYS) < 0.35
+
+
+def test_get_nodes_distinct():
+    ring = HashRing(["a", "b", "c"])
+    for k in KEYS[:100]:
+        ns = ring.get_nodes(k, 2)
+        assert len(ns) == 2 and len(set(ns)) == 2 and ns[0] == ring.get_node(k)
+    assert sorted(ring.get_nodes("x", 10)) == ["a", "b", "c"]
+@@@ task bloom_filter leaf=18 diff=3 entry=BloomFilter
+@@@ prompt
+Write a `BloomFilter(capacity: int, error_rate: float = 0.01)`. Size it with the standard formulas: number of bits `m = ceil(-capacity * ln(error_rate) / (ln 2) ** 2)` and number of hash functions `k = max(1, round(m / capacity * ln 2))`, exposed as attributes `size_bits` and `num_hashes`. Store bits in a `bytearray`. Derive the k bit positions from one SHA-256 digest by double hashing (h1 and h2 from the first and second 8 bytes; position i is `(h1 + i * h2) % m`). Items may be `str` (encode as UTF-8) or `bytes`. Support `add(item)`, `in`, `len()` (number of `add` calls) and `union(other)` returning a new filter (filters with different sizes raise `ValueError`). Invalid capacity or an error rate outside (0, 1) raise `ValueError`.
+@@@ reference
+import hashlib
+import math
+
+
+class BloomFilter:
+    def __init__(self, capacity: int, error_rate: float = 0.01):
+        if capacity <= 0 or not 0 < error_rate < 1:
+            raise ValueError("bad capacity or error rate")
+        self.capacity = capacity
+        self.error_rate = error_rate
+        self.size_bits = math.ceil(-capacity * math.log(error_rate) / math.log(2) ** 2)
+        self.num_hashes = max(1, round(self.size_bits / capacity * math.log(2)))
+        self._bits = bytearray((self.size_bits + 7) // 8)
+        self._count = 0
+
+    def _positions(self, item):
+        if isinstance(item, str):
+            item = item.encode()
+        d = hashlib.sha256(item).digest()
+        h1 = int.from_bytes(d[:8], "big")
+        h2 = int.from_bytes(d[8:16], "big")
+        return [(h1 + i * h2) % self.size_bits for i in range(self.num_hashes)]
+
+    def add(self, item):
+        for p in self._positions(item):
+            self._bits[p >> 3] |= 1 << (p & 7)
+        self._count += 1
+
+    def __contains__(self, item):
+        return all(self._bits[p >> 3] & (1 << (p & 7)) for p in self._positions(item))
+
+    def __len__(self):
+        return self._count
+
+    def union(self, other):
+        if (self.size_bits, self.num_hashes) != (other.size_bits, other.num_hashes):
+            raise ValueError("incompatible filters")
+        out = BloomFilter(self.capacity, self.error_rate)
+        out._bits = bytearray(a | b for a, b in zip(self._bits, other._bits))
+        out._count = self._count + other._count
+        return out
+@@@ tests
+import pytest
+from solution import BloomFilter
+
+
+def test_sizing():
+    bf = BloomFilter(1000, 0.01)
+    assert bf.size_bits == 9586 and bf.num_hashes == 7
+    bf2 = BloomFilter(10, 0.5)
+    assert bf2.num_hashes >= 1
+
+
+def test_no_false_negatives():
+    bf = BloomFilter(2000, 0.01)
+    items = [f"item-{i}" for i in range(2000)]
+    for it in items:
+        bf.add(it)
+    assert all(it in bf for it in items) and len(bf) == 2000
+
+
+def test_false_positive_rate_near_target():
+    bf = BloomFilter(2000, 0.01)
+    for i in range(2000):
+        bf.add(f"in-{i}")
+    fp = sum(f"out-{i}" in bf for i in range(5000))
+    assert fp / 5000 < 0.03
+
+
+def test_bytes_and_str_equivalent():
+    bf = BloomFilter(10)
+    bf.add("café")
+    assert "café".encode() in bf
+    bf.add(b"\x00\xff")
+    assert b"\x00\xff" in bf
+
+
+def test_union():
+    a, b = BloomFilter(100), BloomFilter(100)
+    a.add("x")
+    b.add("y")
+    u = a.union(b)
+    assert "x" in u and "y" in u and len(u) == 2
+    assert "y" not in a
+    with pytest.raises(ValueError):
+        a.union(BloomFilter(5000))
+
+
+@pytest.mark.parametrize("cap,rate", [(0, 0.1), (-5, 0.1), (10, 0), (10, 1), (10, 1.5)])
+def test_invalid_params(cap, rate):
+    with pytest.raises(ValueError):
+        BloomFilter(cap, rate)
+
+
+def test_empty_contains_nothing():
+    bf = BloomFilter(50)
+    assert not any(f"k{i}" in bf for i in range(100))
+@@@ task trie_autocomplete leaf=19 diff=3 entry=Autocomplete
+@@@ prompt
+Write an `Autocomplete` class backed by a trie of dict nodes. `add(word, weight=1)` inserts a word (stored lowercased); adding an existing word adds to its weight. `suggest(prefix, limit=5)` returns up to `limit` words starting with the (case-insensitive) prefix, sorted by weight descending, then alphabetically; an empty prefix considers all words. `remove(word) -> bool` deletes a word and prunes trie nodes that no longer lead to any word; it returns False if the word was not present. `word in ac` checks membership, and `len(ac)` is the number of words. Only the subtree under the prefix should be searched.
+@@@ reference
+class Autocomplete:
+    def __init__(self):
+        self._root = {}
+        self._count = 0
+
+    def add(self, word, weight=1):
+        node = self._root
+        for ch in word.lower():
+            node = node.setdefault(ch, {})
+        if "$" not in node:
+            node["$"] = 0
+            self._count += 1
+        node["$"] += weight
+
+    def _find(self, prefix):
+        node = self._root
+        for ch in prefix:
+            node = node.get(ch)
+            if node is None:
+                return None
+        return node
+
+    def suggest(self, prefix, limit=5):
+        prefix = prefix.lower()
+        node = self._find(prefix)
+        if node is None:
+            return []
+        found = []
+        stack = [(node, prefix)]
+        while stack:
+            n, path = stack.pop()
+            for ch, child in n.items():
+                if ch == "$":
+                    found.append((-child, path))
+                else:
+                    stack.append((child, path + ch))
+        found.sort()
+        return [w for _, w in found[:limit]]
+
+    def remove(self, word):
+        word = word.lower()
+        path = [self._root]
+        for ch in word:
+            nxt = path[-1].get(ch)
+            if nxt is None:
+                return False
+            path.append(nxt)
+        if "$" not in path[-1]:
+            return False
+        del path[-1]["$"]
+        self._count -= 1
+        for i in range(len(word), 0, -1):
+            if path[i]:
+                break
+            del path[i - 1][word[i - 1]]
+        return True
+
+    def __contains__(self, word):
+        node = self._find(word.lower())
+        return node is not None and "$" in node
+
+    def __len__(self):
+        return self._count
+@@@ tests
+from solution import Autocomplete
+
+
+def make():
+    ac = Autocomplete()
+    for w, wt in [("car", 5), ("card", 3), ("care", 3), ("cat", 10), ("dog", 7), ("carbon", 1)]:
+        ac.add(w, wt)
+    return ac
+
+
+def test_suggest_order():
+    ac = make()
+    assert ac.suggest("ca") == ["cat", "car", "card", "care", "carbon"]
+    assert ac.suggest("car", limit=2) == ["car", "card"]
+
+
+def test_case_insensitive_and_unknown_prefix():
+    ac = make()
+    ac.add("Cart", 4)
+    assert "cart" in ac and "CART" in ac
+    assert ac.suggest("CAR", 1) == ["car"]
+    assert ac.suggest("zz") == []
+
+
+def test_weights_accumulate():
+    ac = make()
+    ac.add("carbon", 20)
+    assert ac.suggest("c", 1) == ["carbon"]
+    assert len(ac) == 6
+
+
+def test_empty_prefix_all_words():
+    ac = make()
+    assert ac.suggest("", limit=10) == ["cat", "dog", "car", "card", "care", "carbon"]
+
+
+def test_remove_and_prune():
+    ac = make()
+    assert ac.remove("carbon") is True
+    assert "carbon" not in ac and ac.suggest("carb") == []
+    assert ac.remove("carbon") is False
+    assert ac.remove("ca") is False
+    assert ac.remove("car") is True
+    assert ac.suggest("car") == ["card", "care"] and len(ac) == 4
+
+
+def test_prefix_is_word():
+    ac = Autocomplete()
+    ac.add("a")
+    ac.add("ab")
+    assert ac.suggest("a") == ["a", "ab"]
+    ac.remove("ab")
+    assert ac.suggest("a") == ["a"]
+@@@ task trie_counts leaf=19 diff=3 entry=Trie
+@@@ prompt
+Write a `Trie` of words with `insert(word)`, `delete(word) -> bool`, `contains(word) -> bool`, `count_prefix(prefix) -> int` and `longest_common_prefix() -> str`. Duplicate inserts count once. `count_prefix` must run in O(len(prefix)) by keeping a counter on every node of how many words pass through it (it counts words equal to the prefix too; the empty prefix gives the total). `longest_common_prefix()` returns the longest prefix shared by all stored words ("" if the trie is empty). `delete` returns False for words not present and keeps all counters correct.
+@@@ reference
+class _Node:
+    __slots__ = ("children", "count", "end")
+
+    def __init__(self):
+        self.children = {}
+        self.count = 0
+        self.end = False
+
+
+class Trie:
+    def __init__(self):
+        self._root = _Node()
+
+    def _walk(self, s):
+        node = self._root
+        for ch in s:
+            node = node.children.get(ch)
+            if node is None:
+                return None
+        return node
+
+    def contains(self, word):
+        n = self._walk(word)
+        return n is not None and n.end
+
+    def insert(self, word):
+        if self.contains(word):
+            return
+        node = self._root
+        node.count += 1
+        for ch in word:
+            node = node.children.setdefault(ch, _Node())
+            node.count += 1
+        node.end = True
+
+    def delete(self, word):
+        if not self.contains(word):
+            return False
+        node = self._root
+        node.count -= 1
+        for ch in word:
+            child = node.children[ch]
+            child.count -= 1
+            if child.count == 0:
+                del node.children[ch]
+                return True
+            node = child
+        node.end = False
+        return True
+
+    def count_prefix(self, prefix):
+        n = self._walk(prefix)
+        return 0 if n is None else n.count
+
+    def longest_common_prefix(self):
+        node, out = self._root, []
+        if node.count == 0:
+            return ""
+        while len(node.children) == 1 and not node.end:
+            ch, node = next(iter(node.children.items()))
+            out.append(ch)
+        return "".join(out)
+@@@ tests
+from solution import Trie
+
+
+def make(words):
+    t = Trie()
+    for w in words:
+        t.insert(w)
+    return t
+
+
+def test_count_prefix():
+    t = make(["apple", "app", "apply", "ape", "bat"])
+    assert t.count_prefix("ap") == 4
+    assert t.count_prefix("app") == 3
+    assert t.count_prefix("apple") == 1
+    assert t.count_prefix("") == 5
+    assert t.count_prefix("z") == 0
+
+
+def test_duplicates_count_once():
+    t = make(["a", "a", "ab"])
+    assert t.count_prefix("a") == 2
+
+
+def test_delete_updates_counts():
+    t = make(["apple", "app", "apply"])
+    assert t.delete("app") is True
+    assert not t.contains("app") and t.contains("apple")
+    assert t.count_prefix("app") == 2
+    assert t.delete("app") is False and t.delete("xyz") is False
+    t.delete("apple")
+    t.delete("apply")
+    assert t.count_prefix("") == 0 and t.count_prefix("a") == 0
+
+
+def test_longest_common_prefix():
+    assert make(["flower", "flow", "flight"]).longest_common_prefix() == "fl"
+    assert make(["interview", "internet", "interval"]).longest_common_prefix() == "inter"
+    assert make(["same"]).longest_common_prefix() == "same"
+    assert Trie().longest_common_prefix() == ""
+
+
+def test_lcp_stops_at_word_end():
+    assert make(["ab", "abc"]).longest_common_prefix() == "ab"
+    assert make(["", "abc"]).longest_common_prefix() == ""
+
+
+def test_reinsert_after_delete():
+    t = make(["cat"])
+    t.delete("cat")
+    t.insert("cat")
+    assert t.contains("cat") and t.count_prefix("c") == 1

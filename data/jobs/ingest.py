@@ -825,6 +825,10 @@ def job_github(uploader, pool):
                 stats["clone_fail"] = stats.get("clone_fail", 0) + 1
                 continue
             py = [p for p in glob.glob(os.path.join(d, "**", "*.py"), recursive=True) if os.path.isfile(p)]
+            if len(py) > 20_000:  # generated or vendored monorepo; not the curated code we want
+                stats["huge_repo"] = stats.get("huge_repo", 0) + 1
+                shutil.rmtree(d, ignore_errors=True)
+                continue
             share = python_share(d)
             if share < 0.6:  # gate 2's language rule, measured from the clone instead of the API
                 stats["low_python_share"] = stats.get("low_python_share", 0) + 1
@@ -832,12 +836,22 @@ def job_github(uploader, pool):
                 continue
             score, detail = repo_quality(d, py)
             detail["python_share"] = round(share, 3)
-            texts = []
-            for p in py:
+            # Memory guard: one monorepo once took a whole 31 GB session down (OOM kill). Skip big files
+            # unread and cap what a single repo can contribute.
+            texts, budget = [], 60_000_000
+            for p in sorted(py)[:3000]:
                 try:
-                    texts.append((open(p, encoding="utf-8", errors="replace").read(), os.path.relpath(p, d)))
+                    if os.path.getsize(p) > 100_000:
+                        stats["too_long"] = stats.get("too_long", 0) + 1
+                        continue
+                    t = open(p, encoding="utf-8", errors="replace").read()
                 except OSError:
-                    pass
+                    continue
+                budget -= len(t)
+                if budget < 0:
+                    stats["repo_cap"] = stats.get("repo_cap", 0) + 1
+                    break
+                texts.append((t, os.path.relpath(p, d)))
             spdx = SPDX_CASE.get(rec["license"], rec["license"])
             res = pool.map(_clean_stack_row, [(x, "/" + rel, spdx) for x, rel in texts], chunksize=16)
             n_ok = 0

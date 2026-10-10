@@ -1,0 +1,1089 @@
+@@@ task log_exception_traceback leaf=10 diff=2 entry=safe_call
+@@@ prompt
+Write `safe_call(fn, *args, logger, default=None, **kwargs)` that returns `fn(*args, **kwargs)`, but if the call raises an `Exception`, logs it at ERROR level with its full traceback using `logger.exception(...)`, with the message `"call to %s failed"` and the function's `__name__` as the argument (lazy %-formatting, not an f-string), and returns `default`. `KeyboardInterrupt` and other `BaseException`s that are not `Exception`s must propagate. `logger` is keyword-only.
+@@@ reference
+def safe_call(fn, *args, logger, default=None, **kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except Exception:
+        logger.exception("call to %s failed", getattr(fn, "__name__", repr(fn)))
+        return default
+@@@ tests
+import io
+import logging
+import pytest
+from solution import safe_call
+
+
+class ListHandler(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.records = []
+
+    def emit(self, record):
+        self.records.append(record)
+
+
+def make_logger(name):
+    lg = logging.getLogger(name)
+    lg.handlers.clear()
+    lg.propagate = False
+    lg.setLevel(logging.DEBUG)
+    h = ListHandler()
+    lg.addHandler(h)
+    return lg, h
+
+
+def divide(a, b):
+    return a / b
+
+
+def test_success_passthrough():
+    lg, h = make_logger("t.success")
+    assert safe_call(divide, 6, 3, logger=lg) == 2
+    assert h.records == []
+
+
+def test_failure_logged_with_traceback():
+    lg, h = make_logger("t.fail")
+    assert safe_call(divide, 1, 0, logger=lg, default=-1) == -1
+    (rec,) = h.records
+    assert rec.levelno == logging.ERROR and rec.exc_info and rec.exc_info[0] is ZeroDivisionError
+    assert rec.getMessage() == "call to divide failed"
+    assert rec.msg == "call to %s failed" and rec.args == ("divide",)
+
+
+def test_formatted_output_contains_traceback():
+    lg = logging.getLogger("t.fmt")
+    lg.handlers.clear()
+    lg.propagate = False
+    buf = io.StringIO()
+    lg.addHandler(logging.StreamHandler(buf))
+    safe_call(divide, 1, 0, logger=lg)
+    out = buf.getvalue()
+    assert "Traceback (most recent call last)" in out and "ZeroDivisionError" in out
+
+
+def test_kwargs_forwarded():
+    lg, _ = make_logger("t.kw")
+    assert safe_call(divide, logger=lg, a=8, b=2) == 4
+
+
+def test_base_exceptions_propagate():
+    lg, h = make_logger("t.base")
+
+    def interrupt():
+        raise KeyboardInterrupt
+    with pytest.raises(KeyboardInterrupt):
+        safe_call(interrupt, logger=lg)
+    assert h.records == []
+@@@ task configure_logging leaf=11 diff=3 entry=configure_logging
+@@@ prompt
+Write `configure_logging(name, level="INFO", stream=None, fmt="%(levelname)s %(name)s: %(message)s") -> logging.Logger` that configures the named logger for an application: set its level (accept level names like `"debug"` in any case or int levels; an unknown name raises `ValueError`), attach a `logging.StreamHandler` writing to `stream` (default `sys.stderr`) with a `logging.Formatter(fmt)`, and set `propagate = False` so messages are not duplicated by the root logger. Calling it again for the same logger must not add a second handler: remove the handler installed by a previous call (and only that one) before adding the new one. Return the logger. Child loggers such as `name + ".db"` should then be printed through this handler.
+@@@ reference
+import logging
+import sys
+
+_MARK = "_configured_by_configure_logging"
+
+
+def configure_logging(name, level="INFO", stream=None, fmt="%(levelname)s %(name)s: %(message)s"):
+    if isinstance(level, str):
+        resolved = logging.getLevelName(level.upper())
+        if not isinstance(resolved, int):
+            raise ValueError(f"unknown log level {level!r}")
+        level = resolved
+    logger = logging.getLogger(name)
+    for h in list(logger.handlers):
+        if getattr(h, _MARK, False):
+            logger.removeHandler(h)
+            h.close()
+    handler = logging.StreamHandler(stream if stream is not None else sys.stderr)
+    handler.setFormatter(logging.Formatter(fmt))
+    setattr(handler, _MARK, True)
+    logger.addHandler(handler)
+    logger.setLevel(level)
+    logger.propagate = False
+    return logger
+@@@ tests
+import io
+import logging
+import pytest
+from solution import configure_logging
+
+
+def test_formats_and_filters_by_level():
+    buf = io.StringIO()
+    log = configure_logging("app1", level="warning", stream=buf)
+    log.info("hidden")
+    log.warning("disk %d%% full", 91)
+    assert buf.getvalue() == "WARNING app1: disk 91% full\n"
+
+
+def test_idempotent_no_duplicates():
+    buf = io.StringIO()
+    configure_logging("app2", stream=buf)
+    log = configure_logging("app2", stream=buf)
+    log.info("once")
+    assert buf.getvalue().count("once") == 1 and len(log.handlers) == 1
+
+
+def test_reconfigure_switches_stream_and_keeps_foreign_handlers():
+    a, b = io.StringIO(), io.StringIO()
+    log = logging.getLogger("app3")
+    foreign = logging.NullHandler()
+    log.addHandler(foreign)
+    configure_logging("app3", stream=a)
+    configure_logging("app3", stream=b)
+    log.error("x")
+    assert a.getvalue() == "" and "x" in b.getvalue()
+    assert foreign in log.handlers and len(log.handlers) == 2
+
+
+def test_child_loggers_and_no_propagation():
+    buf = io.StringIO()
+    root_buf = io.StringIO()
+    root_handler = logging.StreamHandler(root_buf)
+    logging.getLogger().addHandler(root_handler)
+    try:
+        configure_logging("app4", level=logging.DEBUG, stream=buf, fmt="%(name)s|%(message)s")
+        logging.getLogger("app4.db").debug("query")
+        assert buf.getvalue() == "app4.db|query\n" and root_buf.getvalue() == ""
+    finally:
+        logging.getLogger().removeHandler(root_handler)
+
+
+def test_bad_level():
+    with pytest.raises(ValueError):
+        configure_logging("app5", level="loud")
+
+
+def test_level_names_case_insensitive():
+    assert configure_logging("app6", level="DeBuG", stream=io.StringIO()).level == logging.DEBUG
+@@@ task json_log_formatter leaf=12 diff=3 entry=JsonFormatter,bind
+@@@ prompt
+Write structured logging helpers. `JsonFormatter(logging.Formatter)` formats each record as one line of JSON with the keys `level` (level name), `logger` (record name), `message` (the formatted message, i.e. `record.getMessage()`), plus every custom attribute that was attached through `extra=` (anything in `record.__dict__` that a plain `LogRecord` would not have, excluding `message` and `asctime`), plus `exc` (the formatted traceback text) when the record carries exception info. Non-JSON-serialisable extra values are rendered with `str()`. Also write `bind(logger, **context)` returning a `logging.LoggerAdapter` that adds the context fields to every record as extras; extras passed at the call site override bound ones with the same name.
+@@@ reference
+import json
+import logging
+
+_STANDARD = set(vars(logging.LogRecord("x", logging.INFO, "f", 1, "m", None, None))) | {"message", "asctime"}
+
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        out = {"level": record.levelname, "logger": record.name, "message": record.getMessage()}
+        for k, v in record.__dict__.items():
+            if k not in _STANDARD:
+                out[k] = v
+        if record.exc_info:
+            out["exc"] = self.formatException(record.exc_info)
+        return json.dumps(out, default=str)
+
+
+class _BoundAdapter(logging.LoggerAdapter):
+    def process(self, msg, kwargs):
+        kwargs["extra"] = {**self.extra, **(kwargs.get("extra") or {})}
+        return msg, kwargs
+
+
+def bind(logger, **context):
+    return _BoundAdapter(logger, context)
+@@@ tests
+import io
+import json
+import logging
+from datetime import date
+from solution import JsonFormatter, bind
+
+
+def make(name):
+    buf = io.StringIO()
+    lg = logging.getLogger(name)
+    lg.handlers.clear()
+    lg.propagate = False
+    lg.setLevel(logging.DEBUG)
+    h = logging.StreamHandler(buf)
+    h.setFormatter(JsonFormatter())
+    lg.addHandler(h)
+    return lg, buf
+
+
+def lines(buf):
+    return [json.loads(l) for l in buf.getvalue().splitlines()]
+
+
+def test_basic_fields():
+    lg, buf = make("j1")
+    lg.info("user %s logged in", "ann")
+    (rec,) = lines(buf)
+    assert rec == {"level": "INFO", "logger": "j1", "message": "user ann logged in"}
+
+
+def test_extra_fields_included():
+    lg, buf = make("j2")
+    lg.warning("slow query", extra={"duration_ms": 1234, "table": "users"})
+    rec = lines(buf)[0]
+    assert rec["duration_ms"] == 1234 and rec["table"] == "users"
+    assert "args" not in rec and "msecs" not in rec and "levelno" not in rec
+
+
+def test_non_serialisable_extra():
+    lg, buf = make("j3")
+    lg.info("x", extra={"day": date(2024, 1, 2)})
+    assert lines(buf)[0]["day"] == "2024-01-02"
+
+
+def test_exception_text():
+    lg, buf = make("j4")
+    try:
+        1 / 0
+    except ZeroDivisionError:
+        lg.exception("failed")
+    rec = lines(buf)[0]
+    assert rec["level"] == "ERROR" and "ZeroDivisionError" in rec["exc"]
+
+
+def test_bind_context_and_override():
+    lg, buf = make("j5")
+    log = bind(lg, request_id="r-1", user="ann")
+    log.info("start")
+    log.info("switch", extra={"user": "bob"})
+    a, b = lines(buf)
+    assert a["request_id"] == "r-1" and a["user"] == "ann"
+    assert b["request_id"] == "r-1" and b["user"] == "bob"
+
+
+def test_one_line_per_record():
+    lg, buf = make("j6")
+    lg.info("multi\nline")
+    assert len(buf.getvalue().splitlines()) == 1
+    assert lines(buf)[0]["message"] == "multi\nline"
+@@@ task deprecated_decorator leaf=13 diff=3 entry=deprecated
+@@@ prompt
+Write a decorator factory `deprecated(reason: str, *, version=None)` for functions. Each call of the decorated function emits a `DeprecationWarning` with the message `"<name> is deprecated: <reason>"`, followed by `" (since <version>)"` when a version is given, and then calls the function normally. Use `warnings.warn(..., stacklevel=2)` so the warning is attributed to the caller's line, not to the decorator. Keep the function's metadata with `functools.wraps` and also store the reason on the wrapper as `__deprecated__`.
+@@@ reference
+import functools
+import warnings
+
+
+def deprecated(reason, *, version=None):
+    def deco(fn):
+        msg = f"{fn.__name__} is deprecated: {reason}"
+        if version is not None:
+            msg += f" (since {version})"
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            warnings.warn(msg, DeprecationWarning, stacklevel=2)
+            return fn(*args, **kwargs)
+        wrapper.__deprecated__ = reason
+        return wrapper
+    return deco
+@@@ tests
+import warnings
+import pytest
+from solution import deprecated
+
+
+@deprecated("use new_api()", version="2.0")
+def old_api(x):
+    """Old docs."""
+    return x + 1
+
+
+@deprecated("going away")
+def other():
+    return "o"
+
+
+def test_warns_and_returns():
+    with pytest.warns(DeprecationWarning, match=r"old_api is deprecated: use new_api\(\) \(since 2\.0\)"):
+        assert old_api(1) == 2
+
+
+def test_message_without_version():
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        other()
+    assert str(w[0].message) == "other is deprecated: going away"
+
+
+def test_points_at_caller():
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        old_api(1)
+    assert w[0].filename == __file__
+
+
+def test_every_call_warns():
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        old_api(1)
+        old_api(2)
+    assert len(w) == 2 and all(issubclass(x.category, DeprecationWarning) for x in w)
+
+
+def test_metadata():
+    assert old_api.__name__ == "old_api" and old_api.__doc__ == "Old docs."
+    assert old_api.__deprecated__ == "use new_api()" and old_api.__wrapped__(5) == 6
+
+
+def test_error_filter_raises():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        with pytest.raises(DeprecationWarning):
+            other()
+@@@ task assertions_vs_exceptions leaf=14 diff=3 entry=withdraw,Wallet
+@@@ prompt
+Show the difference between assertions and exceptions. Write `withdraw(balance: int, amount: int) -> int` that validates its inputs with real exceptions, because `assert` statements are removed when Python runs with `-O`: a non-int or bool argument raises `TypeError`, a non-positive amount raises `ValueError`, and an amount larger than the balance raises `ValueError`. It returns the new balance. Also write a class `Wallet(balance=0)` with `withdraw(amount)` (using the function) and a private method `_check_invariant()` that uses `assert self.balance >= 0` to document an internal invariant that can only fail if the code itself is buggy; call it at the end of `Wallet.withdraw`.
+@@@ reference
+def withdraw(balance, amount):
+    for name, v in (("balance", balance), ("amount", amount)):
+        if isinstance(v, bool) or not isinstance(v, int):
+            raise TypeError(f"{name} must be an int")
+    if amount <= 0:
+        raise ValueError("amount must be positive")
+    if amount > balance:
+        raise ValueError("insufficient funds")
+    return balance - amount
+
+
+class Wallet:
+    def __init__(self, balance=0):
+        self.balance = balance
+
+    def withdraw(self, amount):
+        self.balance = withdraw(self.balance, amount)
+        self._check_invariant()
+        return self.balance
+
+    def _check_invariant(self):
+        assert self.balance >= 0, "balance went negative"
+@@@ tests
+import os
+import subprocess
+import sys
+import pytest
+import solution
+from solution import withdraw, Wallet
+
+
+def test_valid():
+    assert withdraw(100, 30) == 70
+    assert withdraw(5, 5) == 0
+
+
+@pytest.mark.parametrize("args,exc", [((10, 0), ValueError), ((10, -1), ValueError), ((10, 11), ValueError),
+                                      ((10, 1.5), TypeError), ((10, True), TypeError), (("10", 1), TypeError)])
+def test_errors(args, exc):
+    with pytest.raises(exc):
+        withdraw(*args)
+
+
+def test_validation_survives_optimize_flag():
+    code = ("from solution import withdraw\n"
+            "for args in [(10, 11), (10, -1), (10, 'x')]:\n"
+            "    try:\n"
+            "        withdraw(*args)\n"
+            "    except (ValueError, TypeError):\n"
+            "        pass\n"
+            "    else:\n"
+            "        raise SystemExit('no exception for %r' % (args,))\n"
+            "assert False, 'asserts must be stripped under -O'\n")
+    r = subprocess.run([sys.executable, "-O", "-c", code], cwd=os.path.dirname(solution.__file__),
+                       capture_output=True, text=True, timeout=20)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_wallet():
+    w = Wallet(50)
+    assert w.withdraw(20) == 30
+    with pytest.raises(ValueError):
+        w.withdraw(31)
+    assert w.balance == 30
+
+
+def test_invariant_uses_assert():
+    w = Wallet(0)
+    w.balance = -1  # simulate a bug elsewhere
+    with pytest.raises(AssertionError):
+        w._check_invariant()
+@@@ task graceful_shutdown_signals leaf=15 diff=4 entry=GracefulShutdown
+@@@ prompt
+Write a context manager class `GracefulShutdown(signals=(signal.SIGINT, signal.SIGTERM))` for long-running loops. On enter it installs a handler for each signal that does not raise, but records the request: it sets `self.requested = True` and stores the signal number in `self.received` (the most recent one). The loop can poll `requested` and finish its current unit of work. On exit it restores exactly the handlers that were installed before (whatever they were), even if the block raised. `requested` is False and `received` is None until a signal arrives. It must be used from the main thread (that is a `signal` module rule).
+@@@ reference
+import signal
+
+
+class GracefulShutdown:
+    def __init__(self, signals=(signal.SIGINT, signal.SIGTERM)):
+        self.signals = tuple(signals)
+        self.requested = False
+        self.received = None
+        self._previous = {}
+
+    def _handler(self, signum, frame):
+        self.requested = True
+        self.received = signum
+
+    def __enter__(self):
+        for s in self.signals:
+            self._previous[s] = signal.getsignal(s)
+            signal.signal(s, self._handler)
+        return self
+
+    def __exit__(self, *exc):
+        for s, h in self._previous.items():
+            signal.signal(s, h)
+        self._previous = {}
+        return False
+@@@ tests
+import signal
+import pytest
+from solution import GracefulShutdown
+
+
+def test_sigterm_sets_flag_without_raising():
+    with GracefulShutdown() as gs:
+        assert gs.requested is False and gs.received is None
+        signal.raise_signal(signal.SIGTERM)
+        assert gs.requested is True and gs.received == signal.SIGTERM
+
+
+def test_sigint_does_not_raise_keyboardinterrupt():
+    with GracefulShutdown() as gs:
+        signal.raise_signal(signal.SIGINT)
+    assert gs.received == signal.SIGINT
+
+
+def test_previous_handlers_restored():
+    before_int = signal.getsignal(signal.SIGINT)
+    before_term = signal.getsignal(signal.SIGTERM)
+    with GracefulShutdown():
+        assert signal.getsignal(signal.SIGTERM) is not before_term
+    assert signal.getsignal(signal.SIGINT) is before_int
+    assert signal.getsignal(signal.SIGTERM) is before_term
+
+
+def test_restored_on_exception():
+    seen = []
+
+    def custom(signum, frame):
+        seen.append(signum)
+    old = signal.signal(signal.SIGUSR1, custom)
+    try:
+        with pytest.raises(RuntimeError):
+            with GracefulShutdown(signals=(signal.SIGUSR1,)):
+                raise RuntimeError("loop crashed")
+        signal.raise_signal(signal.SIGUSR1)
+        assert seen == [signal.SIGUSR1]
+    finally:
+        signal.signal(signal.SIGUSR1, old)
+
+
+def test_loop_finishes_current_item():
+    processed = []
+    with GracefulShutdown(signals=(signal.SIGUSR2,)) as gs:
+        for i in range(100):
+            if gs.requested:
+                break
+            processed.append(i)
+            if i == 3:
+                signal.raise_signal(signal.SIGUSR2)
+    assert processed == [0, 1, 2, 3]
+@@@ task interruptible_loop leaf=15 diff=2 entry=run_loop
+@@@ prompt
+Write `run_loop(items, process, cleanup) -> tuple[str, int]` for a batch job that must shut down cleanly. It calls `process(item)` for each item in order. If the user presses Ctrl+C (`process` raises `KeyboardInterrupt`), stop processing, call `cleanup()` and return `("interrupted", n)` where n is the number of items fully processed. If all items are processed, call `cleanup()` and return `("completed", n)`. If `process` raises any other exception, call `cleanup()` and let the exception propagate. `cleanup` is called exactly once in every case.
+@@@ reference
+def run_loop(items, process, cleanup):
+    done = 0
+    try:
+        for item in items:
+            process(item)
+            done += 1
+    except KeyboardInterrupt:
+        return ("interrupted", done)
+    finally:
+        cleanup()
+    return ("completed", done)
+@@@ tests
+import pytest
+from solution import run_loop
+
+
+def test_completed():
+    calls = []
+    out = []
+    assert run_loop([1, 2, 3], out.append, lambda: calls.append("cleanup")) == ("completed", 3)
+    assert out == [1, 2, 3] and calls == ["cleanup"]
+
+
+def test_interrupted():
+    calls = []
+
+    def process(x):
+        if x == 3:
+            raise KeyboardInterrupt
+    assert run_loop(range(10), process, lambda: calls.append(1)) == ("interrupted", 3)
+    assert calls == [1]
+
+
+def test_other_errors_propagate_after_cleanup():
+    calls = []
+
+    def process(x):
+        raise ValueError("bad row")
+    with pytest.raises(ValueError):
+        run_loop([1], process, lambda: calls.append(1))
+    assert calls == [1]
+
+
+def test_empty():
+    calls = []
+    assert run_loop([], lambda x: None, lambda: calls.append(1)) == ("completed", 0)
+    assert calls == [1]
+
+
+def test_cleanup_exactly_once_on_interrupt_at_start():
+    calls = []
+
+    def process(x):
+        raise KeyboardInterrupt
+    assert run_loop(iter([1, 2]), process, lambda: calls.append(1)) == ("interrupted", 0)
+    assert calls == [1]
+@@@ task atomic_write leaf=16 diff=3 entry=atomic_write
+@@@ prompt
+Write `atomic_write(path, data)` that replaces a file's contents so that readers only ever see the old file or the complete new one, never a partial write. `data` is `bytes`, `str` (encode as UTF-8) or an iterable of `bytes` chunks (which may raise part-way). Write to a temporary file in the same directory as `path` (so the final rename stays on one filesystem), flush and `os.fsync` it, then `os.replace` it over the target. If anything fails, remove the temporary file and re-raise; the original file must be untouched. Creating a new file works the same way. Return the path as a `pathlib.Path`.
+@@@ reference
+import os
+import tempfile
+from pathlib import Path
+
+
+def atomic_write(path, data):
+    path = Path(path)
+    if isinstance(data, str):
+        chunks = [data.encode("utf-8")]
+    elif isinstance(data, (bytes, bytearray, memoryview)):
+        chunks = [bytes(data)]
+    else:
+        chunks = data
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            for chunk in chunks:
+                f.write(chunk)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+    return path
+@@@ tests
+import os
+import pytest
+from solution import atomic_write
+
+
+def test_writes_bytes_and_str(tmp_path):
+    p = tmp_path / "f.bin"
+    assert atomic_write(p, b"\x00\x01") == p
+    assert p.read_bytes() == b"\x00\x01"
+    atomic_write(str(p), "héllo")
+    assert p.read_bytes() == "héllo".encode()
+
+
+def test_chunks(tmp_path):
+    p = tmp_path / "f.txt"
+    atomic_write(p, (f"line {i}\n".encode() for i in range(3)))
+    assert p.read_text() == "line 0\nline 1\nline 2\n"
+
+
+def test_failure_leaves_original_and_no_temp(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text("original")
+
+    def chunks():
+        yield b"partial new con"
+        raise IOError("disk full")
+    with pytest.raises(IOError):
+        atomic_write(p, chunks())
+    assert p.read_text() == "original"
+    assert sorted(x.name for x in tmp_path.iterdir()) == ["config.json"]
+
+
+def test_temp_in_same_directory(tmp_path, monkeypatch):
+    seen = []
+    real = os.replace
+
+    def spy(src, dst):
+        seen.append((os.path.dirname(os.fspath(src)), os.path.dirname(os.fspath(dst))))
+        return real(src, dst)
+    monkeypatch.setattr(os, "replace", spy)
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    atomic_write(sub / "x", b"1")
+    assert seen and seen[0][0] == seen[0][1] == str(sub)
+
+
+def test_fsync_called(tmp_path, monkeypatch):
+    calls = []
+    real = os.fsync
+    monkeypatch.setattr(os, "fsync", lambda fd: (calls.append(fd), real(fd))[1])
+    atomic_write(tmp_path / "y", b"data")
+    assert calls
+
+
+def test_new_file(tmp_path):
+    p = tmp_path / "new.txt"
+    atomic_write(p, "")
+    assert p.exists() and p.read_text() == ""
+@@@ task append_log_recovery leaf=16 diff=3 entry=append_record,read_records,repair
+@@@ prompt
+Write crash-tolerant JSON-lines helpers. `append_record(path, record: dict)` appends `json.dumps(record)` plus a newline in a single `write` call on a file opened in append mode, then flushes and fsyncs. `read_records(path) -> tuple[list, bool]` returns all complete records and a flag that is True if the file ends with a partial record (a final line without a newline, or a final line that is not valid JSON, as left by a crash mid-write); a corrupt line that is not the last one raises `ValueError` naming its line number. `repair(path) -> int` truncates a partial final record off the file and returns the number of bytes removed (0 if the file was clean). A missing file reads as `([], False)`.
+@@@ reference
+import json
+import os
+
+
+def append_record(path, record):
+    line = json.dumps(record) + "\n"
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(line)
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def _scan(path):
+    if not os.path.exists(path):
+        return [], False, 0
+    with open(path, "rb") as f:
+        lines = f.readlines()
+    records, good = [], 0
+    for i, raw in enumerate(lines):
+        last = i == len(lines) - 1
+        ok = raw.endswith(b"\n")
+        rec = None
+        if ok:
+            try:
+                rec = json.loads(raw)
+            except ValueError:
+                ok = False
+        if not ok:
+            if last:
+                return records, True, good
+            raise ValueError(f"corrupt record on line {i + 1}")
+        records.append(rec)
+        good += len(raw)
+    return records, False, good
+
+
+def read_records(path):
+    records, partial, _ = _scan(path)
+    return records, partial
+
+
+def repair(path):
+    _, partial, good = _scan(path)
+    if not partial:
+        return 0
+    size = os.path.getsize(path)
+    with open(path, "r+b") as f:
+        f.truncate(good)
+    return size - good
+@@@ tests
+import pytest
+from solution import append_record, read_records, repair
+
+
+def test_append_and_read(tmp_path):
+    p = tmp_path / "log.jsonl"
+    append_record(p, {"a": 1})
+    append_record(p, {"b": [1, 2]})
+    assert read_records(p) == ([{"a": 1}, {"b": [1, 2]}], False)
+    assert p.read_text().count("\n") == 2
+
+
+def test_missing_file(tmp_path):
+    assert read_records(tmp_path / "none.jsonl") == ([], False)
+
+
+def test_partial_tail_detected_and_repaired(tmp_path):
+    p = tmp_path / "log.jsonl"
+    append_record(p, {"a": 1})
+    with open(p, "a") as f:
+        f.write('{"b": 2, "c"')
+    assert read_records(p) == ([{"a": 1}], True)
+    assert repair(p) == len('{"b": 2, "c"')
+    assert read_records(p) == ([{"a": 1}], False)
+    append_record(p, {"d": 4})
+    assert read_records(p)[0] == [{"a": 1}, {"d": 4}]
+
+
+def test_invalid_json_last_line_with_newline(tmp_path):
+    p = tmp_path / "log.jsonl"
+    append_record(p, {"a": 1})
+    with open(p, "a") as f:
+        f.write("{garbage\n")
+    assert read_records(p) == ([{"a": 1}], True)
+    assert repair(p) == len("{garbage\n")
+
+
+def test_corruption_in_middle(tmp_path):
+    p = tmp_path / "log.jsonl"
+    p.write_text('{"a": 1}\nnot json\n{"b": 2}\n')
+    with pytest.raises(ValueError, match="2"):
+        read_records(p)
+
+
+def test_repair_clean_file(tmp_path):
+    p = tmp_path / "log.jsonl"
+    append_record(p, {"x": "é"})
+    assert repair(p) == 0
+    assert read_records(p) == ([{"x": "é"}], False)
+@@@ task jsonl_error_report leaf=17 diff=2 entry=load_jsonl
+@@@ prompt
+Write `load_jsonl(text: str) -> tuple[list, list]` that parses JSON Lines input from an untrusted source without crashing on bad lines. Return `(records, errors)`: `records` holds every line that parsed to a JSON object (dict); `errors` holds `(line_number, message)` pairs (1-based) for lines that are not valid JSON (the message should include the decoder's `msg`, e.g. "Expecting value") or that parse to something other than an object (message `"expected an object, got <type name>"`, e.g. `list`). Blank or whitespace-only lines are skipped silently. A UTF-8 byte-order mark at the start of the text is ignored.
+@@@ reference
+import json
+
+
+def load_jsonl(text):
+    if text.startswith("﻿"):
+        text = text[1:]
+    records, errors = [], []
+    for n, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError as exc:
+            errors.append((n, f"invalid JSON: {exc.msg}"))
+            continue
+        if not isinstance(obj, dict):
+            errors.append((n, f"expected an object, got {type(obj).__name__}"))
+            continue
+        records.append(obj)
+    return records, errors
+@@@ tests
+from solution import load_jsonl
+
+
+def test_valid_lines():
+    recs, errs = load_jsonl('{"a": 1}\n{"b": 2}\n')
+    assert recs == [{"a": 1}, {"b": 2}] and errs == []
+
+
+def test_bad_json_reported_with_line_numbers():
+    recs, errs = load_jsonl('{"a": 1}\n{"a": \n{"c": 3}\n')
+    assert recs == [{"a": 1}, {"c": 3}]
+    assert len(errs) == 1 and errs[0][0] == 2 and "Expecting value" in errs[0][1]
+
+
+def test_non_objects():
+    recs, errs = load_jsonl('[1, 2]\n"str"\n42\nnull\n')
+    assert recs == []
+    assert errs == [(1, "expected an object, got list"), (2, "expected an object, got str"),
+                    (3, "expected an object, got int"), (4, "expected an object, got NoneType")]
+
+
+def test_blank_lines_skipped_but_counted():
+    recs, errs = load_jsonl('\n   \n{"a": 1}\nnope\n')
+    assert recs == [{"a": 1}] and errs[0][0] == 4
+
+
+def test_bom_and_crlf():
+    recs, errs = load_jsonl('﻿{"a": 1}\r\n{"b": 2}\r\n')
+    assert recs == [{"a": 1}, {"b": 2}] and errs == []
+
+
+def test_empty():
+    assert load_jsonl("") == ([], [])
+@@@ task strict_csv_parser leaf=17 diff=3 entry=parse_csv,CSVFormatError
+@@@ prompt
+Write `parse_csv(text: str, columns: dict) -> list[dict]` that reads CSV with a header row using the `csv` module and converts fields with the given column types, e.g. `{"id": int, "price": float, "name": str}`. Raise `CSVFormatError` (with attributes `line`, `column` and `reason`, and all three in its message) on the first problem: a missing required column in the header (line 1, column = the missing name), a row with the wrong number of fields (column None), or a value the converter rejects with `ValueError` (column = that column's name). Line numbers are physical line numbers in the text, which matters because quoted fields may contain newlines (use the reader's `line_num`). Extra columns not in `columns` are kept as strings. An empty text raises `CSVFormatError` for line 1.
+@@@ reference
+import csv
+import io
+
+
+class CSVFormatError(ValueError):
+    def __init__(self, line, column, reason):
+        super().__init__(f"line {line}, column {column}: {reason}")
+        self.line, self.column, self.reason = line, column, reason
+
+
+def parse_csv(text, columns):
+    reader = csv.reader(io.StringIO(text, newline=""))
+    try:
+        header = next(reader)
+    except StopIteration:
+        raise CSVFormatError(1, None, "empty input") from None
+    for name in columns:
+        if name not in header:
+            raise CSVFormatError(1, name, "missing column")
+    out = []
+    for row in reader:
+        if not row:
+            continue
+        if len(row) != len(header):
+            raise CSVFormatError(reader.line_num, None, f"expected {len(header)} fields, got {len(row)}")
+        rec = {}
+        for name, raw in zip(header, row):
+            conv = columns.get(name, str)
+            try:
+                rec[name] = conv(raw)
+            except ValueError as exc:
+                raise CSVFormatError(reader.line_num, name, f"bad value {raw!r}") from exc
+        out.append(rec)
+    return out
+@@@ tests
+import pytest
+from solution import parse_csv, CSVFormatError
+
+COLS = {"id": int, "price": float, "name": str}
+
+
+def test_converts_types_and_keeps_extras():
+    rows = parse_csv("id,name,price,note\n1,apple,0.5,fresh\n2,pear,1,\n", COLS)
+    assert rows == [{"id": 1, "name": "apple", "price": 0.5, "note": "fresh"},
+                    {"id": 2, "name": "pear", "price": 1.0, "note": ""}]
+
+
+def test_missing_column():
+    with pytest.raises(CSVFormatError) as ei:
+        parse_csv("id,name\n1,a\n", COLS)
+    e = ei.value
+    assert (e.line, e.column) == (1, "price") and "price" in str(e)
+
+
+def test_wrong_field_count():
+    with pytest.raises(CSVFormatError) as ei:
+        parse_csv("id,name,price\n1,a,2\n3,b\n", COLS)
+    assert ei.value.line == 3 and ei.value.column is None
+
+
+def test_bad_value_has_line_and_column():
+    with pytest.raises(CSVFormatError) as ei:
+        parse_csv("id,name,price\n1,a,2\nx,b,3\n", COLS)
+    e = ei.value
+    assert (e.line, e.column) == (3, "id") and isinstance(e.__cause__, ValueError)
+    assert "3" in str(e) and "id" in str(e)
+
+
+def test_line_numbers_with_multiline_quoted_field():
+    text = 'id,name,price\n1,"multi\nline name",2\n2,ok,notanumber\n'
+    with pytest.raises(CSVFormatError) as ei:
+        parse_csv(text, COLS)
+    assert ei.value.line == 4 and ei.value.column == "price"
+
+
+def test_quoted_commas_and_empty_input():
+    assert parse_csv('id,name,price\n1,"a, b",3\n', COLS)[0]["name"] == "a, b"
+    with pytest.raises(CSVFormatError) as ei:
+        parse_csv("", COLS)
+    assert ei.value.line == 1
+@@@ task result_type leaf=18 diff=3 entry=Ok,Err,try_call,parse_age
+@@@ prompt
+Write a small result-object API for error handling at module boundaries. `Ok(value)` and `Err(error)` are frozen dataclasses. Both have `is_ok()`, `map(fn)` (applies `fn` to an Ok value and returns a new `Ok`; an `Err` is returned unchanged), `unwrap()` (an Ok returns its value; an Err raises its stored error if it is an exception, otherwise raises `ValueError` with it) and `unwrap_or(default)`. `try_call(fn, *args, catch=(Exception,), **kwargs)` returns `Ok(result)`, or `Err(exc)` if `fn` raised one of the `catch` types (others propagate). Finally `parse_age(text) -> Ok | Err` returns `Ok(int)` for a whole number 0-150 (surrounding whitespace allowed) and otherwise `Err` with a short string message, without raising.
+@@@ reference
+from dataclasses import dataclass
+from typing import Any
+
+
+@dataclass(frozen=True)
+class Ok:
+    value: Any
+
+    def is_ok(self):
+        return True
+
+    def map(self, fn):
+        return Ok(fn(self.value))
+
+    def unwrap(self):
+        return self.value
+
+    def unwrap_or(self, default):
+        return self.value
+
+
+@dataclass(frozen=True)
+class Err:
+    error: Any
+
+    def is_ok(self):
+        return False
+
+    def map(self, fn):
+        return self
+
+    def unwrap(self):
+        if isinstance(self.error, BaseException):
+            raise self.error
+        raise ValueError(self.error)
+
+    def unwrap_or(self, default):
+        return default
+
+
+def try_call(fn, *args, catch=(Exception,), **kwargs):
+    try:
+        return Ok(fn(*args, **kwargs))
+    except catch as exc:
+        return Err(exc)
+
+
+def parse_age(text):
+    s = text.strip() if isinstance(text, str) else ""
+    if not s.isdigit() or not s.isascii():
+        return Err(f"not a whole number: {text!r}")
+    n = int(s)
+    if n > 150:
+        return Err(f"age out of range: {n}")
+    return Ok(n)
+@@@ tests
+import dataclasses
+import pytest
+from solution import Ok, Err, try_call, parse_age
+
+
+def test_ok_api():
+    r = Ok(2)
+    assert r.is_ok() and r.unwrap() == 2 and r.unwrap_or(9) == 2
+    assert r.map(lambda x: x * 10) == Ok(20)
+
+
+def test_err_api():
+    e = Err("bad")
+    assert not e.is_ok() and e.unwrap_or(9) == 9 and e.map(lambda x: x * 10) is e
+    with pytest.raises(ValueError):
+        e.unwrap()
+    exc = KeyError("k")
+    with pytest.raises(KeyError) as ei:
+        Err(exc).unwrap()
+    assert ei.value is exc
+
+
+def test_frozen_and_equality():
+    assert Ok(1) == Ok(1) and Ok(1) != Err(1)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        Ok(1).value = 2
+
+
+def test_try_call():
+    assert try_call(int, "12") == Ok(12)
+    r = try_call(int, "x")
+    assert not r.is_ok() and isinstance(r.error, ValueError)
+    assert try_call(lambda a, b=0: a + b, 1, b=2) == Ok(3)
+    with pytest.raises(ZeroDivisionError):
+        try_call(lambda: 1 / 0, catch=(ValueError,))
+
+
+@pytest.mark.parametrize("text,expected", [("42", 42), (" 7 ", 7), ("0", 0), ("150", 150)])
+def test_parse_age_ok(text, expected):
+    assert parse_age(text) == Ok(expected)
+
+
+@pytest.mark.parametrize("text", ["-1", "151", "abc", "", "4.5", None])
+def test_parse_age_err(text):
+    r = parse_age(text)
+    assert isinstance(r, Err) and isinstance(r.error, str)
+@@@ task api_error_boundary leaf=18 diff=3 entry=handle_request,NotFound,Forbidden,InvalidInput
+@@@ prompt
+Write the error boundary of an HTTP API. Define domain exceptions `NotFound`, `Forbidden` and `InvalidInput` (the last has a `details` dict attribute). `handle_request(handler, payload, logger) -> tuple[int, dict]` calls `handler(payload)` and returns `(200, {"data": result})` on success. It maps exceptions to responses: `NotFound` to `(404, {"error": "not found"})`, `Forbidden` to `(403, {"error": "forbidden"})`, `InvalidInput` to `(422, {"error": "invalid input", "details": exc.details})`. Any other `Exception` is a bug: log it with `logger.exception` and return `(500, {"error": "internal error"})` without leaking the exception message or type to the client.
+@@@ reference
+class NotFound(Exception):
+    pass
+
+
+class Forbidden(Exception):
+    pass
+
+
+class InvalidInput(Exception):
+    def __init__(self, details=None):
+        super().__init__("invalid input")
+        self.details = details or {}
+
+
+def handle_request(handler, payload, logger):
+    try:
+        result = handler(payload)
+    except NotFound:
+        return 404, {"error": "not found"}
+    except Forbidden:
+        return 403, {"error": "forbidden"}
+    except InvalidInput as exc:
+        return 422, {"error": "invalid input", "details": exc.details}
+    except Exception:
+        logger.exception("unhandled error in handler")
+        return 500, {"error": "internal error"}
+    return 200, {"data": result}
+@@@ tests
+import logging
+import pytest
+from solution import handle_request, NotFound, Forbidden, InvalidInput
+
+
+class Capture(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.records = []
+
+    def emit(self, record):
+        self.records.append(record)
+
+
+@pytest.fixture
+def logger():
+    lg = logging.getLogger("api-boundary-test")
+    lg.handlers.clear()
+    lg.propagate = False
+    h = Capture()
+    lg.addHandler(h)
+    lg.capture = h
+    return lg
+
+
+def raiser(exc):
+    def h(payload):
+        raise exc
+    return h
+
+
+def test_success(logger):
+    assert handle_request(lambda p: p["x"] * 2, {"x": 2}, logger) == (200, {"data": 4})
+
+
+def test_domain_errors(logger):
+    assert handle_request(raiser(NotFound("user 7")), {}, logger) == (404, {"error": "not found"})
+    assert handle_request(raiser(Forbidden()), {}, logger) == (403, {"error": "forbidden"})
+    assert logger.capture.records == []
+
+
+def test_invalid_input_details(logger):
+    status, body = handle_request(raiser(InvalidInput({"email": "required"})), {}, logger)
+    assert status == 422 and body == {"error": "invalid input", "details": {"email": "required"}}
+
+
+def test_unexpected_error_is_500_and_logged(logger):
+    status, body = handle_request(raiser(KeyError("db_password=hunter2")), {}, logger)
+    assert (status, body) == (500, {"error": "internal error"})
+    assert "hunter2" not in repr(body) and "KeyError" not in repr(body)
+    (rec,) = logger.capture.records
+    assert rec.levelno == logging.ERROR and rec.exc_info[0] is KeyError
+
+
+def test_base_exceptions_not_swallowed(logger):
+    with pytest.raises(KeyboardInterrupt):
+        handle_request(raiser(KeyboardInterrupt()), {}, logger)
+
+
+def test_none_result(logger):
+    assert handle_request(lambda p: None, {}, logger) == (200, {"data": None})

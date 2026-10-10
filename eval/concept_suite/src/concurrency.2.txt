@@ -1,0 +1,1315 @@
+@@@ task fetch_with_timeout leaf=10 diff=2 entry=fetch_with_timeout
+@@@ prompt
+Write `async def fetch_with_timeout(coro_fn, timeout: float, default=None)` that awaits `coro_fn()` but gives up after `timeout` seconds, returning `default` instead. On timeout the underlying coroutine must actually be cancelled (its `finally` blocks run before `fetch_with_timeout` returns). Exceptions raised by the coroutine itself propagate unchanged. Use `asyncio.wait_for` or `asyncio.timeout`.
+@@@ reference
+import asyncio
+
+
+async def fetch_with_timeout(coro_fn, timeout: float, default=None):
+    try:
+        return await asyncio.wait_for(coro_fn(), timeout)
+    except asyncio.TimeoutError:
+        return default
+@@@ tests
+import asyncio
+import pytest
+from solution import fetch_with_timeout
+
+
+def test_fast_result():
+    async def fast():
+        await asyncio.sleep(0)
+        return "data"
+    assert asyncio.run(fetch_with_timeout(fast, 1)) == "data"
+
+
+def test_timeout_returns_default():
+    async def hang():
+        await asyncio.Event().wait()
+    assert asyncio.run(fetch_with_timeout(hang, 0.02, default="fallback")) == "fallback"
+    assert asyncio.run(fetch_with_timeout(hang, 0.02)) is None
+
+
+def test_coroutine_is_cancelled_on_timeout():
+    log = []
+
+    async def hang():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            log.append("finally ran")
+    asyncio.run(fetch_with_timeout(hang, 0.02))
+    assert log == ["finally ran"]
+
+
+def test_errors_propagate():
+    async def boom():
+        raise ConnectionResetError("reset")
+    with pytest.raises(ConnectionResetError):
+        asyncio.run(fetch_with_timeout(boom, 1))
+
+
+def test_returns_quickly_after_timeout():
+    async def main():
+        loop = asyncio.get_running_loop()
+        t0 = loop.time()
+
+        async def hang():
+            await asyncio.Event().wait()
+        await fetch_with_timeout(hang, 0.03)
+        return loop.time() - t0
+    assert asyncio.run(main()) < 1.0
+@@@ task deadline_retries leaf=10 diff=3 entry=call_with_deadline min_python=3.11
+@@@ prompt
+Write `async def call_with_deadline(fn, deadline: float, attempts: int = 3)` that calls the coroutine function `fn()` and retries on any `Exception` up to `attempts` calls in total, re-raising the last exception if all attempts fail. All attempts together share one overall time budget of `deadline` seconds, enforced with a single `asyncio.timeout(...)` block around the whole retry loop (not a fresh timeout per attempt): when the budget runs out, raise `TimeoutError` even if attempts remain. `attempts` below 1 raises `ValueError`.
+@@@ reference
+import asyncio
+
+
+async def call_with_deadline(fn, deadline: float, attempts: int = 3):
+    if attempts < 1:
+        raise ValueError("attempts must be >= 1")
+    async with asyncio.timeout(deadline):
+        for i in range(attempts):
+            try:
+                return await fn()
+            except Exception:
+                if i == attempts - 1:
+                    raise
+@@@ tests
+import asyncio
+import pytest
+from solution import call_with_deadline
+
+
+def flaky(n_failures, result="ok"):
+    calls = []
+
+    async def fn():
+        calls.append(1)
+        await asyncio.sleep(0)
+        if len(calls) <= n_failures:
+            raise OSError(f"fail {len(calls)}")
+        return result
+    return fn, calls
+
+
+def test_succeeds_after_retries():
+    fn, calls = flaky(2)
+    assert asyncio.run(call_with_deadline(fn, 1, attempts=3)) == "ok"
+    assert len(calls) == 3
+
+
+def test_reraises_last_error():
+    fn, calls = flaky(5)
+    with pytest.raises(OSError, match="fail 3"):
+        asyncio.run(call_with_deadline(fn, 1, attempts=3))
+    assert len(calls) == 3
+
+
+def test_overall_deadline_shared():
+    calls = []
+
+    async def slow_then_fail():
+        calls.append(1)
+        await asyncio.sleep(0.01)
+        raise OSError("slow failure")
+    with pytest.raises(TimeoutError):
+        asyncio.run(call_with_deadline(slow_then_fail, 0.05, attempts=100))
+    assert 2 <= len(calls) < 20
+
+
+def test_hanging_call_times_out():
+    async def hang():
+        await asyncio.Event().wait()
+    with pytest.raises(TimeoutError):
+        asyncio.run(call_with_deadline(hang, 0.02))
+
+
+def test_invalid_attempts():
+    fn, _ = flaky(0)
+    with pytest.raises(ValueError):
+        asyncio.run(call_with_deadline(fn, 1, attempts=0))
+@@@ task async_crawler leaf=11 diff=4 entry=crawl
+@@@ prompt
+Write `async def crawl(start, get_links, max_workers=3, max_pages=100) -> set` that explores a link graph breadth-first using an `asyncio.Queue` and `max_workers` worker tasks. `get_links(page)` is a coroutine function returning a list of linked pages. Each page is fetched at most once; stop scheduling new pages once `max_pages` pages have been scheduled (including `start`). If `get_links` raises for a page, that page still counts as visited but contributes no links. Use `queue.join()` to know when the crawl is finished, then cancel the workers and return the set of visited pages.
+@@@ reference
+import asyncio
+
+
+async def crawl(start, get_links, max_workers=3, max_pages=100):
+    queue = asyncio.Queue()
+    seen = {start}
+    await queue.put(start)
+
+    async def worker():
+        while True:
+            page = await queue.get()
+            try:
+                try:
+                    links = await get_links(page)
+                except Exception:
+                    links = []
+                for link in links:
+                    if link not in seen and len(seen) < max_pages:
+                        seen.add(link)
+                        queue.put_nowait(link)
+            finally:
+                queue.task_done()
+
+    workers = [asyncio.create_task(worker()) for _ in range(max_workers)]
+    try:
+        await queue.join()
+    finally:
+        for w in workers:
+            w.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+    return seen
+@@@ tests
+import asyncio
+from solution import crawl
+
+GRAPH = {"a": ["b", "c"], "b": ["d", "a"], "c": ["d", "e"], "d": [], "e": ["a", "f"], "f": []}
+
+
+def links_from(graph, log=None):
+    async def get_links(page):
+        if log is not None:
+            log.append(page)
+        await asyncio.sleep(0)
+        return graph.get(page, [])
+    return get_links
+
+
+def test_visits_all_reachable():
+    assert asyncio.run(crawl("a", links_from(GRAPH))) == set("abcdef")
+
+
+def test_each_page_fetched_once():
+    log = []
+    asyncio.run(crawl("a", links_from(GRAPH, log)))
+    assert sorted(log) == sorted(set(log)) == list("abcdef")
+
+
+def test_max_pages():
+    chain = {str(i): [str(i + 1)] for i in range(1000)}
+    res = asyncio.run(crawl("0", links_from(chain), max_pages=10))
+    assert len(res) == 10
+
+
+def test_errors_count_as_visited():
+    async def get_links(page):
+        if page == "b":
+            raise ConnectionError("dead link")
+        return GRAPH[page]
+    res = asyncio.run(crawl("a", get_links))
+    assert "b" in res and res == set("abcdef")
+
+
+def test_workers_overlap():
+    async def main():
+        active = [0, 0]
+
+        async def get_links(page):
+            active[0] += 1
+            active[1] = max(active[1], active[0])
+            for _ in range(3):
+                await asyncio.sleep(0)
+            active[0] -= 1
+            return [f"{page}{i}" for i in range(3)] if len(page) < 3 else []
+        res = await crawl("x", get_links, max_workers=3)
+        return res, active[1]
+    res, peak = asyncio.run(main())
+    assert len(res) == 1 + 3 + 9 and peak == 3
+
+
+def test_no_leftover_tasks():
+    async def main():
+        await crawl("a", links_from(GRAPH))
+        return [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    assert asyncio.run(main()) == []
+@@@ task backpressure_pipeline leaf=11 diff=3 entry=pipeline
+@@@ prompt
+Write `async def pipeline(source, transform, sink, queue_size=2) -> int` with one producer task and one consumer connected by `asyncio.Queue(maxsize=queue_size)`. The producer iterates the async iterable `source` and puts each item on the queue (so it blocks when the consumer falls behind: backpressure), then puts a sentinel. The consumer takes items until the sentinel, awaits `transform(item)` and then `sink(result)`. Return the number of items delivered to the sink. If the consumer fails, cancel the producer and re-raise the error.
+@@@ reference
+import asyncio
+
+_DONE = object()
+
+
+async def pipeline(source, transform, sink, queue_size=2):
+    q = asyncio.Queue(maxsize=queue_size)
+
+    async def produce():
+        async for item in source:
+            await q.put(item)
+        await q.put(_DONE)
+
+    producer = asyncio.create_task(produce())
+    count = 0
+    try:
+        while True:
+            item = await q.get()
+            if item is _DONE:
+                break
+            await sink(await transform(item))
+            count += 1
+    except BaseException:
+        producer.cancel()
+        await asyncio.gather(producer, return_exceptions=True)
+        raise
+    await producer
+    return count
+@@@ tests
+import asyncio
+import pytest
+from solution import pipeline
+
+
+async def numbers(n, log=None):
+    for i in range(n):
+        if log is not None:
+            log.append(("produced", i))
+        yield i
+
+
+def test_delivers_in_order():
+    out = []
+
+    async def transform(x):
+        return x * 10
+
+    async def sink(x):
+        out.append(x)
+    assert asyncio.run(pipeline(numbers(5), transform, sink)) == 5
+    assert out == [0, 10, 20, 30, 40]
+
+
+def test_backpressure_bounds_lead():
+    log = []
+
+    async def transform(x):
+        for _ in range(3):
+            await asyncio.sleep(0)
+        return x
+
+    async def sink(x):
+        log.append(("consumed", x))
+    asyncio.run(pipeline(numbers(20, log), transform, sink, queue_size=2))
+    produced = consumed = 0
+    worst = 0
+    for kind, _ in log:
+        if kind == "produced":
+            produced += 1
+        else:
+            consumed += 1
+        worst = max(worst, produced - consumed)
+    assert consumed == 20 and worst <= 4
+
+
+def test_empty_source():
+    async def transform(x):
+        return x
+
+    async def sink(x):
+        raise AssertionError("no items expected")
+    assert asyncio.run(pipeline(numbers(0), transform, sink)) == 0
+
+
+def test_consumer_error_cancels_producer():
+    cancelled = []
+
+    async def endless():
+        i = 0
+        try:
+            while True:
+                yield i
+                i += 1
+        finally:
+            cancelled.append(True)
+
+    async def transform(x):
+        if x == 3:
+            raise ValueError("bad item")
+        return x
+
+    async def sink(x):
+        pass
+
+    async def main():
+        with pytest.raises(ValueError):
+            await pipeline(endless(), transform, sink)
+        await asyncio.sleep(0)
+        return [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    assert asyncio.run(main()) == []
+
+
+def test_transform_is_awaited():
+    out = []
+
+    async def transform(x):
+        await asyncio.sleep(0)
+        return str(x)
+
+    async def sink(x):
+        out.append(x)
+    asyncio.run(pipeline(numbers(3), transform, sink, queue_size=1))
+    assert out == ["0", "1", "2"]
+@@@ task bounded_map_semaphore leaf=12 diff=3 entry=bounded_map
+@@@ prompt
+Write `async def bounded_map(fn, items, limit: int) -> list` that calls the coroutine function `fn(item)` for every item concurrently but with at most `limit` calls in flight at any time, enforced with an `asyncio.Semaphore`. Return the results in input order. If any call raises, propagate that exception. A `limit` below 1 raises `ValueError`.
+@@@ reference
+import asyncio
+
+
+async def bounded_map(fn, items, limit: int):
+    if limit < 1:
+        raise ValueError("limit must be >= 1")
+    sem = asyncio.Semaphore(limit)
+
+    async def run(item):
+        async with sem:
+            return await fn(item)
+    return list(await asyncio.gather(*(run(i) for i in items)))
+@@@ tests
+import asyncio
+import pytest
+from solution import bounded_map
+
+
+def test_results_in_order():
+    async def double(x):
+        await asyncio.sleep(0.01 if x == 0 else 0)
+        return x * 2
+    assert asyncio.run(bounded_map(double, range(5), 2)) == [0, 2, 4, 6, 8]
+
+
+def test_peak_equals_limit():
+    async def main():
+        state = {"active": 0, "peak": 0}
+        gate = asyncio.Event()
+
+        async def fn(x):
+            state["active"] += 1
+            state["peak"] = max(state["peak"], state["active"])
+            if state["active"] == 3:
+                gate.set()
+            await asyncio.wait_for(gate.wait(), 1)
+            await asyncio.sleep(0)
+            state["active"] -= 1
+            return x
+        res = await bounded_map(fn, range(10), 3)
+        return res, state["peak"]
+    res, peak = asyncio.run(main())
+    assert res == list(range(10)) and peak == 3
+
+
+def test_limit_one_is_sequential():
+    async def main():
+        order = []
+
+        async def fn(x):
+            order.append(("start", x))
+            await asyncio.sleep(0)
+            order.append(("end", x))
+        await bounded_map(fn, range(3), 1)
+        return order
+    order = asyncio.run(main())
+    assert order == [("start", 0), ("end", 0), ("start", 1), ("end", 1), ("start", 2), ("end", 2)]
+
+
+def test_error_propagates():
+    async def fn(x):
+        if x == 2:
+            raise KeyError(x)
+        return x
+    with pytest.raises(KeyError):
+        asyncio.run(bounded_map(fn, range(4), 2))
+
+
+def test_invalid_limit_and_empty():
+    async def fn(x):
+        return x
+    with pytest.raises(ValueError):
+        asyncio.run(bounded_map(fn, [1], 0))
+    assert asyncio.run(bounded_map(fn, [], 3)) == []
+@@@ task async_transaction leaf=13 diff=3 entry=Transaction
+@@@ prompt
+Write an async context manager class `Transaction(conn)` (implement `__aenter__` and `__aexit__`) for a connection object with coroutine methods `begin()`, `commit()` and `rollback()`. Entering awaits `conn.begin()` and returns the connection. Leaving the block normally awaits `commit()`; leaving it with any exception, including `asyncio.CancelledError` when the task is cancelled, awaits `rollback()` instead and lets the exception propagate (never suppress it). If `commit()` itself fails, await `rollback()` and re-raise the commit error.
+@@@ reference
+class Transaction:
+    def __init__(self, conn):
+        self.conn = conn
+
+    async def __aenter__(self):
+        await self.conn.begin()
+        return self.conn
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if exc_type is None:
+            try:
+                await self.conn.commit()
+            except BaseException:
+                await self.conn.rollback()
+                raise
+        else:
+            await self.conn.rollback()
+        return False
+@@@ tests
+import asyncio
+import pytest
+from solution import Transaction
+
+
+class FakeConn:
+    def __init__(self, fail_commit=False):
+        self.log = []
+        self.fail_commit = fail_commit
+
+    async def begin(self):
+        await asyncio.sleep(0)
+        self.log.append("begin")
+
+    async def commit(self):
+        await asyncio.sleep(0)
+        if self.fail_commit:
+            raise ConnectionError("commit failed")
+        self.log.append("commit")
+
+    async def rollback(self):
+        await asyncio.sleep(0)
+        self.log.append("rollback")
+
+
+def test_commit_on_success():
+    conn = FakeConn()
+
+    async def main():
+        async with Transaction(conn) as c:
+            assert c is conn
+            c.log.append("work")
+    asyncio.run(main())
+    assert conn.log == ["begin", "work", "commit"]
+
+
+def test_rollback_on_error():
+    conn = FakeConn()
+
+    async def main():
+        async with Transaction(conn):
+            raise ValueError("bad data")
+    with pytest.raises(ValueError):
+        asyncio.run(main())
+    assert conn.log == ["begin", "rollback"]
+
+
+def test_rollback_on_cancellation():
+    conn = FakeConn()
+
+    async def main():
+        started = asyncio.Event()
+
+        async def work():
+            async with Transaction(conn):
+                started.set()
+                await asyncio.Event().wait()
+        t = asyncio.create_task(work())
+        await started.wait()
+        t.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await t
+    asyncio.run(main())
+    assert conn.log == ["begin", "rollback"]
+
+
+def test_commit_failure_rolls_back():
+    conn = FakeConn(fail_commit=True)
+
+    async def main():
+        async with Transaction(conn):
+            pass
+    with pytest.raises(ConnectionError):
+        asyncio.run(main())
+    assert conn.log == ["begin", "rollback"]
+
+
+def test_sequential_transactions():
+    conn = FakeConn()
+
+    async def main():
+        for i in range(2):
+            async with Transaction(conn):
+                conn.log.append(i)
+    asyncio.run(main())
+    assert conn.log == ["begin", 0, "commit", "begin", 1, "commit"]
+@@@ task async_iterators leaf=13 diff=3 entry=abatch,Ticker
+@@@ prompt
+Write two async iteration tools. `abatch(aiterable, size)` is an async generator that consumes an async iterable and yields lists of up to `size` items (the last batch may be shorter; no empty batch at the end); `size < 1` raises `ValueError` when iteration starts. `Ticker(n, interval, sleep=asyncio.sleep)` is a class implementing `__aiter__` and `__anext__` that yields the integers 0 to n-1, awaiting `sleep(interval)` before every tick except the first, then raises `StopAsyncIteration`. Each `async for` over the same `Ticker` starts again from 0.
+@@@ reference
+import asyncio
+
+
+async def abatch(aiterable, size):
+    if size < 1:
+        raise ValueError("size must be >= 1")
+    batch = []
+    async for item in aiterable:
+        batch.append(item)
+        if len(batch) == size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
+
+
+class Ticker:
+    def __init__(self, n, interval, sleep=asyncio.sleep):
+        self.n = n
+        self.interval = interval
+        self.sleep = sleep
+        self._i = 0
+
+    def __aiter__(self):
+        self._i = 0
+        return self
+
+    async def __anext__(self):
+        if self._i >= self.n:
+            raise StopAsyncIteration
+        if self._i > 0:
+            await self.sleep(self.interval)
+        self._i += 1
+        return self._i - 1
+@@@ tests
+import asyncio
+import pytest
+from solution import abatch, Ticker
+
+
+async def agen(n):
+    for i in range(n):
+        await asyncio.sleep(0)
+        yield i
+
+
+async def collect(ait):
+    return [x async for x in ait]
+
+
+def test_batches():
+    assert asyncio.run(collect(abatch(agen(7), 3))) == [[0, 1, 2], [3, 4, 5], [6]]
+    assert asyncio.run(collect(abatch(agen(6), 3))) == [[0, 1, 2], [3, 4, 5]]
+    assert asyncio.run(collect(abatch(agen(0), 3))) == []
+
+
+def test_batch_size_validation():
+    with pytest.raises(ValueError):
+        asyncio.run(collect(abatch(agen(3), 0)))
+
+
+def test_ticker_values_and_sleeps():
+    sleeps = []
+
+    async def fake_sleep(d):
+        sleeps.append(d)
+    assert asyncio.run(collect(Ticker(4, 0.5, sleep=fake_sleep))) == [0, 1, 2, 3]
+    assert sleeps == [0.5, 0.5, 0.5]
+
+
+def test_ticker_restartable():
+    async def fake_sleep(d):
+        pass
+    t = Ticker(2, 1, sleep=fake_sleep)
+
+    async def twice():
+        return await collect(t), await collect(t)
+    assert asyncio.run(twice()) == ([0, 1], [0, 1])
+
+
+def test_ticker_zero():
+    async def fake_sleep(d):
+        raise AssertionError("should not sleep")
+    assert asyncio.run(collect(Ticker(0, 1, sleep=fake_sleep))) == []
+
+
+def test_composes():
+    async def fake_sleep(d):
+        pass
+    assert asyncio.run(collect(abatch(Ticker(5, 0, sleep=fake_sleep), 2))) == [[0, 1], [2, 3], [4]]
+@@@ task to_thread_gather leaf=14 diff=3 entry=gather_blocking
+@@@ prompt
+Write `async def gather_blocking(funcs) -> list` that runs each blocking zero-argument callable in `funcs` in a worker thread via `asyncio.to_thread`, all concurrently, and returns their results in order. The event loop must stay responsive while they run (other coroutines keep making progress), and the calls must not run on the event loop's thread. Exceptions propagate.
+@@@ reference
+import asyncio
+
+
+async def gather_blocking(funcs):
+    return list(await asyncio.gather(*(asyncio.to_thread(f) for f in funcs)))
+@@@ tests
+import asyncio
+import threading
+import pytest
+from solution import gather_blocking
+
+
+def test_results_in_order():
+    assert asyncio.run(gather_blocking([lambda: 1, lambda: "two", lambda: [3]])) == [1, "two", [3]]
+
+
+def test_runs_off_loop_thread():
+    async def main():
+        loop_thread = threading.get_ident()
+        idents = await gather_blocking([threading.get_ident] * 3)
+        return loop_thread, idents
+    loop_thread, idents = asyncio.run(main())
+    assert loop_thread not in idents
+
+
+def test_concurrent_threads():
+    barrier = threading.Barrier(3, timeout=3)
+    assert asyncio.run(gather_blocking([lambda i=i: (barrier.wait(), i)[1] for i in range(3)])) == [0, 1, 2]
+
+
+def test_loop_stays_responsive():
+    async def main():
+        released = threading.Event()
+
+        def blocking():
+            return released.wait(3)
+
+        async def ticker():
+            for _ in range(5):
+                await asyncio.sleep(0)
+            released.set()
+        res, _ = await asyncio.gather(gather_blocking([blocking, blocking]), ticker())
+        return res
+    assert asyncio.run(main()) == [True, True]
+
+
+def test_exception_propagates():
+    def bad():
+        raise OSError("disk")
+    with pytest.raises(OSError):
+        asyncio.run(gather_blocking([bad]))
+
+
+def test_empty():
+    assert asyncio.run(gather_blocking([])) == []
+@@@ task ordered_lock_transfer leaf=15 diff=3 entry=Account,transfer
+@@@ prompt
+Write `Account(id: int, balance: int)` where each account has its own `threading.Lock` in the attribute `lock`, and `transfer(src, dst, amount)` that moves money between two accounts while holding both locks. Naively locking `src` then `dst` deadlocks when two threads transfer in opposite directions at once; avoid that by always acquiring the two locks in a global order (by the accounts' `id` attribute, lowest first). Transferring to the same account raises `ValueError`; insufficient funds raise `ValueError` without changing anything.
+@@@ reference
+import threading
+
+
+class Account:
+    def __init__(self, id: int, balance: int):
+        self.id = id
+        self.balance = balance
+        self.lock = threading.Lock()
+
+
+def transfer(src, dst, amount):
+    if src is dst or src.id == dst.id:
+        raise ValueError("cannot transfer to the same account")
+    first, second = (src, dst) if src.id < dst.id else (dst, src)
+    with first.lock:
+        with second.lock:
+            if src.balance < amount:
+                raise ValueError("insufficient funds")
+            src.balance -= amount
+            dst.balance += amount
+@@@ tests
+import threading
+import pytest
+from solution import Account, transfer
+
+
+def test_basic_transfer():
+    a, b = Account(1, 100), Account(2, 0)
+    transfer(a, b, 30)
+    assert (a.balance, b.balance) == (70, 30)
+
+
+def test_insufficient_funds():
+    a, b = Account(1, 10), Account(2, 0)
+    with pytest.raises(ValueError):
+        transfer(a, b, 11)
+    assert (a.balance, b.balance) == (10, 0)
+    assert not a.lock.locked() and not b.lock.locked()
+
+
+def test_same_account():
+    a = Account(1, 10)
+    with pytest.raises(ValueError):
+        transfer(a, a, 1)
+
+
+def test_opposite_directions_no_deadlock():
+    a, b = Account(1, 10_000), Account(2, 10_000)
+    barrier = threading.Barrier(2, timeout=3)
+
+    def worker(src, dst):
+        barrier.wait()
+        for _ in range(3000):
+            transfer(src, dst, 1)
+    t1 = threading.Thread(target=worker, args=(a, b), daemon=True)
+    t2 = threading.Thread(target=worker, args=(b, a), daemon=True)
+    t1.start()
+    t2.start()
+    t1.join(10)
+    t2.join(10)
+    assert not t1.is_alive() and not t2.is_alive(), "deadlock"
+    assert a.balance + b.balance == 20_000
+
+
+def test_locks_taken_in_id_order():
+    a, b = Account(5, 10), Account(3, 10)
+    order = []
+
+    class Spy:
+        def __init__(self, name, real):
+            self.name, self.real = name, real
+
+        def __enter__(self):
+            order.append(self.name)
+            return self.real.__enter__()
+
+        def __exit__(self, *e):
+            return self.real.__exit__(*e)
+
+        def acquire(self, *a, **k):
+            order.append(self.name)
+            return self.real.acquire(*a, **k)
+
+        def release(self):
+            return self.real.release()
+
+        def locked(self):
+            return self.real.locked()
+    a.lock = Spy("id5", a.lock)
+    b.lock = Spy("id3", b.lock)
+    transfer(a, b, 1)
+    assert order == ["id3", "id5"]
+@@@ task acquire_all_timeout leaf=15 diff=4 entry=acquire_all
+@@@ prompt
+Write a context manager `acquire_all(locks, timeout: float)` (use `contextlib.contextmanager`) that acquires several `threading.Lock` objects in a canonical global order (sorted by `id(lock)`, regardless of the order passed in), giving each acquire the remaining part of an overall `timeout` budget. If any lock cannot be acquired in time, release the ones already taken and raise `TimeoutError`. On exit, release all locks in reverse order of acquisition, even if the block raised. Duplicate locks in the input are acquired only once.
+@@@ reference
+import time
+from contextlib import contextmanager
+
+
+@contextmanager
+def acquire_all(locks, timeout: float):
+    ordered = sorted({id(l): l for l in locks}.values(), key=id)
+    deadline = time.monotonic() + timeout
+    taken = []
+    try:
+        for lock in ordered:
+            remaining = max(0.0, deadline - time.monotonic())
+            if not lock.acquire(timeout=remaining):
+                raise TimeoutError("could not acquire all locks")
+            taken.append(lock)
+        yield
+    finally:
+        for lock in reversed(taken):
+            lock.release()
+@@@ tests
+import threading
+import pytest
+from solution import acquire_all
+
+
+def test_acquires_and_releases():
+    locks = [threading.Lock() for _ in range(3)]
+    with acquire_all(locks, 1):
+        assert all(l.locked() for l in locks)
+    assert not any(l.locked() for l in locks)
+
+
+def test_released_on_exception():
+    locks = [threading.Lock() for _ in range(2)]
+    with pytest.raises(RuntimeError):
+        with acquire_all(locks, 1):
+            raise RuntimeError("x")
+    assert not any(l.locked() for l in locks)
+
+
+def test_timeout_releases_partial():
+    locks = sorted([threading.Lock() for _ in range(3)], key=id)
+    holder_ready, release = threading.Event(), threading.Event()
+
+    def holder():
+        with locks[2]:
+            holder_ready.set()
+            release.wait(5)
+    t = threading.Thread(target=holder, daemon=True)
+    t.start()
+    holder_ready.wait(3)
+    try:
+        with pytest.raises(TimeoutError):
+            with acquire_all(locks, 0.03):
+                pass
+        assert not locks[0].locked() and not locks[1].locked()
+    finally:
+        release.set()
+        t.join(3)
+
+
+def test_order_independent_of_input():
+    a, b = threading.Lock(), threading.Lock()
+    barrier = threading.Barrier(2, timeout=3)
+    errors = []
+
+    def worker(ls):
+        barrier.wait()
+        try:
+            for _ in range(500):
+                with acquire_all(ls, 2):
+                    pass
+        except Exception as e:
+            errors.append(e)
+    t1 = threading.Thread(target=worker, args=([a, b],), daemon=True)
+    t2 = threading.Thread(target=worker, args=([b, a],), daemon=True)
+    t1.start()
+    t2.start()
+    t1.join(10)
+    t2.join(10)
+    assert errors == [] and not t1.is_alive() and not t2.is_alive()
+
+
+def test_duplicates_once():
+    l = threading.Lock()
+    with acquire_all([l, l], 0.5):
+        assert l.locked()
+    assert not l.locked()
+@@@ task lazy_value_once leaf=16 diff=3 entry=Lazy
+@@@ prompt
+Write a thread-safe lazy initialiser `Lazy(factory)`. `get()` calls `factory()` on first use and returns the cached value on every later call; even when many threads call `get()` at the same moment, the factory runs exactly once (use double-checked locking with a `threading.Lock`). If the factory raises, the exception propagates and nothing is cached, so a later `get()` tries again. `initialized` is a bool property. A factory that returns None must still count as initialised.
+@@@ reference
+import threading
+
+_UNSET = object()
+
+
+class Lazy:
+    def __init__(self, factory):
+        self._factory = factory
+        self._value = _UNSET
+        self._lock = threading.Lock()
+
+    @property
+    def initialized(self):
+        return self._value is not _UNSET
+
+    def get(self):
+        if self._value is _UNSET:
+            with self._lock:
+                if self._value is _UNSET:
+                    self._value = self._factory()
+        return self._value
+@@@ tests
+import threading
+import time
+import pytest
+from solution import Lazy
+
+
+def test_lazy_and_cached():
+    calls = []
+    lz = Lazy(lambda: calls.append(1) or "value")
+    assert not lz.initialized and calls == []
+    assert lz.get() == "value" and lz.get() == "value"
+    assert calls == [1] and lz.initialized
+
+
+def test_none_value_cached():
+    calls = []
+    lz = Lazy(lambda: calls.append(1))
+    lz.get()
+    lz.get()
+    assert calls == [1] and lz.initialized
+
+
+def test_exception_not_cached():
+    attempts = []
+
+    def factory():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise OSError("config not ready")
+        return 5
+    lz = Lazy(factory)
+    with pytest.raises(OSError):
+        lz.get()
+    assert not lz.initialized
+    assert lz.get() == 5
+
+
+def test_runs_once_under_contention():
+    calls = []
+    lock = threading.Lock()
+
+    def factory():
+        with lock:
+            calls.append(1)
+        time.sleep(0.02)
+        return object()
+    lz = Lazy(factory)
+    barrier = threading.Barrier(8, timeout=3)
+    got = []
+
+    def worker():
+        barrier.wait()
+        got.append(lz.get())
+    ts = [threading.Thread(target=worker, daemon=True) for _ in range(8)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(5)
+    assert len(calls) == 1 and len(got) == 8 and len({id(g) for g in got}) == 1
+
+
+def test_independent_instances():
+    a, b = Lazy(lambda: []), Lazy(lambda: [])
+    assert a.get() is not b.get()
+@@@ task singleton_metaclass leaf=16 diff=4 entry=SingletonMeta
+@@@ prompt
+Write a thread-safe metaclass `SingletonMeta` so that every class using `metaclass=SingletonMeta` has exactly one instance: the first call constructs it (running `__init__` once) and later calls return the same object, ignoring their arguments. Construction must happen only once even when many threads call the class at the same moment. Each class, including each subclass, gets its own separate instance. Also give the metaclass a method `reset(cls)` (called as `MyClass.reset()`) that forgets that class's instance, which is useful in tests.
+@@@ reference
+import threading
+
+
+class SingletonMeta(type):
+    _instances = {}
+    _lock = threading.Lock()
+
+    def __call__(cls, *args, **kwargs):
+        inst = SingletonMeta._instances.get(cls)
+        if inst is None:
+            with SingletonMeta._lock:
+                inst = SingletonMeta._instances.get(cls)
+                if inst is None:
+                    inst = super().__call__(*args, **kwargs)
+                    SingletonMeta._instances[cls] = inst
+        return inst
+
+    def reset(cls):
+        with SingletonMeta._lock:
+            SingletonMeta._instances.pop(cls, None)
+@@@ tests
+import threading
+import time
+from solution import SingletonMeta
+
+
+def test_same_instance_and_init_once():
+    inits = []
+
+    class Config(metaclass=SingletonMeta):
+        def __init__(self, name="default"):
+            inits.append(name)
+            self.name = name
+    a = Config("first")
+    b = Config("second")
+    assert a is b and a.name == "first" and inits == ["first"]
+
+
+def test_subclasses_have_own_instance():
+    class Base(metaclass=SingletonMeta):
+        pass
+
+    class Child(Base):
+        pass
+    assert Base() is Base() and Child() is Child()
+    assert Base() is not Child() and type(Child()) is Child
+
+
+def test_reset():
+    class Svc(metaclass=SingletonMeta):
+        pass
+    a = Svc()
+    Svc.reset()
+    b = Svc()
+    assert a is not b and Svc() is b
+
+
+def test_thread_safe_construction():
+    inits = []
+    lock = threading.Lock()
+
+    class Slow(metaclass=SingletonMeta):
+        def __init__(self):
+            with lock:
+                inits.append(1)
+            time.sleep(0.02)
+    barrier = threading.Barrier(8, timeout=3)
+    got = []
+
+    def worker():
+        barrier.wait()
+        got.append(Slow())
+    ts = [threading.Thread(target=worker, daemon=True) for _ in range(8)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(5)
+    assert len(inits) == 1 and len({id(g) for g in got}) == 1
+
+
+def test_isinstance_still_works():
+    class Thing(metaclass=SingletonMeta):
+        pass
+    assert isinstance(Thing(), Thing) and type(Thing) is SingletonMeta
+@@@ task thread_worker_pool leaf=17 diff=4 entry=WorkerPool
+@@@ prompt
+Write a `WorkerPool(n_workers, handler)` that starts `n_workers` threads taking items from a `queue.Queue` and calling `handler(item)`. `submit(item)` enqueues work and raises `RuntimeError` after shutdown has begun. Exceptions from `handler` are appended to the `errors` list and do not kill the worker. `shutdown(drain=True) -> int` stops accepting work and stops the workers gracefully: with `drain=True` every queued item is processed first; with `drain=False` items not yet started are discarded, while items already being handled finish. It joins all worker threads and returns the number of discarded items. `processed` counts handler calls that completed (successfully or not).
+@@@ reference
+import queue
+import threading
+
+_STOP = object()
+
+
+class WorkerPool:
+    def __init__(self, n_workers, handler):
+        self.handler = handler
+        self.errors = []
+        self.processed = 0
+        self._q = queue.Queue()
+        self._lock = threading.Lock()
+        self._closed = False
+        self._threads = [threading.Thread(target=self._run, daemon=True) for _ in range(n_workers)]
+        for t in self._threads:
+            t.start()
+
+    def _run(self):
+        while True:
+            item = self._q.get()
+            if item is _STOP:
+                return
+            try:
+                self.handler(item)
+            except Exception as exc:
+                with self._lock:
+                    self.errors.append(exc)
+            finally:
+                with self._lock:
+                    self.processed += 1
+
+    def submit(self, item):
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("pool is shut down")
+            self._q.put(item)
+
+    def shutdown(self, drain=True):
+        with self._lock:
+            self._closed = True
+        discarded = 0
+        if not drain:
+            while True:
+                try:
+                    item = self._q.get_nowait()
+                except queue.Empty:
+                    break
+                if item is not _STOP:
+                    discarded += 1
+        for _ in self._threads:
+            self._q.put(_STOP)
+        for t in self._threads:
+            t.join()
+        return discarded
+@@@ tests
+import threading
+import pytest
+from solution import WorkerPool
+
+
+def test_processes_everything_with_drain():
+    out = []
+    lock = threading.Lock()
+
+    def handler(x):
+        with lock:
+            out.append(x)
+    pool = WorkerPool(3, handler)
+    for i in range(50):
+        pool.submit(i)
+    assert pool.shutdown(drain=True) == 0
+    assert sorted(out) == list(range(50)) and pool.processed == 50
+
+
+def test_submit_after_shutdown():
+    pool = WorkerPool(1, lambda x: None)
+    pool.shutdown()
+    with pytest.raises(RuntimeError):
+        pool.submit(1)
+
+
+def test_errors_collected():
+    def handler(x):
+        if x % 2:
+            raise ValueError(x)
+    pool = WorkerPool(2, handler)
+    for i in range(10):
+        pool.submit(i)
+    pool.shutdown()
+    assert len(pool.errors) == 5 and pool.processed == 10
+
+
+def test_no_drain_discards_queued_but_finishes_running():
+    started, release = threading.Event(), threading.Event()
+    done = []
+
+    def handler(x):
+        if x == "first":
+            started.set()
+            release.wait(5)
+        done.append(x)
+    pool = WorkerPool(1, handler)
+    pool.submit("first")
+    assert started.wait(3)
+    for i in range(5):
+        pool.submit(i)
+    result = {}
+    t = threading.Thread(target=lambda: result.setdefault("n", pool.shutdown(drain=False)), daemon=True)
+    t.start()
+    t.join(0.05)
+    release.set()
+    t.join(5)
+    assert result["n"] == 5 and done == ["first"]
+
+
+def test_threads_stopped():
+    before = threading.active_count()
+    pool = WorkerPool(4, lambda x: None)
+    pool.submit(1)
+    pool.shutdown()
+    assert threading.active_count() == before
+@@@ task async_worker_pool leaf=17 diff=4 entry=AsyncWorkerPool
+@@@ prompt
+Write an `AsyncWorkerPool(n_workers, handler)` for asyncio, where `handler(item)` is a coroutine function. `await pool.start()` creates the worker tasks, which take items from an `asyncio.Queue`. `await pool.submit(item)` enqueues an item. `await pool.stop(timeout)` shuts down gracefully: it waits up to `timeout` seconds for the queue to be fully processed (`queue.join()`), then cancels the workers and waits for them to exit; it returns True if everything was processed within the timeout and False otherwise. Handler exceptions are appended to `pool.errors` and the worker keeps going. `pool.processed` counts finished handler calls.
+@@@ reference
+import asyncio
+
+
+class AsyncWorkerPool:
+    def __init__(self, n_workers, handler):
+        self.n_workers = n_workers
+        self.handler = handler
+        self.errors = []
+        self.processed = 0
+        self._queue = None
+        self._workers = []
+
+    async def start(self):
+        self._queue = asyncio.Queue()
+        self._workers = [asyncio.create_task(self._run()) for _ in range(self.n_workers)]
+
+    async def _run(self):
+        while True:
+            item = await self._queue.get()
+            try:
+                await self.handler(item)
+            except Exception as exc:
+                self.errors.append(exc)
+            finally:
+                self.processed += 1
+                self._queue.task_done()
+
+    async def submit(self, item):
+        await self._queue.put(item)
+
+    async def stop(self, timeout):
+        try:
+            await asyncio.wait_for(self._queue.join(), timeout)
+            drained = True
+        except asyncio.TimeoutError:
+            drained = False
+        for w in self._workers:
+            w.cancel()
+        await asyncio.gather(*self._workers, return_exceptions=True)
+        return drained
+@@@ tests
+import asyncio
+from solution import AsyncWorkerPool
+
+
+def test_processes_all():
+    async def main():
+        out = []
+
+        async def handler(x):
+            await asyncio.sleep(0)
+            out.append(x)
+        pool = AsyncWorkerPool(3, handler)
+        await pool.start()
+        for i in range(20):
+            await pool.submit(i)
+        ok = await pool.stop(timeout=2)
+        return ok, sorted(out), pool.processed
+    assert asyncio.run(main()) == (True, list(range(20)), 20)
+
+
+def test_errors_do_not_kill_workers():
+    async def main():
+        async def handler(x):
+            if x == 1:
+                raise ValueError("bad")
+        pool = AsyncWorkerPool(1, handler)
+        await pool.start()
+        for i in range(3):
+            await pool.submit(i)
+        await pool.stop(timeout=2)
+        return pool
+    pool = asyncio.run(main())
+    assert len(pool.errors) == 1 and pool.processed == 3
+
+
+def test_timeout_returns_false_and_cancels():
+    async def main():
+        cancelled = []
+
+        async def handler(x):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.append(x)
+                raise
+        pool = AsyncWorkerPool(2, handler)
+        await pool.start()
+        await pool.submit("a")
+        ok = await pool.stop(timeout=0.02)
+        leftover = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        return ok, cancelled, leftover
+    ok, cancelled, leftover = asyncio.run(main())
+    assert ok is False and cancelled == ["a"] and leftover == []
+
+
+def test_workers_run_concurrently():
+    async def main():
+        started = []
+        both = asyncio.Event()
+
+        async def handler(x):
+            started.append(x)
+            if len(started) == 2:
+                both.set()
+            await asyncio.wait_for(both.wait(), 1)
+        pool = AsyncWorkerPool(2, handler)
+        await pool.start()
+        await pool.submit(1)
+        await pool.submit(2)
+        return await pool.stop(timeout=2)
+    assert asyncio.run(main()) is True
+
+
+def test_stop_with_empty_queue():
+    async def main():
+        async def handler(x):
+            pass
+        pool = AsyncWorkerPool(2, handler)
+        await pool.start()
+        return await pool.stop(timeout=0.5)
+    assert asyncio.run(main()) is True

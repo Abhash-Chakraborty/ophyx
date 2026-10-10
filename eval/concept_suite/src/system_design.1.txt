@@ -1,0 +1,2334 @@
+@@@ task lru_cache leaf=0 diff=2 entry=LRUCache
+@@@ prompt
+Write a class `LRUCache(capacity: int)` backed by `collections.OrderedDict`, with `get(key, default=None)`, `put(key, value)`, `__len__` and `__contains__`. Both `get` (on a hit) and `put` mark the key as most recently used; when a `put` of a new key would exceed the capacity, evict the least recently used entry first. `__contains__` must not change recency. A capacity that is not a positive int raises `ValueError`.
+@@@ reference
+from collections import OrderedDict
+
+
+class LRUCache:
+    def __init__(self, capacity: int):
+        if not isinstance(capacity, int) or isinstance(capacity, bool) or capacity <= 0:
+            raise ValueError("capacity must be a positive int")
+        self.capacity = capacity
+        self._data = OrderedDict()
+
+    def get(self, key, default=None):
+        if key not in self._data:
+            return default
+        self._data.move_to_end(key)
+        return self._data[key]
+
+    def put(self, key, value):
+        if key in self._data:
+            self._data.move_to_end(key)
+        elif len(self._data) >= self.capacity:
+            self._data.popitem(last=False)
+        self._data[key] = value
+
+    def __len__(self):
+        return len(self._data)
+
+    def __contains__(self, key):
+        return key in self._data
+@@@ tests
+import pytest
+from solution import LRUCache
+
+
+def test_evicts_least_recently_used():
+    c = LRUCache(2)
+    c.put("a", 1)
+    c.put("b", 2)
+    c.put("c", 3)
+    assert "a" not in c and c.get("b") == 2 and c.get("c") == 3
+    assert len(c) == 2
+
+
+def test_get_refreshes_recency():
+    c = LRUCache(2)
+    c.put("a", 1)
+    c.put("b", 2)
+    assert c.get("a") == 1
+    c.put("c", 3)
+    assert "b" not in c
+    assert c.get("a") == 1
+
+
+def test_put_existing_updates_without_eviction():
+    c = LRUCache(2)
+    c.put("a", 1)
+    c.put("b", 2)
+    c.put("a", 10)
+    assert len(c) == 2 and c.get("a") == 10
+    c.put("c", 3)
+    assert "b" not in c and "a" in c
+
+
+def test_contains_does_not_refresh():
+    c = LRUCache(2)
+    c.put("a", 1)
+    c.put("b", 2)
+    assert "a" in c
+    c.put("c", 3)
+    assert "a" not in c
+
+
+def test_default_and_miss():
+    c = LRUCache(1)
+    assert c.get("x") is None
+    assert c.get("x", 42) == 42
+    c.put("x", None)
+    assert c.get("x", 42) is None
+
+
+@pytest.mark.parametrize("bad", [0, -1, 1.5, "3", None])
+def test_invalid_capacity(bad):
+    with pytest.raises(ValueError):
+        LRUCache(bad)
+
+
+def test_capacity_one():
+    c = LRUCache(1)
+    for i in range(5):
+        c.put(i, i * i)
+    assert len(c) == 1 and c.get(4) == 16 and c.get(3) is None
+@@@ task lru_cache leaf=0 diff=3 entry=EvictingLRU
+@@@ prompt
+Write a class `EvictingLRU(capacity: int, on_evict=None)`: an LRU cache with `get(key, default=None)`, `put(key, value)`, `peek(key)`, `pop(key)`, `resize(new_capacity)` and `items()`. `on_evict(key, value)` is called for every entry removed because of capacity (not for `pop` or for overwriting a key). `peek` returns the value without changing recency and raises `KeyError` if missing; `pop` removes and returns the value (`KeyError` if missing). `resize` changes the capacity and evicts least recently used entries as needed, in LRU order; a capacity below 1 raises `ValueError`. `items()` returns a list of `(key, value)` pairs from least to most recently used.
+@@@ reference
+from collections import OrderedDict
+
+
+class EvictingLRU:
+    def __init__(self, capacity: int, on_evict=None):
+        if capacity < 1:
+            raise ValueError("capacity must be >= 1")
+        self.capacity = capacity
+        self.on_evict = on_evict
+        self._d = OrderedDict()
+
+    def _shrink(self):
+        while len(self._d) > self.capacity:
+            k, v = self._d.popitem(last=False)
+            if self.on_evict is not None:
+                self.on_evict(k, v)
+
+    def get(self, key, default=None):
+        if key not in self._d:
+            return default
+        self._d.move_to_end(key)
+        return self._d[key]
+
+    def put(self, key, value):
+        self._d[key] = value
+        self._d.move_to_end(key)
+        self._shrink()
+
+    def peek(self, key):
+        return self._d[key]
+
+    def pop(self, key):
+        return self._d.pop(key)
+
+    def resize(self, new_capacity):
+        if new_capacity < 1:
+            raise ValueError("capacity must be >= 1")
+        self.capacity = new_capacity
+        self._shrink()
+
+    def items(self):
+        return list(self._d.items())
+
+    def __len__(self):
+        return len(self._d)
+@@@ tests
+import pytest
+from solution import EvictingLRU
+
+
+def test_on_evict_called_for_capacity_only():
+    seen = []
+    c = EvictingLRU(2, on_evict=lambda k, v: seen.append((k, v)))
+    c.put("a", 1)
+    c.put("b", 2)
+    c.put("a", 3)  # overwrite, no eviction
+    c.put("c", 4)
+    assert seen == [("b", 2)]
+    c.pop("a")
+    assert seen == [("b", 2)]
+
+
+def test_peek_does_not_touch_recency():
+    c = EvictingLRU(2)
+    c.put("a", 1)
+    c.put("b", 2)
+    assert c.peek("a") == 1
+    c.put("c", 3)
+    assert c.items() == [("b", 2), ("c", 3)]
+
+
+def test_peek_and_pop_missing_raise():
+    c = EvictingLRU(1)
+    with pytest.raises(KeyError):
+        c.peek("x")
+    with pytest.raises(KeyError):
+        c.pop("x")
+
+
+def test_resize_evicts_in_lru_order():
+    seen = []
+    c = EvictingLRU(4, on_evict=lambda k, v: seen.append(k))
+    for k in "abcd":
+        c.put(k, k.upper())
+    c.get("a")
+    c.resize(2)
+    assert seen == ["b", "c"]
+    assert c.items() == [("d", "D"), ("a", "A")]
+
+
+def test_resize_invalid():
+    c = EvictingLRU(2)
+    with pytest.raises(ValueError):
+        c.resize(0)
+    with pytest.raises(ValueError):
+        EvictingLRU(0)
+
+
+def test_items_order_after_gets():
+    c = EvictingLRU(3)
+    for k in "xyz":
+        c.put(k, 0)
+    c.get("x")
+    c.get("y")
+    assert [k for k, _ in c.items()] == ["z", "x", "y"]
+
+
+def test_grow_keeps_entries():
+    c = EvictingLRU(1)
+    c.put(1, 1)
+    c.resize(3)
+    c.put(2, 2)
+    c.put(3, 3)
+    assert len(c) == 3
+@@@ task lfu_cache leaf=1 diff=4 entry=LFUCache
+@@@ prompt
+Write a class `LFUCache(capacity: int)` with `get(key, default=None)`, `put(key, value)`, `frequency(key)` and `__len__`. Each `get` hit and each `put` to an existing key counts as one use; a newly inserted key starts with a use count of 1. When inserting a new key into a full cache, first evict the key with the lowest use count, breaking ties by evicting the least recently used of those. `frequency(key)` returns the use count and raises `KeyError` for missing keys. Capacity below 1 raises `ValueError`. `get` and `put` should be O(1).
+@@@ reference
+from collections import OrderedDict, defaultdict
+
+
+class LFUCache:
+    def __init__(self, capacity: int):
+        if capacity < 1:
+            raise ValueError("capacity must be >= 1")
+        self.capacity = capacity
+        self._vals = {}
+        self._freq = {}
+        self._buckets = defaultdict(OrderedDict)
+        self._min = 0
+
+    def _touch(self, key):
+        f = self._freq[key]
+        del self._buckets[f][key]
+        if not self._buckets[f]:
+            del self._buckets[f]
+            if self._min == f:
+                self._min = f + 1
+        self._freq[key] = f + 1
+        self._buckets[f + 1][key] = None
+
+    def get(self, key, default=None):
+        if key not in self._vals:
+            return default
+        self._touch(key)
+        return self._vals[key]
+
+    def put(self, key, value):
+        if key in self._vals:
+            self._vals[key] = value
+            self._touch(key)
+            return
+        if len(self._vals) >= self.capacity:
+            old, _ = self._buckets[self._min].popitem(last=False)
+            if not self._buckets[self._min]:
+                del self._buckets[self._min]
+            del self._vals[old]
+            del self._freq[old]
+        self._vals[key] = value
+        self._freq[key] = 1
+        self._buckets[1][key] = None
+        self._min = 1
+
+    def frequency(self, key):
+        return self._freq[key]
+
+    def __len__(self):
+        return len(self._vals)
+@@@ tests
+import pytest
+from solution import LFUCache
+
+
+def test_evicts_least_frequent():
+    c = LFUCache(2)
+    c.put("a", 1)
+    c.put("b", 2)
+    c.get("a")
+    c.put("c", 3)
+    assert c.get("b") is None
+    assert c.get("a") == 1 and c.get("c") == 3
+
+
+def test_tie_broken_by_recency():
+    c = LFUCache(2)
+    c.put("a", 1)
+    c.put("b", 2)
+    c.put("c", 3)  # a and b both freq 1, a is older
+    assert c.get("a") is None and c.get("b") == 2
+
+
+def test_frequency_counts():
+    c = LFUCache(3)
+    c.put("a", 1)
+    assert c.frequency("a") == 1
+    c.get("a")
+    c.put("a", 5)
+    assert c.frequency("a") == 3
+    c.get("missing")
+    with pytest.raises(KeyError):
+        c.frequency("missing")
+
+
+def test_new_key_not_counted_before_eviction():
+    c = LFUCache(1)
+    c.put("a", 1)
+    c.get("a")
+    c.put("b", 2)
+    assert c.get("a") is None and c.get("b") == 2
+    assert len(c) == 1
+
+
+def test_invalid_capacity():
+    with pytest.raises(ValueError):
+        LFUCache(0)
+
+
+def test_mixed_sequence():
+    c = LFUCache(3)
+    for k in "abc":
+        c.put(k, k)
+    for _ in range(3):
+        c.get("a")
+    c.get("b")
+    c.put("d", "d")  # evicts c (freq 1)
+    assert c.get("c") is None
+    c.put("e", "e")  # d freq 1 is now least frequent
+    assert c.get("d") is None
+    assert {k for k in "abe" if c.get(k) is not None} == {"a", "b", "e"}
+
+
+def test_many_operations_fast():
+    c = LFUCache(1000)
+    for i in range(50000):
+        c.put(i % 1500, i)
+        c.get(i % 700)
+    assert len(c) == 1000
+@@@ task ttl_cache leaf=2 diff=3 entry=TTLCache
+@@@ prompt
+Write a class `TTLCache(ttl: float, clock=time.monotonic)` with `set(key, value, ttl=None)`, `get(key, default=None)`, `__contains__`, `__len__` and `purge()`. An entry set at time t with time-to-live d (the per-call `ttl` if given, else the cache default) is expired once `clock() >= t + d`. Expired entries behave as missing for `get`, `in` and `len`. `purge()` deletes expired entries and returns how many it removed. A ttl that is not positive (default or per call) raises `ValueError`. The clock is injectable so tests can control time.
+@@@ reference
+import time
+
+
+class TTLCache:
+    def __init__(self, ttl: float, clock=time.monotonic):
+        if ttl <= 0:
+            raise ValueError("ttl must be positive")
+        self.ttl = ttl
+        self.clock = clock
+        self._data = {}
+
+    def set(self, key, value, ttl=None):
+        d = self.ttl if ttl is None else ttl
+        if d <= 0:
+            raise ValueError("ttl must be positive")
+        self._data[key] = (value, self.clock() + d)
+
+    def _live(self, key, now):
+        item = self._data.get(key)
+        return item is not None and now < item[1]
+
+    def get(self, key, default=None):
+        now = self.clock()
+        if self._live(key, now):
+            return self._data[key][0]
+        self._data.pop(key, None)
+        return default
+
+    def __contains__(self, key):
+        return self._live(key, self.clock())
+
+    def __len__(self):
+        now = self.clock()
+        return sum(1 for k in self._data if self._live(k, now))
+
+    def purge(self):
+        now = self.clock()
+        dead = [k for k, (_, exp) in self._data.items() if now >= exp]
+        for k in dead:
+            del self._data[k]
+        return len(dead)
+@@@ tests
+import pytest
+from solution import TTLCache
+
+
+class Clock:
+    def __init__(self):
+        self.t = 100.0
+
+    def __call__(self):
+        return self.t
+
+
+def test_expires_at_boundary():
+    clk = Clock()
+    c = TTLCache(10, clock=clk)
+    c.set("a", 1)
+    clk.t = 109.999
+    assert c.get("a") == 1
+    clk.t = 110.0
+    assert c.get("a") is None and "a" not in c
+
+
+def test_per_key_ttl_override():
+    clk = Clock()
+    c = TTLCache(10, clock=clk)
+    c.set("short", 1, ttl=1)
+    c.set("long", 2)
+    clk.t += 5
+    assert "short" not in c and c.get("long") == 2
+
+
+def test_len_ignores_expired_and_purge_counts():
+    clk = Clock()
+    c = TTLCache(5, clock=clk)
+    for i in range(4):
+        c.set(i, i)
+    clk.t += 3
+    c.set("new", 0)
+    clk.t += 3
+    assert len(c) == 1
+    assert c.purge() == 4
+    assert c.purge() == 0
+    assert len(c) == 1
+
+
+def test_reset_extends_lifetime():
+    clk = Clock()
+    c = TTLCache(5, clock=clk)
+    c.set("a", 1)
+    clk.t += 4
+    c.set("a", 2)
+    clk.t += 4
+    assert c.get("a") == 2
+
+
+def test_default_returned():
+    clk = Clock()
+    c = TTLCache(1, clock=clk)
+    assert c.get("x", "dflt") == "dflt"
+    c.set("x", None)
+    assert c.get("x", "dflt") is None
+
+
+def test_invalid_ttl():
+    with pytest.raises(ValueError):
+        TTLCache(0)
+    c = TTLCache(1)
+    with pytest.raises(ValueError):
+        c.set("a", 1, ttl=-2)
+
+
+def test_default_clock_works():
+    c = TTLCache(60)
+    c.set("k", "v")
+    assert c.get("k") == "v"
+@@@ task ttl_memoize leaf=2 diff=3 entry=ttl_memoize
+@@@ prompt
+Write a decorator factory `ttl_memoize(ttl: float, clock=time.monotonic)` that caches a function's results per argument set for `ttl` seconds. Calls with the same positional and keyword arguments (keyword order must not matter) reuse the cached result while `clock() < stored_time + ttl`; after that the function is called again. Exceptions are never cached. The wrapper keeps the original `__name__` and `__doc__` (use functools.wraps) and has a `clear()` method that empties the cache.
+@@@ reference
+import functools
+import time
+
+
+def ttl_memoize(ttl: float, clock=time.monotonic):
+    def deco(fn):
+        cache = {}
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            key = (args, tuple(sorted(kwargs.items())))
+            now = clock()
+            hit = cache.get(key)
+            if hit is not None and now < hit[1]:
+                return hit[0]
+            value = fn(*args, **kwargs)
+            cache[key] = (value, now + ttl)
+            return value
+
+        wrapper.clear = cache.clear
+        return wrapper
+    return deco
+@@@ tests
+import pytest
+from solution import ttl_memoize
+
+
+class Clock:
+    t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+def make(clk, ttl=10):
+    calls = []
+
+    @ttl_memoize(ttl, clock=clk)
+    def area(w, h=1):
+        """Area."""
+        calls.append((w, h))
+        return w * h
+    return area, calls
+
+
+def test_cached_within_ttl():
+    clk = Clock()
+    area, calls = make(clk)
+    assert area(2, 3) == 6
+    clk.t = 9.9
+    assert area(2, 3) == 6
+    assert calls == [(2, 3)]
+
+
+def test_expires():
+    clk = Clock()
+    area, calls = make(clk)
+    area(2, 3)
+    clk.t = 10
+    area(2, 3)
+    assert len(calls) == 2
+
+
+def test_kwargs_order_irrelevant_and_distinct_args():
+    clk = Clock()
+    calls = []
+
+    @ttl_memoize(5, clock=clk)
+    def f(**kw):
+        calls.append(kw)
+        return sorted(kw)
+    f(a=1, b=2)
+    f(b=2, a=1)
+    f(a=1, b=3)
+    assert len(calls) == 2
+
+
+def test_exceptions_not_cached():
+    clk = Clock()
+    n = []
+
+    @ttl_memoize(5, clock=clk)
+    def flaky(x):
+        n.append(x)
+        if len(n) == 1:
+            raise RuntimeError("first call fails")
+        return x
+    with pytest.raises(RuntimeError):
+        flaky(1)
+    assert flaky(1) == 1
+    assert flaky(1) == 1
+    assert len(n) == 2
+
+
+def test_wraps_and_clear():
+    clk = Clock()
+    area, calls = make(clk)
+    assert area.__name__ == "area" and area.__doc__ == "Area."
+    area(1)
+    area.clear()
+    area(1)
+    assert len(calls) == 2
+
+
+def test_none_result_is_cached():
+    clk = Clock()
+    calls = []
+
+    @ttl_memoize(5, clock=clk)
+    def nothing():
+        calls.append(1)
+    nothing()
+    nothing()
+    assert len(calls) == 1
+@@@ task token_bucket leaf=3 diff=3 entry=TokenBucket
+@@@ prompt
+Write a class `TokenBucket(rate: float, capacity: float, clock=time.monotonic)` implementing a token-bucket rate limiter. The bucket starts full; tokens refill continuously at `rate` tokens per second up to `capacity`. `try_acquire(n=1) -> bool` takes `n` tokens if available and returns True, otherwise takes nothing and returns False. `wait_time(n=1) -> float` returns how many seconds until `n` tokens would be available (0.0 if available now) without consuming anything. A `tokens` property returns the current (float) token count. Requesting more than `capacity` raises `ValueError`, as does a non-positive rate or capacity.
+@@@ reference
+import time
+
+
+class TokenBucket:
+    def __init__(self, rate: float, capacity: float, clock=time.monotonic):
+        if rate <= 0 or capacity <= 0:
+            raise ValueError("rate and capacity must be positive")
+        self.rate = rate
+        self.capacity = capacity
+        self.clock = clock
+        self._tokens = float(capacity)
+        self._last = clock()
+
+    def _refill(self):
+        now = self.clock()
+        elapsed = max(0.0, now - self._last)
+        self._tokens = min(self.capacity, self._tokens + elapsed * self.rate)
+        self._last = now
+
+    @property
+    def tokens(self):
+        self._refill()
+        return self._tokens
+
+    def _check(self, n):
+        if n > self.capacity:
+            raise ValueError("request exceeds capacity")
+
+    def try_acquire(self, n=1):
+        self._check(n)
+        self._refill()
+        if self._tokens >= n:
+            self._tokens -= n
+            return True
+        return False
+
+    def wait_time(self, n=1):
+        self._check(n)
+        self._refill()
+        if self._tokens >= n:
+            return 0.0
+        return (n - self._tokens) / self.rate
+@@@ tests
+import pytest
+from solution import TokenBucket
+
+
+class Clock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+def test_starts_full_and_drains():
+    clk = Clock()
+    b = TokenBucket(rate=1, capacity=3, clock=clk)
+    assert [b.try_acquire() for _ in range(4)] == [True, True, True, False]
+
+
+def test_refills_over_time_capped():
+    clk = Clock()
+    b = TokenBucket(rate=2, capacity=4, clock=clk)
+    assert b.try_acquire(4)
+    clk.t = 1.0
+    assert b.tokens == pytest.approx(2.0)
+    clk.t = 100.0
+    assert b.tokens == pytest.approx(4.0)
+
+
+def test_failed_acquire_takes_nothing():
+    clk = Clock()
+    b = TokenBucket(rate=1, capacity=5, clock=clk)
+    b.try_acquire(4)
+    assert not b.try_acquire(2)
+    assert b.tokens == pytest.approx(1.0)
+    assert b.try_acquire(1)
+
+
+def test_wait_time():
+    clk = Clock()
+    b = TokenBucket(rate=4, capacity=8, clock=clk)
+    assert b.wait_time(8) == 0.0
+    b.try_acquire(8)
+    assert b.wait_time(2) == pytest.approx(0.5)
+    assert b.tokens == pytest.approx(0.0)
+    clk.t = 0.5
+    assert b.try_acquire(2)
+
+
+def test_over_capacity_and_bad_args():
+    b = TokenBucket(rate=1, capacity=2, clock=Clock())
+    with pytest.raises(ValueError):
+        b.try_acquire(3)
+    with pytest.raises(ValueError):
+        b.wait_time(3)
+    with pytest.raises(ValueError):
+        TokenBucket(0, 1)
+    with pytest.raises(ValueError):
+        TokenBucket(1, 0)
+
+
+def test_fractional_rate():
+    clk = Clock()
+    b = TokenBucket(rate=0.5, capacity=1, clock=clk)
+    assert b.try_acquire()
+    clk.t = 1.0
+    assert not b.try_acquire()
+    clk.t = 2.0
+    assert b.try_acquire()
+@@@ task keyed_rate_limiter leaf=3 diff=3 entry=KeyedRateLimiter
+@@@ prompt
+Write a class `KeyedRateLimiter(rate: float, capacity: float, clock=time.monotonic, idle_ttl: float = 60.0)` that keeps an independent token bucket per key (for example per client IP). Each bucket starts full with `capacity` tokens and refills at `rate` tokens per second. `allow(key, cost=1) -> bool` consumes `cost` tokens from that key's bucket if possible. `cleanup() -> int` forgets buckets whose last `allow` call was at least `idle_ttl` seconds ago and returns how many were removed; a forgotten key starts full again. `len(limiter)` is the number of tracked keys.
+@@@ reference
+import time
+
+
+class KeyedRateLimiter:
+    def __init__(self, rate: float, capacity: float, clock=time.monotonic, idle_ttl: float = 60.0):
+        self.rate = rate
+        self.capacity = capacity
+        self.clock = clock
+        self.idle_ttl = idle_ttl
+        self._buckets = {}  # key -> [tokens, last_refill, last_used]
+
+    def allow(self, key, cost=1):
+        now = self.clock()
+        b = self._buckets.get(key)
+        if b is None:
+            b = self._buckets[key] = [float(self.capacity), now, now]
+        b[0] = min(self.capacity, b[0] + (now - b[1]) * self.rate)
+        b[1] = now
+        b[2] = now
+        if b[0] >= cost:
+            b[0] -= cost
+            return True
+        return False
+
+    def cleanup(self):
+        now = self.clock()
+        dead = [k for k, b in self._buckets.items() if now - b[2] >= self.idle_ttl]
+        for k in dead:
+            del self._buckets[k]
+        return len(dead)
+
+    def __len__(self):
+        return len(self._buckets)
+@@@ tests
+from solution import KeyedRateLimiter
+
+
+class Clock:
+    t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+def test_keys_are_independent():
+    clk = Clock()
+    rl = KeyedRateLimiter(rate=1, capacity=2, clock=clk)
+    assert rl.allow("a") and rl.allow("a") and not rl.allow("a")
+    assert rl.allow("b")
+
+
+def test_refill_per_key():
+    clk = Clock()
+    rl = KeyedRateLimiter(rate=1, capacity=2, clock=clk)
+    rl.allow("a", 2)
+    clk.t = 1.0
+    assert rl.allow("a") and not rl.allow("a")
+
+
+def test_cost():
+    clk = Clock()
+    rl = KeyedRateLimiter(rate=1, capacity=5, clock=clk)
+    assert rl.allow("x", cost=5)
+    assert not rl.allow("x", cost=1)
+
+
+def test_cleanup_removes_idle_only():
+    clk = Clock()
+    rl = KeyedRateLimiter(rate=1, capacity=1, clock=clk, idle_ttl=10)
+    rl.allow("old")
+    clk.t = 5
+    rl.allow("recent")
+    clk.t = 10
+    assert rl.cleanup() == 1
+    assert len(rl) == 1
+    clk.t = 15
+    assert rl.cleanup() == 1 and len(rl) == 0
+
+
+def test_forgotten_key_starts_full():
+    clk = Clock()
+    rl = KeyedRateLimiter(rate=0.001, capacity=3, clock=clk, idle_ttl=1)
+    for _ in range(3):
+        rl.allow("k")
+    assert not rl.allow("k")
+    clk.t = 2
+    rl.cleanup()
+    assert all(rl.allow("k") for _ in range(3))
+
+
+def test_len_tracks_keys():
+    rl = KeyedRateLimiter(rate=1, capacity=1, clock=Clock())
+    for k in range(7):
+        rl.allow(k)
+    assert len(rl) == 7
+@@@ task sliding_window_log leaf=4 diff=3 entry=SlidingWindowLimiter
+@@@ prompt
+Write a class `SlidingWindowLimiter(limit: int, window: float, clock=time.monotonic)` implementing a sliding-window-log rate limiter per key. `allow(key="default") -> bool` returns True and records the request time if fewer than `limit` requests for that key happened in the last `window` seconds; a request made at time t no longer counts once `clock() >= t + window`. Rejected requests are not recorded. Also provide `remaining(key="default") -> int` (requests still allowed right now) and `retry_after(key="default") -> float` (0.0 if a request would be allowed now, otherwise seconds until the oldest counted request expires).
+@@@ reference
+import time
+from collections import defaultdict, deque
+
+
+class SlidingWindowLimiter:
+    def __init__(self, limit: int, window: float, clock=time.monotonic):
+        self.limit = limit
+        self.window = window
+        self.clock = clock
+        self._log = defaultdict(deque)
+
+    def _prune(self, key, now):
+        q = self._log[key]
+        while q and now >= q[0] + self.window:
+            q.popleft()
+        return q
+
+    def allow(self, key="default"):
+        now = self.clock()
+        q = self._prune(key, now)
+        if len(q) < self.limit:
+            q.append(now)
+            return True
+        return False
+
+    def remaining(self, key="default"):
+        return max(0, self.limit - len(self._prune(key, self.clock())))
+
+    def retry_after(self, key="default"):
+        now = self.clock()
+        q = self._prune(key, now)
+        if len(q) < self.limit:
+            return 0.0
+        return q[0] + self.window - now
+@@@ tests
+import pytest
+from solution import SlidingWindowLimiter
+
+
+class Clock:
+    t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+def test_limit_within_window():
+    clk = Clock()
+    rl = SlidingWindowLimiter(3, 10, clock=clk)
+    assert [rl.allow() for _ in range(4)] == [True, True, True, False]
+
+
+def test_window_slides_per_request():
+    clk = Clock()
+    rl = SlidingWindowLimiter(2, 10, clock=clk)
+    rl.allow()
+    clk.t = 5
+    rl.allow()
+    clk.t = 9.99
+    assert not rl.allow()
+    clk.t = 10
+    assert rl.allow()
+    assert not rl.allow()
+    clk.t = 15
+    assert rl.allow()
+
+
+def test_rejected_not_recorded():
+    clk = Clock()
+    rl = SlidingWindowLimiter(1, 10, clock=clk)
+    rl.allow()
+    clk.t = 9
+    assert not rl.allow()
+    clk.t = 10
+    assert rl.allow()
+
+
+def test_remaining_and_retry_after():
+    clk = Clock()
+    rl = SlidingWindowLimiter(2, 10, clock=clk)
+    assert rl.remaining() == 2 and rl.retry_after() == 0.0
+    rl.allow()
+    clk.t = 4
+    rl.allow()
+    assert rl.remaining() == 0
+    assert rl.retry_after() == pytest.approx(6.0)
+    clk.t = 10
+    assert rl.remaining() == 1 and rl.retry_after() == 0.0
+
+
+def test_keys_independent():
+    clk = Clock()
+    rl = SlidingWindowLimiter(1, 1, clock=clk)
+    assert rl.allow("a") and rl.allow("b")
+    assert not rl.allow("a")
+
+
+def test_no_burst_at_fixed_boundary():
+    # a fixed-window limiter would allow 4 here; a sliding log must not
+    clk = Clock()
+    rl = SlidingWindowLimiter(2, 10, clock=clk)
+    clk.t = 9
+    assert rl.allow() and rl.allow()
+    clk.t = 11
+    assert not rl.allow()
+@@@ task sliding_window_counter leaf=4 diff=4 entry=SlidingWindowCounter
+@@@ prompt
+Write a class `SlidingWindowCounter(limit: int, window: float, clock=time.monotonic)` implementing the memory-cheap "sliding window counter" approximation for a single client. Time is split into fixed windows: window index `i = floor(t / window)`. Keep only the count of the current window and of window `i - 1`. When `allow()` is called at time t, compute `elapsed = t - i * window` and the estimate `prev * (window - elapsed) / window + curr`; if the estimate is below `limit - 1 + 1e-9` (i.e. one more request would not exceed the limit), count the request in the current window and return True, otherwise return False. A previous window that is not exactly `i - 1` counts as 0. Also provide `estimate() -> float` returning the current estimate without recording anything.
+@@@ reference
+import math
+import time
+
+
+class SlidingWindowCounter:
+    def __init__(self, limit: int, window: float, clock=time.monotonic):
+        self.limit = limit
+        self.window = window
+        self.clock = clock
+        self._idx = None
+        self._curr = 0
+        self._prev = 0
+
+    def _roll(self, now):
+        i = math.floor(now / self.window)
+        if self._idx is None:
+            self._idx = i
+        elif i != self._idx:
+            self._prev = self._curr if i == self._idx + 1 else 0
+            self._curr = 0
+            self._idx = i
+        return i
+
+    def estimate(self):
+        now = self.clock()
+        i = self._roll(now)
+        elapsed = now - i * self.window
+        return self._prev * (self.window - elapsed) / self.window + self._curr
+
+    def allow(self):
+        if self.estimate() < self.limit - 1 + 1e-9:
+            self._curr += 1
+            return True
+        return False
+@@@ tests
+import pytest
+from solution import SlidingWindowCounter
+
+
+class Clock:
+    t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+def test_basic_limit_in_one_window():
+    clk = Clock()
+    rl = SlidingWindowCounter(3, 10, clock=clk)
+    assert [rl.allow() for _ in range(4)] == [True, True, True, False]
+
+
+def test_previous_window_weighted():
+    clk = Clock()
+    rl = SlidingWindowCounter(4, 10, clock=clk)
+    clk.t = 5
+    for _ in range(4):
+        rl.allow()
+    clk.t = 15  # half of previous window still counts: 4 * 0.5 = 2
+    assert rl.estimate() == pytest.approx(2.0)
+    assert rl.allow() and rl.allow()
+    assert not rl.allow()
+
+
+def test_estimate_decays_linearly():
+    clk = Clock()
+    rl = SlidingWindowCounter(10, 10, clock=clk)
+    for _ in range(8):
+        rl.allow()
+    clk.t = 12.5
+    assert rl.estimate() == pytest.approx(6.0)
+    clk.t = 17.5
+    assert rl.estimate() == pytest.approx(2.0)
+
+
+def test_gap_resets_previous():
+    clk = Clock()
+    rl = SlidingWindowCounter(2, 10, clock=clk)
+    rl.allow()
+    rl.allow()
+    clk.t = 25  # window 2; window 1 was empty
+    assert rl.estimate() == 0
+    assert rl.allow() and rl.allow() and not rl.allow()
+
+
+def test_estimate_does_not_record():
+    clk = Clock()
+    rl = SlidingWindowCounter(1, 10, clock=clk)
+    for _ in range(5):
+        rl.estimate()
+    assert rl.allow()
+    assert not rl.allow()
+
+
+def test_start_of_window_counts_full_previous():
+    clk = Clock()
+    rl = SlidingWindowCounter(2, 10, clock=clk)
+    rl.allow()
+    rl.allow()
+    clk.t = 10
+    assert rl.estimate() == pytest.approx(2.0)
+    assert not rl.allow()
+@@@ task job_queue_retries leaf=5 diff=3 entry=JobQueue
+@@@ prompt
+Write an in-memory `JobQueue(max_attempts=3, base_delay=1.0, clock=time.monotonic)`. `enqueue(fn, *args, **kwargs) -> int` returns job ids 1, 2, 3, ... and makes the job due immediately. `run_due() -> int` runs every job that is due at the moment it is called (due time <= clock()), ordered by due time then job id, and returns how many it ran. A successful job stores its return value in `queue.results[job_id]`. A job that raises is retried: after its k-th failed attempt it becomes due again at `now + base_delay * 2 ** (k - 1)`, unless it has used `max_attempts` attempts, in which case `(job_id, exception)` is appended to `queue.dead_letters`. `pending() -> int` is the number of jobs still waiting to run.
+@@@ reference
+import heapq
+import itertools
+import time
+
+
+class JobQueue:
+    def __init__(self, max_attempts=3, base_delay=1.0, clock=time.monotonic):
+        self.max_attempts = max_attempts
+        self.base_delay = base_delay
+        self.clock = clock
+        self.results = {}
+        self.dead_letters = []
+        self._heap = []
+        self._ids = itertools.count(1)
+
+    def enqueue(self, fn, *args, **kwargs):
+        jid = next(self._ids)
+        heapq.heappush(self._heap, (self.clock(), jid, fn, args, kwargs, 0))
+        return jid
+
+    def run_due(self):
+        now = self.clock()
+        due = []
+        while self._heap and self._heap[0][0] <= now:
+            due.append(heapq.heappop(self._heap))
+        for _, jid, fn, args, kwargs, attempts in due:
+            attempts += 1
+            try:
+                self.results[jid] = fn(*args, **kwargs)
+            except Exception as exc:
+                if attempts >= self.max_attempts:
+                    self.dead_letters.append((jid, exc))
+                else:
+                    when = now + self.base_delay * 2 ** (attempts - 1)
+                    heapq.heappush(self._heap, (when, jid, fn, args, kwargs, attempts))
+        return len(due)
+
+    def pending(self):
+        return len(self._heap)
+@@@ tests
+from solution import JobQueue
+
+
+class Clock:
+    t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+def flaky(fail_times):
+    state = {"n": 0}
+
+    def job():
+        state["n"] += 1
+        if state["n"] <= fail_times:
+            raise RuntimeError(f"fail {state['n']}")
+        return "ok"
+    return job, state
+
+
+def test_success_stores_result():
+    q = JobQueue(clock=Clock())
+    a = q.enqueue(lambda x, y=0: x + y, 2, y=3)
+    b = q.enqueue(str.upper, "hi")
+    assert (a, b) == (1, 2)
+    assert q.run_due() == 2
+    assert q.results == {1: 5, 2: "HI"} and q.pending() == 0
+
+
+def test_retry_backoff_schedule():
+    clk = Clock()
+    q = JobQueue(max_attempts=5, base_delay=1.0, clock=clk)
+    job, state = flaky(2)
+    jid = q.enqueue(job)
+    q.run_due()  # fails, due at 1
+    clk.t = 0.9
+    assert q.run_due() == 0
+    clk.t = 1.0
+    assert q.run_due() == 1  # fails again, due at 1 + 2 = 3
+    clk.t = 2.9
+    assert q.run_due() == 0
+    clk.t = 3.0
+    q.run_due()
+    assert q.results[jid] == "ok" and state["n"] == 3
+
+
+def test_dead_letter_after_max_attempts():
+    clk = Clock()
+    q = JobQueue(max_attempts=3, base_delay=0.5, clock=clk)
+    job, state = flaky(99)
+    jid = q.enqueue(job)
+    for t in (0, 0.5, 1.5, 10):
+        clk.t = t
+        q.run_due()
+    assert state["n"] == 3
+    assert len(q.dead_letters) == 1
+    dead_id, exc = q.dead_letters[0]
+    assert dead_id == jid and isinstance(exc, RuntimeError)
+    assert q.pending() == 0 and jid not in q.results
+
+
+def test_order_by_due_then_id():
+    clk = Clock()
+    q = JobQueue(clock=clk)
+    order = []
+    bad, _ = flaky(1)
+    q.enqueue(lambda: (order.append("bad"), bad())[1])
+    q.run_due()
+    clk.t = 1.0
+    q.enqueue(lambda: order.append("late"))
+    clk.t = 1.5
+    q.run_due()
+    assert order == ["bad", "bad", "late"]
+
+
+def test_failure_does_not_block_others():
+    clk = Clock()
+    q = JobQueue(clock=clk)
+    job, _ = flaky(99)
+    q.enqueue(job)
+    good = q.enqueue(lambda: 42)
+    assert q.run_due() == 2
+    assert q.results[good] == 42 and q.pending() == 1
+
+
+def test_job_enqueued_while_running_waits_for_next_call():
+    clk = Clock()
+    q = JobQueue(clock=clk)
+    q.enqueue(lambda: q.enqueue(lambda: "child"))
+    assert q.run_due() == 1
+    assert q.pending() == 1
+    assert q.run_due() == 1
+    assert "child" in q.results.values()
+@@@ task lease_queue leaf=5 diff=4 entry=LeaseQueue,StaleReceipt
+@@@ prompt
+Write a message queue with visibility timeouts, like SQS: `LeaseQueue(visibility_timeout: float, max_receives: int = 3, clock=time.monotonic)` plus an exception `StaleReceipt`. `put(body) -> int` returns ids 1, 2, ... `receive()` returns `(msg_id, body, receipt)` for the oldest visible message (lowest id) or None, and hides that message for `visibility_timeout` seconds; if it is not acked by then it becomes visible again. `ack(receipt)` deletes the message; `nack(receipt)` makes it visible immediately. Each receipt is unique per delivery, and acking or nacking with a receipt from an earlier delivery, or after its lease expired, raises `StaleReceipt`. A message that has already been delivered `max_receives` times is moved to the `dead_letter` list (of bodies) instead of being delivered again. `len(queue)` counts messages not yet acked or dead-lettered.
+@@@ reference
+import itertools
+import time
+
+
+class StaleReceipt(Exception):
+    pass
+
+
+class LeaseQueue:
+    def __init__(self, visibility_timeout: float, max_receives: int = 3, clock=time.monotonic):
+        self.visibility_timeout = visibility_timeout
+        self.max_receives = max_receives
+        self.clock = clock
+        self.dead_letter = []
+        self._msgs = {}  # id -> dict(body, visible_at, receives, receipt)
+        self._ids = itertools.count(1)
+        self._receipts = itertools.count(1)
+
+    def put(self, body):
+        mid = next(self._ids)
+        self._msgs[mid] = {"body": body, "visible_at": float("-inf"), "receives": 0, "receipt": None}
+        return mid
+
+    def receive(self):
+        now = self.clock()
+        for mid in sorted(self._msgs):
+            m = self._msgs[mid]
+            if m["visible_at"] > now:
+                continue
+            if m["receives"] >= self.max_receives:
+                self.dead_letter.append(m["body"])
+                del self._msgs[mid]
+                continue
+            m["receives"] += 1
+            m["visible_at"] = now + self.visibility_timeout
+            m["receipt"] = f"r{next(self._receipts)}"
+            return mid, m["body"], m["receipt"]
+        return None
+
+    def _find(self, receipt):
+        now = self.clock()
+        for mid, m in self._msgs.items():
+            if m["receipt"] == receipt and m["visible_at"] > now:
+                return mid
+        raise StaleReceipt(receipt)
+
+    def ack(self, receipt):
+        del self._msgs[self._find(receipt)]
+
+    def nack(self, receipt):
+        m = self._msgs[self._find(receipt)]
+        m["visible_at"] = float("-inf")
+        m["receipt"] = None
+
+    def __len__(self):
+        return len(self._msgs)
+@@@ tests
+import pytest
+from solution import LeaseQueue, StaleReceipt
+
+
+class Clock:
+    t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+def test_receive_hides_until_timeout():
+    clk = Clock()
+    q = LeaseQueue(10, clock=clk)
+    q.put("a")
+    mid, body, _ = q.receive()
+    assert (mid, body) == (1, "a")
+    assert q.receive() is None
+    clk.t = 10
+    assert q.receive()[1] == "a"
+
+
+def test_ack_deletes():
+    clk = Clock()
+    q = LeaseQueue(10, clock=clk)
+    q.put("a")
+    q.put("b")
+    _, _, r = q.receive()
+    q.ack(r)
+    assert len(q) == 1
+    assert q.receive()[1] == "b"
+
+
+def test_nack_makes_visible_now():
+    clk = Clock()
+    q = LeaseQueue(10, clock=clk)
+    q.put("a")
+    _, _, r = q.receive()
+    q.nack(r)
+    assert q.receive()[1] == "a"
+
+
+def test_stale_receipts_rejected():
+    clk = Clock()
+    q = LeaseQueue(5, clock=clk)
+    q.put("a")
+    _, _, r1 = q.receive()
+    clk.t = 5
+    with pytest.raises(StaleReceipt):
+        q.ack(r1)  # lease expired
+    _, _, r2 = q.receive()
+    assert r2 != r1
+    with pytest.raises(StaleReceipt):
+        q.nack(r1)
+    q.ack(r2)
+    assert len(q) == 0
+
+
+def test_dead_letter_after_max_receives():
+    clk = Clock()
+    q = LeaseQueue(1, max_receives=2, clock=clk)
+    q.put("poison")
+    q.put("ok")
+    for t in (0, 1):
+        clk.t = t
+        _, body, r = q.receive()
+        assert body == "poison"
+    clk.t = 2
+    mid, body, r = q.receive()
+    assert body == "ok"
+    assert q.dead_letter == ["poison"]
+    q.ack(r)
+    assert len(q) == 0
+
+
+def test_fifo_among_visible():
+    clk = Clock()
+    q = LeaseQueue(10, clock=clk)
+    for b in "xyz":
+        q.put(b)
+    got = [q.receive()[1] for _ in range(3)]
+    assert got == ["x", "y", "z"] and q.receive() is None
+@@@ task priority_scheduler leaf=6 diff=3 entry=TaskScheduler
+@@@ prompt
+Write a `TaskScheduler` backed by `heapq`. `push(task, priority: int) -> int` adds a task and returns a handle; smaller numbers mean higher priority, and tasks with equal priority come out in insertion order (tasks themselves may not be comparable). `pop()` removes and returns the highest-priority task and `peek()` returns it without removing; both raise `IndexError` when empty. `cancel(handle) -> bool` removes a pending task (True) or returns False if it is unknown, already popped or cancelled; use lazy deletion so cancel is O(1). `len()` counts only live tasks.
+@@@ reference
+import heapq
+import itertools
+
+
+class TaskScheduler:
+    def __init__(self):
+        self._heap = []
+        self._live = {}
+        self._seq = itertools.count()
+
+    def push(self, task, priority: int) -> int:
+        h = next(self._seq)
+        heapq.heappush(self._heap, (priority, h, task))
+        self._live[h] = task
+        return h
+
+    def _clean(self):
+        while self._heap and self._heap[0][1] not in self._live:
+            heapq.heappop(self._heap)
+
+    def peek(self):
+        self._clean()
+        if not self._heap:
+            raise IndexError("peek from empty scheduler")
+        return self._heap[0][2]
+
+    def pop(self):
+        self._clean()
+        if not self._heap:
+            raise IndexError("pop from empty scheduler")
+        _, h, task = heapq.heappop(self._heap)
+        del self._live[h]
+        return task
+
+    def cancel(self, handle) -> bool:
+        if handle in self._live:
+            del self._live[handle]
+            return True
+        return False
+
+    def __len__(self):
+        return len(self._live)
+@@@ tests
+import pytest
+from solution import TaskScheduler
+
+
+class Job:  # deliberately not orderable
+    def __init__(self, name):
+        self.name = name
+
+
+def test_priority_order():
+    s = TaskScheduler()
+    s.push("low", 5)
+    s.push("high", 1)
+    s.push("mid", 3)
+    assert [s.pop() for _ in range(3)] == ["high", "mid", "low"]
+
+
+def test_fifo_for_equal_priority_with_unorderable_tasks():
+    s = TaskScheduler()
+    jobs = [Job(i) for i in range(5)]
+    for j in jobs:
+        s.push(j, 2)
+    assert [s.pop().name for _ in range(5)] == [0, 1, 2, 3, 4]
+
+
+def test_cancel():
+    s = TaskScheduler()
+    a = s.push("a", 1)
+    s.push("b", 2)
+    assert s.cancel(a) is True
+    assert s.cancel(a) is False
+    assert len(s) == 1
+    assert s.peek() == "b" and s.pop() == "b"
+
+
+def test_cancel_after_pop_and_unknown():
+    s = TaskScheduler()
+    h = s.push("x", 0)
+    s.pop()
+    assert s.cancel(h) is False
+    assert s.cancel(12345) is False
+
+
+def test_empty_raises():
+    s = TaskScheduler()
+    with pytest.raises(IndexError):
+        s.pop()
+    h = s.push("x", 1)
+    s.cancel(h)
+    with pytest.raises(IndexError):
+        s.peek()
+
+
+def test_peek_does_not_remove():
+    s = TaskScheduler()
+    s.push("x", 1)
+    assert s.peek() == "x" and len(s) == 1
+
+
+def test_many_cancellations_scale():
+    s = TaskScheduler()
+    hs = [s.push(i, i % 10) for i in range(20000)]
+    for h in hs[::2]:
+        s.cancel(h)
+    assert len(s) == 10000
+    out = [s.pop() for _ in range(10000)]
+    assert all(x % 2 == 1 for x in out)
+@@@ task delayed_scheduler leaf=6 diff=4 entry=DelayedScheduler
+@@@ prompt
+Write a `DelayedScheduler(clock=time.monotonic)` that runs callbacks at points in time, using a heap. `call_at(when, fn) -> handle`, `call_later(delay, fn) -> handle` and `call_every(interval, fn) -> handle` (first run at now + interval). `run_pending() -> int` runs every callback whose time is <= clock() at the moment `run_pending` starts, in time order with ties in scheduling order, and returns how many ran. Callbacks scheduled by a callback during `run_pending` wait for the next call. A recurring callback is rescheduled from its previous scheduled time, not from now: next = scheduled + k * interval for the smallest k >= 1 that makes next > now, so an overdue recurring callback runs once, not once per missed interval. `cancel(handle) -> bool` stops a pending or recurring callback (False if unknown or already finished). A non-positive interval raises `ValueError`.
+@@@ reference
+import heapq
+import itertools
+import math
+import time
+
+
+class DelayedScheduler:
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
+        self._heap = []
+        self._seq = itertools.count()
+        self._active = {}  # handle -> interval or None
+
+    def _push(self, when, handle, fn):
+        heapq.heappush(self._heap, (when, next(self._seq), handle, fn))
+
+    def call_at(self, when, fn):
+        h = next(self._seq)
+        self._active[h] = None
+        self._push(when, h, fn)
+        return h
+
+    def call_later(self, delay, fn):
+        return self.call_at(self.clock() + delay, fn)
+
+    def call_every(self, interval, fn):
+        if interval <= 0:
+            raise ValueError("interval must be positive")
+        h = self.call_at(self.clock() + interval, fn)
+        self._active[h] = interval
+        return h
+
+    def cancel(self, handle):
+        return self._active.pop(handle, False) is not False
+
+    def run_pending(self):
+        now = self.clock()
+        due = []
+        while self._heap and self._heap[0][0] <= now:
+            due.append(heapq.heappop(self._heap))
+        ran = 0
+        for when, _, h, fn in due:
+            if h not in self._active:
+                continue
+            interval = self._active[h]
+            if interval is None:
+                del self._active[h]
+            else:
+                k = max(1, math.floor((now - when) / interval) + 1)
+                nxt = when + k * interval
+                while nxt <= now:
+                    nxt += interval
+                self._push(nxt, h, fn)
+            fn()
+            ran += 1
+        return ran
+@@@ tests
+import pytest
+from solution import DelayedScheduler
+
+
+class Clock:
+    t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+def test_time_order_and_ties():
+    clk = Clock()
+    s = DelayedScheduler(clk)
+    out = []
+    s.call_at(5, lambda: out.append("b"))
+    s.call_at(2, lambda: out.append("a"))
+    s.call_at(5, lambda: out.append("c"))
+    clk.t = 4
+    assert s.run_pending() == 1
+    clk.t = 5
+    assert s.run_pending() == 2
+    assert out == ["a", "b", "c"]
+
+
+def test_call_later_and_cancel():
+    clk = Clock()
+    s = DelayedScheduler(clk)
+    out = []
+    clk.t = 10
+    h = s.call_later(3, lambda: out.append(1))
+    s.call_later(3, lambda: out.append(2))
+    assert s.cancel(h) is True and s.cancel(h) is False
+    clk.t = 13
+    s.run_pending()
+    assert out == [2]
+    assert s.cancel(h) is False
+
+
+def test_recurring_keeps_its_grid():
+    clk = Clock()
+    s = DelayedScheduler(clk)
+    ticks = []
+    s.call_every(10, lambda: ticks.append(clk.t))
+    for t in (10, 21, 30, 39, 40):
+        clk.t = t
+        s.run_pending()
+    assert ticks == [10, 21, 30, 40]
+
+
+def test_overdue_recurring_runs_once():
+    clk = Clock()
+    s = DelayedScheduler(clk)
+    n = []
+    s.call_every(1, lambda: n.append(1))
+    clk.t = 100.5
+    assert s.run_pending() == 1
+    clk.t = 100.9
+    assert s.run_pending() == 0
+    clk.t = 101
+    assert s.run_pending() == 1
+
+
+def test_callbacks_added_during_run_wait():
+    clk = Clock()
+    s = DelayedScheduler(clk)
+    out = []
+    s.call_at(0, lambda: s.call_at(0, lambda: out.append("child")))
+    assert s.run_pending() == 1 and out == []
+    assert s.run_pending() == 1 and out == ["child"]
+
+
+def test_cancel_recurring_and_bad_interval():
+    clk = Clock()
+    s = DelayedScheduler(clk)
+    n = []
+    h = s.call_every(1, lambda: n.append(1))
+    clk.t = 1
+    s.run_pending()
+    assert s.cancel(h)
+    clk.t = 5
+    assert s.run_pending() == 0 and n == [1]
+    with pytest.raises(ValueError):
+        s.call_every(0, lambda: None)
+@@@ task pubsub_broker leaf=7 diff=3 entry=Broker
+@@@ prompt
+Write an in-memory pub/sub `Broker`. Topics are dot-separated strings like `orders.eu.created`. `subscribe(pattern, callback)` returns a subscription object with an `unsubscribe()` method; in patterns `*` matches exactly one segment and `#` matches zero or more segments. `publish(topic, message) -> int` calls `callback(topic, message)` for every matching subscription in the order they subscribed and returns how many were called. An exception in one callback must not stop delivery to the others: record it as `(topic, exception)` in `broker.errors` and continue. Unsubscribing from inside a callback during a publish must be safe.
+@@@ reference
+class _Subscription:
+    def __init__(self, broker, pattern, callback):
+        self._broker = broker
+        self.pattern = pattern
+        self.callback = callback
+        self.active = True
+
+    def unsubscribe(self):
+        if self.active:
+            self.active = False
+            self._broker._subs.remove(self)
+
+
+def _match(pat, top):
+    if not pat:
+        return not top
+    head = pat[0]
+    if head == "#":
+        return any(_match(pat[1:], top[i:]) for i in range(len(top) + 1))
+    if not top:
+        return False
+    return (head == "*" or head == top[0]) and _match(pat[1:], top[1:])
+
+
+class Broker:
+    def __init__(self):
+        self._subs = []
+        self.errors = []
+
+    def subscribe(self, pattern, callback):
+        s = _Subscription(self, pattern, callback)
+        self._subs.append(s)
+        return s
+
+    def publish(self, topic, message):
+        parts = topic.split(".")
+        n = 0
+        for s in list(self._subs):
+            if not s.active or not _match(s.pattern.split("."), parts):
+                continue
+            n += 1
+            try:
+                s.callback(topic, message)
+            except Exception as exc:
+                self.errors.append((topic, exc))
+        return n
+@@@ tests
+from solution import Broker
+
+
+def collect(broker, pattern):
+    got = []
+    sub = broker.subscribe(pattern, lambda t, m: got.append((t, m)))
+    return got, sub
+
+
+def test_exact_topic():
+    b = Broker()
+    got, _ = collect(b, "orders.created")
+    assert b.publish("orders.created", 1) == 1
+    assert b.publish("orders.deleted", 2) == 0
+    assert got == [("orders.created", 1)]
+
+
+def test_star_matches_one_segment():
+    b = Broker()
+    got, _ = collect(b, "orders.*.created")
+    b.publish("orders.eu.created", "a")
+    b.publish("orders.created", "b")
+    b.publish("orders.eu.de.created", "c")
+    assert [m for _, m in got] == ["a"]
+
+
+def test_hash_matches_zero_or_more():
+    b = Broker()
+    got, _ = collect(b, "orders.#")
+    other, _ = collect(b, "#.created")
+    b.publish("orders", 1)
+    b.publish("orders.eu.created", 2)
+    b.publish("users.created", 3)
+    assert [m for _, m in got] == [1, 2]
+    assert [m for _, m in other] == [2, 3]
+
+
+def test_order_and_unsubscribe():
+    b = Broker()
+    order = []
+    s1 = b.subscribe("x", lambda t, m: order.append(1))
+    b.subscribe("x", lambda t, m: order.append(2))
+    b.publish("x", None)
+    s1.unsubscribe()
+    s1.unsubscribe()
+    b.publish("x", None)
+    assert order == [1, 2, 2]
+
+
+def test_errors_isolated():
+    b = Broker()
+
+    def bad(t, m):
+        raise ValueError("boom")
+    b.subscribe("x", bad)
+    got, _ = collect(b, "x")
+    assert b.publish("x", 7) == 2
+    assert got == [("x", 7)]
+    assert len(b.errors) == 1 and b.errors[0][0] == "x" and isinstance(b.errors[0][1], ValueError)
+
+
+def test_unsubscribe_during_publish():
+    b = Broker()
+    seen = []
+    holder = {}
+
+    def once(t, m):
+        seen.append(m)
+        holder["s"].unsubscribe()
+    holder["s"] = b.subscribe("x", once)
+    got, _ = collect(b, "x")
+    b.publish("x", 1)
+    b.publish("x", 2)
+    assert seen == [1] and [m for _, m in got] == [1, 2]
+@@@ task pull_message_bus leaf=7 diff=2 entry=MessageBus
+@@@ prompt
+Write a pull-based pub/sub `MessageBus`. `subscribe(topic, maxsize=100)` returns a subscriber object with `poll(max_messages=10) -> list` (removes and returns up to that many messages, oldest first), a `dropped` counter and `close()`. `publish(topic, message) -> int` appends the message to every open subscriber of exactly that topic and returns the number of subscribers it reached. Messages published before a subscriber subscribed are not delivered to it. If a subscriber's buffer is full, the oldest message is discarded to make room and `dropped` is incremented. A closed subscriber receives nothing more.
+@@@ reference
+from collections import defaultdict, deque
+
+
+class _Subscriber:
+    def __init__(self, bus, topic, maxsize):
+        self._bus = bus
+        self.topic = topic
+        self._buf = deque()
+        self.maxsize = maxsize
+        self.dropped = 0
+
+    def _offer(self, msg):
+        if len(self._buf) >= self.maxsize:
+            self._buf.popleft()
+            self.dropped += 1
+        self._buf.append(msg)
+
+    def poll(self, max_messages=10):
+        out = []
+        while self._buf and len(out) < max_messages:
+            out.append(self._buf.popleft())
+        return out
+
+    def close(self):
+        subs = self._bus._subs[self.topic]
+        if self in subs:
+            subs.remove(self)
+
+
+class MessageBus:
+    def __init__(self):
+        self._subs = defaultdict(list)
+
+    def subscribe(self, topic, maxsize=100):
+        s = _Subscriber(self, topic, maxsize)
+        self._subs[topic].append(s)
+        return s
+
+    def publish(self, topic, message):
+        subs = self._subs.get(topic, [])
+        for s in subs:
+            s._offer(message)
+        return len(subs)
+@@@ tests
+from solution import MessageBus
+
+
+def test_fanout_to_topic_subscribers():
+    bus = MessageBus()
+    a = bus.subscribe("t")
+    b = bus.subscribe("t")
+    c = bus.subscribe("other")
+    assert bus.publish("t", 1) == 2
+    assert a.poll() == [1] and b.poll() == [1] and c.poll() == []
+
+
+def test_no_history_for_late_subscribers():
+    bus = MessageBus()
+    bus.publish("t", "early")
+    s = bus.subscribe("t")
+    bus.publish("t", "late")
+    assert s.poll() == ["late"]
+
+
+def test_poll_limit_and_order():
+    bus = MessageBus()
+    s = bus.subscribe("t")
+    for i in range(5):
+        bus.publish("t", i)
+    assert s.poll(2) == [0, 1]
+    assert s.poll(10) == [2, 3, 4]
+    assert s.poll() == []
+
+
+def test_overflow_drops_oldest():
+    bus = MessageBus()
+    s = bus.subscribe("t", maxsize=3)
+    for i in range(5):
+        bus.publish("t", i)
+    assert s.dropped == 2
+    assert s.poll() == [2, 3, 4]
+
+
+def test_close_stops_delivery():
+    bus = MessageBus()
+    s = bus.subscribe("t")
+    s.close()
+    assert bus.publish("t", 1) == 0
+    assert s.poll() == []
+
+
+def test_independent_buffers():
+    bus = MessageBus()
+    fast = bus.subscribe("t", maxsize=10)
+    slow = bus.subscribe("t", maxsize=1)
+    for i in range(3):
+        bus.publish("t", i)
+    assert fast.poll() == [0, 1, 2] and fast.dropped == 0
+    assert slow.poll() == [2] and slow.dropped == 2
+@@@ task typed_event_bus leaf=8 diff=3 entry=EventBus
+@@@ prompt
+Write an `EventBus` that dispatches typed events (any class instances, e.g. dataclasses). `subscribe(event_type, handler)` registers a handler; registering the same handler twice for the same type has no effect. `on(event_type)` is a decorator form that returns the function unchanged. `publish(event) -> int` calls handlers for the event's class and for each of its base classes, walking the MRO from most specific to least specific; within one class, handlers run in subscription order. A handler registered for a base class must still run only once per event. It returns the number of handler calls. `unsubscribe(event_type, handler) -> bool`.
+@@@ reference
+from collections import defaultdict
+
+
+class EventBus:
+    def __init__(self):
+        self._handlers = defaultdict(list)
+
+    def subscribe(self, event_type, handler):
+        if handler not in self._handlers[event_type]:
+            self._handlers[event_type].append(handler)
+
+    def on(self, event_type):
+        def deco(fn):
+            self.subscribe(event_type, fn)
+            return fn
+        return deco
+
+    def unsubscribe(self, event_type, handler):
+        hs = self._handlers.get(event_type, [])
+        if handler in hs:
+            hs.remove(handler)
+            return True
+        return False
+
+    def publish(self, event):
+        n = 0
+        for cls in type(event).__mro__:
+            for h in list(self._handlers.get(cls, ())):
+                h(event)
+                n += 1
+        return n
+@@@ tests
+from dataclasses import dataclass
+from solution import EventBus
+
+
+@dataclass
+class Event:
+    pass
+
+
+@dataclass
+class UserEvent(Event):
+    user: str
+
+
+@dataclass
+class UserCreated(UserEvent):
+    pass
+
+
+def test_dispatch_by_type():
+    bus = EventBus()
+    got = []
+    bus.subscribe(UserCreated, got.append)
+    assert bus.publish(UserCreated("ann")) == 1
+    assert bus.publish(Event()) == 0
+    assert got == [UserCreated("ann")]
+
+
+def test_base_class_handlers_most_specific_first():
+    bus = EventBus()
+    order = []
+    bus.subscribe(Event, lambda e: order.append("event"))
+    bus.subscribe(UserEvent, lambda e: order.append("user"))
+    bus.subscribe(UserCreated, lambda e: order.append("created"))
+    assert bus.publish(UserCreated("x")) == 3
+    assert order == ["created", "user", "event"]
+
+
+def test_object_catch_all():
+    bus = EventBus()
+    got = []
+    bus.subscribe(object, got.append)
+    bus.publish(UserCreated("a"))
+    bus.publish(42)
+    assert len(got) == 2
+
+
+def test_duplicate_subscription_ignored():
+    bus = EventBus()
+    got = []
+    bus.subscribe(Event, got.append)
+    bus.subscribe(Event, got.append)
+    bus.publish(Event())
+    assert len(got) == 1
+
+
+def test_decorator_and_unsubscribe():
+    bus = EventBus()
+    got = []
+
+    @bus.on(UserEvent)
+    def handler(e):
+        got.append(e.user)
+    assert callable(handler) and handler.__name__ == "handler"
+    bus.publish(UserCreated("bob"))
+    assert bus.unsubscribe(UserEvent, handler) is True
+    assert bus.unsubscribe(UserEvent, handler) is False
+    bus.publish(UserCreated("eve"))
+    assert got == ["bob"]
+
+
+def test_subscription_order_within_type():
+    bus = EventBus()
+    order = []
+    for i in range(4):
+        bus.subscribe(Event, lambda e, i=i: order.append(i))
+    bus.publish(Event())
+    assert order == [0, 1, 2, 3]
+@@@ task async_event_bus leaf=8 diff=4 entry=AsyncEventBus min_python=3.11
+@@@ prompt
+Write an `AsyncEventBus` where handlers may be plain functions or `async def` coroutine functions. `subscribe(event_type, handler)` registers a handler for a class (dispatch uses `isinstance`, so handlers for base classes also receive subclass events). `async publish(event) -> int` calls every matching handler: plain functions are called directly, coroutine functions are awaited concurrently with `asyncio.gather` (so they overlap). Every handler runs even if some fail; after all have finished, if any raised, `publish` raises an `ExceptionGroup` containing all the exceptions. Otherwise it returns the number of handlers called.
+@@@ reference
+import asyncio
+import inspect
+
+
+class AsyncEventBus:
+    def __init__(self):
+        self._subs = []
+
+    def subscribe(self, event_type, handler):
+        self._subs.append((event_type, handler))
+
+    async def publish(self, event):
+        errors = []
+        coros = []
+        n = 0
+        for typ, h in list(self._subs):
+            if not isinstance(event, typ):
+                continue
+            n += 1
+            if inspect.iscoroutinefunction(h):
+                coros.append(h(event))
+            else:
+                try:
+                    h(event)
+                except Exception as exc:
+                    errors.append(exc)
+        results = await asyncio.gather(*coros, return_exceptions=True)
+        errors.extend(r for r in results if isinstance(r, BaseException))
+        if errors:
+            raise ExceptionGroup("event handlers failed", errors)
+        return n
+@@@ tests
+import asyncio
+import pytest
+from solution import AsyncEventBus
+
+
+class Base:
+    pass
+
+
+class Child(Base):
+    pass
+
+
+def test_sync_and_async_handlers():
+    bus = AsyncEventBus()
+    got = []
+
+    async def ah(e):
+        await asyncio.sleep(0)
+        got.append("async")
+    bus.subscribe(Base, lambda e: got.append("sync"))
+    bus.subscribe(Base, ah)
+    assert asyncio.run(bus.publish(Base())) == 2
+    assert sorted(got) == ["async", "sync"]
+
+
+def test_isinstance_dispatch():
+    bus = AsyncEventBus()
+    got = []
+    bus.subscribe(Base, lambda e: got.append("base"))
+    bus.subscribe(Child, lambda e: got.append("child"))
+    asyncio.run(bus.publish(Child()))
+    asyncio.run(bus.publish(Base()))
+    assert sorted(got) == ["base", "base", "child"]
+
+
+def test_async_handlers_run_concurrently():
+    bus = AsyncEventBus()
+
+    async def scenario():
+        a_started = asyncio.Event()
+        b_started = asyncio.Event()
+
+        async def a(e):
+            a_started.set()
+            await asyncio.wait_for(b_started.wait(), 1)
+
+        async def b(e):
+            b_started.set()
+            await asyncio.wait_for(a_started.wait(), 1)
+        bus.subscribe(Base, a)
+        bus.subscribe(Base, b)
+        return await bus.publish(Base())
+    assert asyncio.run(scenario()) == 2
+
+
+def test_errors_grouped_after_all_ran():
+    bus = AsyncEventBus()
+    ran = []
+
+    async def bad(e):
+        raise ValueError("a")
+
+    def bad_sync(e):
+        raise KeyError("b")
+
+    async def good(e):
+        await asyncio.sleep(0)
+        ran.append(1)
+    bus.subscribe(Base, bad)
+    bus.subscribe(Base, bad_sync)
+    bus.subscribe(Base, good)
+    with pytest.raises(ExceptionGroup) as ei:
+        asyncio.run(bus.publish(Base()))
+    assert ran == [1]
+    assert sorted(type(e).__name__ for e in ei.value.exceptions) == ["KeyError", "ValueError"]
+
+
+def test_no_handlers():
+    bus = AsyncEventBus()
+    assert asyncio.run(bus.publish(object())) == 0
+
+
+def test_except_star_usable():
+    bus = AsyncEventBus()
+
+    async def bad(e):
+        raise ValueError("x")
+    bus.subscribe(Base, bad)
+    caught = []
+
+    async def main():
+        try:
+            await bus.publish(Base())
+        except* ValueError as eg:
+            caught.extend(eg.exceptions)
+    asyncio.run(main())
+    assert len(caught) == 1
+@@@ task connection_pool leaf=9 diff=4 entry=ConnectionPool,PoolTimeout
+@@@ prompt
+Write a thread-safe `ConnectionPool(factory, max_size: int, timeout: float = 5.0)` and an exception `PoolTimeout`. `acquire(timeout=None)` returns an idle connection if there is one, otherwise creates one with `factory()` if fewer than `max_size` exist, otherwise blocks until another thread releases one; if none becomes available within the timeout (the pool default if None), raise `PoolTimeout`. `release(conn)` returns a connection to the pool and wakes a waiter; releasing a connection the pool did not hand out (or releasing twice) raises `ValueError`. `connection()` is a context manager that acquires and always releases. Properties `size` (connections created) and `idle` (idle connections). Use `threading.Condition`.
+@@@ reference
+import threading
+import time
+from contextlib import contextmanager
+
+
+class PoolTimeout(Exception):
+    pass
+
+
+class ConnectionPool:
+    def __init__(self, factory, max_size: int, timeout: float = 5.0):
+        self._factory = factory
+        self._max = max_size
+        self._timeout = timeout
+        self._idle = []
+        self._out = set()
+        self._created = 0
+        self._cond = threading.Condition()
+
+    @property
+    def size(self):
+        return self._created
+
+    @property
+    def idle(self):
+        with self._cond:
+            return len(self._idle)
+
+    def acquire(self, timeout=None):
+        timeout = self._timeout if timeout is None else timeout
+        deadline = time.monotonic() + timeout
+        with self._cond:
+            while True:
+                if self._idle:
+                    conn = self._idle.pop()
+                    break
+                if self._created < self._max:
+                    self._created += 1
+                    try:
+                        conn = self._factory()
+                    except BaseException:
+                        self._created -= 1
+                        raise
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise PoolTimeout(f"no connection within {timeout}s")
+                self._cond.wait(remaining)
+            self._out.add(id(conn))
+            return conn
+
+    def release(self, conn):
+        with self._cond:
+            if id(conn) not in self._out:
+                raise ValueError("connection not checked out from this pool")
+            self._out.discard(id(conn))
+            self._idle.append(conn)
+            self._cond.notify()
+
+    @contextmanager
+    def connection(self):
+        conn = self.acquire()
+        try:
+            yield conn
+        finally:
+            self.release(conn)
+@@@ tests
+import threading
+import pytest
+from solution import ConnectionPool, PoolTimeout
+
+
+class Conn:
+    n = 0
+
+    def __init__(self):
+        Conn.n += 1
+        self.id = Conn.n
+
+
+def test_reuses_idle_connections():
+    pool = ConnectionPool(Conn, max_size=2)
+    a = pool.acquire()
+    pool.release(a)
+    b = pool.acquire()
+    assert a is b and pool.size == 1
+
+
+def test_creates_up_to_max_then_times_out():
+    pool = ConnectionPool(Conn, max_size=2, timeout=0.05)
+    pool.acquire()
+    pool.acquire()
+    assert pool.size == 2
+    with pytest.raises(PoolTimeout):
+        pool.acquire()
+    with pytest.raises(PoolTimeout):
+        pool.acquire(timeout=0.01)
+
+
+def test_blocked_acquire_wakes_on_release():
+    pool = ConnectionPool(Conn, max_size=1)
+    held = pool.acquire()
+    got = []
+    waiting = threading.Event()
+
+    def worker():
+        waiting.set()
+        got.append(pool.acquire(timeout=5))
+    t = threading.Thread(target=worker)
+    t.start()
+    waiting.wait(2)
+    pool.release(held)
+    t.join(5)
+    assert not t.is_alive() and got == [held]
+
+
+def test_release_validation():
+    pool = ConnectionPool(Conn, max_size=1)
+    with pytest.raises(ValueError):
+        pool.release(Conn())
+    c = pool.acquire()
+    pool.release(c)
+    with pytest.raises(ValueError):
+        pool.release(c)
+
+
+def test_context_manager_releases_on_error():
+    pool = ConnectionPool(Conn, max_size=1, timeout=0.05)
+    with pytest.raises(RuntimeError):
+        with pool.connection():
+            raise RuntimeError("query failed")
+    assert pool.idle == 1
+    with pool.connection() as c:
+        assert isinstance(c, Conn)
+
+
+def test_factory_failure_does_not_leak_slot():
+    calls = []
+
+    def factory():
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("connect failed")
+        return Conn()
+    pool = ConnectionPool(factory, max_size=1, timeout=0.05)
+    with pytest.raises(OSError):
+        pool.acquire()
+    assert isinstance(pool.acquire(), Conn)
+
+
+def test_many_threads_never_exceed_max():
+    pool = ConnectionPool(Conn, max_size=3, timeout=5)
+    lock = threading.Lock()
+    active = [0, 0]
+
+    def worker():
+        for _ in range(50):
+            with pool.connection():
+                with lock:
+                    active[0] += 1
+                    active[1] = max(active[1], active[0])
+                with lock:
+                    active[0] -= 1
+    ts = [threading.Thread(target=worker) for _ in range(8)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(10)
+    assert pool.size <= 3 and active[1] <= 3 and pool.idle == pool.size
+@@@ task health_checked_pool leaf=9 diff=3 entry=HealthCheckedPool,PoolClosed,PoolExhausted
+@@@ prompt
+Write a single-threaded `HealthCheckedPool(factory, max_size: int, is_healthy)` with exceptions `PoolClosed` and `PoolExhausted`. Connections have a `close()` method. `acquire()` takes idle connections most-recently-released first, but any idle connection for which `is_healthy(conn)` is False is closed and dropped (freeing its slot) instead of being returned; if no healthy idle connection exists it creates a new one if under `max_size`, else raises `PoolExhausted`. `release(conn)` returns it to the idle list. `discard(conn)` closes a checked-out connection that turned out broken and frees its slot. `close()` closes all idle connections and marks the pool closed: later `acquire` raises `PoolClosed`, and connections released after closing are closed immediately. `stats()` returns a dict with keys `idle`, `in_use`, `total`.
+@@@ reference
+class PoolClosed(Exception):
+    pass
+
+
+class PoolExhausted(Exception):
+    pass
+
+
+class HealthCheckedPool:
+    def __init__(self, factory, max_size: int, is_healthy):
+        self._factory = factory
+        self._max = max_size
+        self._healthy = is_healthy
+        self._idle = []
+        self._in_use = []
+        self._closed = False
+
+    def _total(self):
+        return len(self._idle) + len(self._in_use)
+
+    def acquire(self):
+        if self._closed:
+            raise PoolClosed("pool is closed")
+        while self._idle:
+            conn = self._idle.pop()
+            if self._healthy(conn):
+                self._in_use.append(conn)
+                return conn
+            conn.close()
+        if self._total() >= self._max:
+            raise PoolExhausted("all connections in use")
+        conn = self._factory()
+        self._in_use.append(conn)
+        return conn
+
+    def _take_back(self, conn):
+        for i, c in enumerate(self._in_use):
+            if c is conn:
+                del self._in_use[i]
+                return
+        raise ValueError("connection not in use")
+
+    def release(self, conn):
+        self._take_back(conn)
+        if self._closed:
+            conn.close()
+        else:
+            self._idle.append(conn)
+
+    def discard(self, conn):
+        self._take_back(conn)
+        conn.close()
+
+    def close(self):
+        self._closed = True
+        while self._idle:
+            self._idle.pop().close()
+
+    def stats(self):
+        return {"idle": len(self._idle), "in_use": len(self._in_use), "total": self._total()}
+@@@ tests
+import pytest
+from solution import HealthCheckedPool, PoolClosed, PoolExhausted
+
+
+class Conn:
+    def __init__(self):
+        self.closed = False
+        self.healthy = True
+
+    def close(self):
+        self.closed = True
+
+
+def make(max_size=2):
+    made = []
+
+    def factory():
+        c = Conn()
+        made.append(c)
+        return c
+    return HealthCheckedPool(factory, max_size, lambda c: c.healthy), made
+
+
+def test_lifo_reuse():
+    pool, made = make()
+    a = pool.acquire()
+    b = pool.acquire()
+    pool.release(a)
+    pool.release(b)
+    assert pool.acquire() is b
+
+
+def test_unhealthy_idle_dropped():
+    pool, made = make()
+    a = pool.acquire()
+    pool.release(a)
+    a.healthy = False
+    c = pool.acquire()
+    assert c is not a and a.closed and len(made) == 2
+    assert pool.stats() == {"idle": 0, "in_use": 1, "total": 1}
+
+
+def test_exhausted():
+    pool, _ = make(max_size=1)
+    pool.acquire()
+    with pytest.raises(PoolExhausted):
+        pool.acquire()
+
+
+def test_discard_frees_slot():
+    pool, made = make(max_size=1)
+    a = pool.acquire()
+    pool.discard(a)
+    assert a.closed
+    b = pool.acquire()
+    assert b is not a and pool.stats()["total"] == 1
+
+
+def test_close_behaviour():
+    pool, made = make()
+    a = pool.acquire()
+    b = pool.acquire()
+    pool.release(b)
+    pool.close()
+    assert b.closed and not a.closed
+    with pytest.raises(PoolClosed):
+        pool.acquire()
+    pool.release(a)
+    assert a.closed
+    assert pool.stats() == {"idle": 0, "in_use": 0, "total": 0}
+
+
+def test_stats_counts():
+    pool, _ = make(max_size=3)
+    cs = [pool.acquire() for _ in range(3)]
+    pool.release(cs[0])
+    assert pool.stats() == {"idle": 1, "in_use": 2, "total": 3}

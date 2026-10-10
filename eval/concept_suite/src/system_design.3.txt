@@ -1,0 +1,2772 @@
+@@@ task inventory_reservations leaf=20 diff=3 entry=Inventory,OutOfStock
+@@@ prompt
+Write an `Inventory` service that never oversells, plus an exception `OutOfStock` carrying the failing `sku` as an attribute. `add_stock(sku, qty)` increases on-hand stock. `reserve(order_id, items: dict[str, int])` reserves all items for an order or nothing: if any sku lacks enough available stock (on hand minus reserved), raise `OutOfStock` and leave everything unchanged. `release(order_id)` cancels a reservation; `commit(order_id)` turns it into a sale, reducing on-hand stock. `available(sku)` and `on_hand(sku)` return ints (0 for unknown skus). Quantities must be positive ints (else `ValueError`); reusing an active order id, or releasing/committing an unknown one, raises `ValueError`/`KeyError` respectively. `check_invariants()` raises `AssertionError` if any count is negative or reserved exceeds on hand.
+@@@ reference
+from collections import defaultdict
+
+
+class OutOfStock(Exception):
+    def __init__(self, sku, requested, available):
+        super().__init__(f"{sku}: requested {requested}, available {available}")
+        self.sku = sku
+
+
+def _check_qty(qty):
+    if not isinstance(qty, int) or isinstance(qty, bool) or qty <= 0:
+        raise ValueError(f"quantity must be a positive int, got {qty!r}")
+
+
+class Inventory:
+    def __init__(self):
+        self._on_hand = defaultdict(int)
+        self._reserved = defaultdict(int)
+        self._orders = {}
+
+    def add_stock(self, sku, qty):
+        _check_qty(qty)
+        self._on_hand[sku] += qty
+
+    def on_hand(self, sku):
+        return self._on_hand.get(sku, 0)
+
+    def available(self, sku):
+        return self._on_hand.get(sku, 0) - self._reserved.get(sku, 0)
+
+    def reserve(self, order_id, items):
+        if order_id in self._orders:
+            raise ValueError(f"order {order_id!r} already has a reservation")
+        for qty in items.values():
+            _check_qty(qty)
+        for sku, qty in items.items():
+            if self.available(sku) < qty:
+                raise OutOfStock(sku, qty, self.available(sku))
+        for sku, qty in items.items():
+            self._reserved[sku] += qty
+        self._orders[order_id] = dict(items)
+
+    def release(self, order_id):
+        for sku, qty in self._orders.pop(order_id).items():
+            self._reserved[sku] -= qty
+
+    def commit(self, order_id):
+        for sku, qty in self._orders.pop(order_id).items():
+            self._reserved[sku] -= qty
+            self._on_hand[sku] -= qty
+
+    def check_invariants(self):
+        for sku in set(self._on_hand) | set(self._reserved):
+            assert self._on_hand[sku] >= 0, sku
+            assert 0 <= self._reserved[sku] <= self._on_hand[sku], sku
+@@@ tests
+import pytest
+from solution import Inventory, OutOfStock
+
+
+def stocked():
+    inv = Inventory()
+    inv.add_stock("apple", 5)
+    inv.add_stock("pear", 2)
+    return inv
+
+
+def test_reserve_reduces_available_not_on_hand():
+    inv = stocked()
+    inv.reserve("o1", {"apple": 3})
+    assert inv.available("apple") == 2 and inv.on_hand("apple") == 5
+    inv.check_invariants()
+
+
+def test_all_or_nothing():
+    inv = stocked()
+    with pytest.raises(OutOfStock) as ei:
+        inv.reserve("o1", {"apple": 1, "pear": 3})
+    assert ei.value.sku == "pear"
+    assert inv.available("apple") == 5
+    inv.reserve("o1", {"apple": 1, "pear": 2})
+
+
+def test_commit_and_release():
+    inv = stocked()
+    inv.reserve("o1", {"apple": 2})
+    inv.reserve("o2", {"apple": 3})
+    inv.commit("o1")
+    inv.release("o2")
+    assert inv.on_hand("apple") == 3 and inv.available("apple") == 3
+    with pytest.raises(KeyError):
+        inv.commit("o1")
+    inv.check_invariants()
+
+
+def test_no_oversell_across_orders():
+    inv = stocked()
+    inv.reserve("a", {"pear": 2})
+    with pytest.raises(OutOfStock):
+        inv.reserve("b", {"pear": 1})
+    with pytest.raises(OutOfStock):
+        inv.reserve("c", {"ghost": 1})
+    assert inv.available("ghost") == 0
+
+
+@pytest.mark.parametrize("qty", [0, -1, 1.5, True])
+def test_bad_quantities(qty):
+    inv = stocked()
+    with pytest.raises(ValueError):
+        inv.add_stock("apple", qty)
+    with pytest.raises(ValueError):
+        inv.reserve("x", {"apple": qty})
+
+
+def test_duplicate_order_id():
+    inv = stocked()
+    inv.reserve("o1", {"apple": 1})
+    with pytest.raises(ValueError):
+        inv.reserve("o1", {"apple": 1})
+    inv.release("o1")
+    inv.reserve("o1", {"apple": 1})
+
+
+def test_check_invariants_detects_corruption():
+    inv = stocked()
+    inv.check_invariants()
+    inv.reserve("o", {"apple": 5})
+    inv._on_hand["apple"] = 1  # simulate a bug elsewhere
+    with pytest.raises(AssertionError):
+        inv.check_invariants()
+@@@ task double_entry_ledger leaf=20 diff=4 entry=Ledger,LedgerError
+@@@ prompt
+Write a double-entry `Ledger` with an exception `LedgerError`. `open(name, allow_negative=False)` creates an account (duplicates raise `LedgerError`). `post(entries, memo="")` takes a list of `(account, amount)` legs and applies them atomically: amounts are converted to `decimal.Decimal` (accept `int`, `str` or `Decimal`; a `float` raises `TypeError` because floats cannot represent money exactly), the legs must sum to exactly zero, every account must exist, and no account without `allow_negative` may end below zero; if any check fails raise `LedgerError` and change nothing. `balance(name)` returns a Decimal; `history(name)` returns a list of `(memo, amount)` for that account in posting order. `total()` (sum of all balances) must always be zero.
+@@@ reference
+from decimal import Decimal
+
+
+class LedgerError(Exception):
+    pass
+
+
+def _amount(x):
+    if isinstance(x, float):
+        raise TypeError("use Decimal, int or str for money, not float")
+    if isinstance(x, bool) or not isinstance(x, (int, str, Decimal)):
+        raise TypeError(f"bad amount type {type(x).__name__}")
+    return Decimal(x)
+
+
+class Ledger:
+    def __init__(self):
+        self._bal = {}
+        self._neg = {}
+        self._hist = {}
+
+    def open(self, name, allow_negative=False):
+        if name in self._bal:
+            raise LedgerError(f"account {name!r} exists")
+        self._bal[name] = Decimal(0)
+        self._neg[name] = allow_negative
+        self._hist[name] = []
+
+    def post(self, entries, memo=""):
+        legs = [(acct, _amount(amt)) for acct, amt in entries]
+        if not legs:
+            raise LedgerError("no legs")
+        if sum(a for _, a in legs) != 0:
+            raise LedgerError("legs do not balance")
+        new = {}
+        for acct, amt in legs:
+            if acct not in self._bal:
+                raise LedgerError(f"unknown account {acct!r}")
+            new[acct] = new.get(acct, self._bal[acct]) + amt
+        for acct, bal in new.items():
+            if bal < 0 and not self._neg[acct]:
+                raise LedgerError(f"{acct} would go negative")
+        self._bal.update(new)
+        for acct, amt in legs:
+            self._hist[acct].append((memo, amt))
+
+    def balance(self, name):
+        return self._bal[name]
+
+    def history(self, name):
+        return list(self._hist[name])
+
+    def total(self):
+        return sum(self._bal.values(), Decimal(0))
+@@@ tests
+from decimal import Decimal
+import pytest
+from solution import Ledger, LedgerError
+
+
+def make():
+    l = Ledger()
+    l.open("bank", allow_negative=True)
+    l.open("alice")
+    l.open("bob")
+    l.post([("bank", -100), ("alice", 100)], memo="fund")
+    return l
+
+
+def test_transfer_and_balances():
+    l = make()
+    l.post([("alice", "-30.50"), ("bob", Decimal("30.50"))], memo="rent")
+    assert l.balance("alice") == Decimal("69.50") and l.balance("bob") == Decimal("30.50")
+    assert l.total() == 0
+
+
+def test_unbalanced_rejected():
+    l = make()
+    with pytest.raises(LedgerError):
+        l.post([("alice", -10), ("bob", 9)])
+    assert l.balance("alice") == 100
+
+
+def test_float_rejected():
+    l = make()
+    with pytest.raises(TypeError):
+        l.post([("alice", -0.1), ("bob", 0.1)])
+
+
+def test_no_negative_and_atomic():
+    l = make()
+    with pytest.raises(LedgerError):
+        l.post([("alice", -150), ("bob", 150)])
+    assert l.balance("alice") == 100 and l.balance("bob") == 0 and l.history("bob") == []
+
+
+def test_multi_leg_same_account():
+    l = make()
+    l.post([("alice", -60), ("bob", 30), ("bob", 30)], memo="split")
+    assert l.balance("bob") == 60
+    with pytest.raises(LedgerError):
+        l.post([("alice", -30), ("alice", -30), ("bob", 60)])  # 40 - 60 < 0
+
+
+def test_unknown_account_and_duplicates():
+    l = make()
+    with pytest.raises(LedgerError):
+        l.post([("alice", -1), ("carol", 1)])
+    with pytest.raises(LedgerError):
+        l.open("alice")
+    assert l.total() == 0
+
+
+def test_history():
+    l = make()
+    l.post([("alice", -5), ("bob", 5)], memo="coffee")
+    assert l.history("alice") == [("fund", Decimal(100)), ("coffee", Decimal(-5))]
+@@@ task json_http_server leaf=21 diff=3 entry=make_server
+@@@ prompt
+Using only `http.server`, write `make_server(port=0)` that returns a `ThreadingHTTPServer` bound to `127.0.0.1` (not yet serving) for a tiny JSON notes API. `GET /notes` returns 200 with a JSON list of notes; `POST /notes` with a JSON body `{"text": "..."}` stores a note and returns 201 with `{"id": n, "text": ...}` (ids start at 1); `GET /notes/<id>` returns that note or 404. A body that is not valid JSON, or lacks a string `text`, returns 400. Any other path returns 404. Every response, including errors, has `Content-Type: application/json` and a JSON body (errors look like `{"error": "..."}`). Keep the notes on the server object, guard them with a lock, and silence the default request logging.
+@@@ reference
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+class _Handler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        pass
+
+    def _send(self, status, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        srv = self.server
+        parts = self.path.rstrip("/").split("/")
+        if self.path == "/notes":
+            with srv.lock:
+                return self._send(200, list(srv.notes.values()))
+        if len(parts) == 3 and parts[1] == "notes" and parts[2].isdigit():
+            with srv.lock:
+                note = srv.notes.get(int(parts[2]))
+            if note is not None:
+                return self._send(200, note)
+            return self._send(404, {"error": "note not found"})
+        self._send(404, {"error": "not found"})
+
+    def do_POST(self):
+        if self.path != "/notes":
+            return self._send(404, {"error": "not found"})
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length)
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return self._send(400, {"error": "invalid JSON"})
+        if not isinstance(data, dict) or not isinstance(data.get("text"), str):
+            return self._send(400, {"error": "'text' must be a string"})
+        srv = self.server
+        with srv.lock:
+            srv.next_id += 1
+            note = {"id": srv.next_id, "text": data["text"]}
+            srv.notes[note["id"]] = note
+        self._send(201, note)
+
+
+def make_server(port=0):
+    srv = ThreadingHTTPServer(("127.0.0.1", port), _Handler)
+    srv.notes = {}
+    srv.next_id = 0
+    srv.lock = threading.Lock()
+    srv.daemon_threads = True
+    return srv
+@@@ tests
+import json
+import threading
+import urllib.error
+import urllib.request
+import pytest
+from solution import make_server
+
+
+@pytest.fixture
+def base():
+    srv = make_server(0)
+    t = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+    t.start()
+    try:
+        yield f"http://127.0.0.1:{srv.server_address[1]}"
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(2)
+
+
+def call(url, method="GET", body=None):
+    data = body if isinstance(body, bytes) or body is None else json.dumps(body).encode()
+    req = urllib.request.Request(url, data=data, method=method, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status, r.headers["Content-Type"], json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers["Content-Type"], json.loads(e.read())
+
+
+def test_bound_to_localhost():
+    srv = make_server(0)
+    try:
+        assert srv.server_address[0] == "127.0.0.1"
+    finally:
+        srv.server_close()
+
+
+def test_create_and_list(base):
+    assert call(base + "/notes") == (200, "application/json", [])
+    st, ct, note = call(base + "/notes", "POST", {"text": "hello"})
+    assert st == 201 and note == {"id": 1, "text": "hello"}
+    call(base + "/notes", "POST", {"text": "second"})
+    st, _, notes = call(base + "/notes")
+    assert [n["text"] for n in notes] == ["hello", "second"]
+
+
+def test_get_by_id(base):
+    call(base + "/notes", "POST", {"text": "a"})
+    assert call(base + "/notes/1")[2] == {"id": 1, "text": "a"}
+    st, ct, body = call(base + "/notes/99")
+    assert st == 404 and ct == "application/json" and "error" in body
+
+
+def test_bad_bodies(base):
+    st, ct, body = call(base + "/notes", "POST", b"{not json")
+    assert st == 400 and ct == "application/json" and "error" in body
+    assert call(base + "/notes", "POST", {"txt": "x"})[0] == 400
+    assert call(base + "/notes", "POST", {"text": 5})[0] == 400
+
+
+def test_unknown_paths(base):
+    assert call(base + "/other")[0] == 404
+    assert call(base + "/notes/abc")[0] == 404
+    assert call(base + "/other", "POST", {"text": "x"})[0] == 404
+
+
+def test_concurrent_posts_unique_ids(base):
+    ids = []
+    lock = threading.Lock()
+
+    def post(i):
+        _, _, n = call(base + "/notes", "POST", {"text": str(i)})
+        with lock:
+            ids.append(n["id"])
+    ts = [threading.Thread(target=post, args=(i,)) for i in range(10)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(5)
+    assert sorted(ids) == list(range(1, 11))
+@@@ task rest_router leaf=22 diff=3 entry=Router,Response
+@@@ prompt
+Write a framework-free REST router. `Response` is a NamedTuple `(status: int, body)`. `Router.route(pattern, methods=("GET",))` is a decorator registering a handler; patterns are paths like `/users/{id:int}/posts/{slug}` where `{name}` matches one non-empty path segment as a string and `{name:int}` matches only digits and passes an `int`. `dispatch(method, path) -> Response` calls the handler with the captured parameters as keyword arguments and wraps a non-`Response` return value as `Response(200, value)`. If no pattern matches, return `Response(404, "Not Found")`; if some pattern matches but not for that method, return `Response(405, "Method Not Allowed")`. Static routes take precedence over parameterised ones that also match (e.g. `/users/me` over `/users/{id}`). A query string (`?a=1`) is ignored for matching.
+@@@ reference
+import re
+from typing import Any, NamedTuple
+
+
+class Response(NamedTuple):
+    status: int
+    body: Any
+
+
+_PARAM = re.compile(r"\{(\w+)(?::(int))?\}")
+
+
+class Router:
+    def __init__(self):
+        self._routes = []  # (static, regex, converters, methods, handler)
+
+    def route(self, pattern, methods=("GET",)):
+        convs = {}
+
+        def repl(m):
+            name, kind = m.group(1), m.group(2)
+            convs[name] = int if kind == "int" else str
+            return rf"(?P<{name}>\d+)" if kind == "int" else rf"(?P<{name}>[^/]+)"
+        parts = _PARAM.split(pattern)
+        regex = ""
+        pos = 0
+        for m in _PARAM.finditer(pattern):
+            regex += re.escape(pattern[pos:m.start()]) + repl(m)
+            pos = m.end()
+        regex += re.escape(pattern[pos:])
+        static = not convs
+
+        def deco(fn):
+            self._routes.append((static, re.compile(regex + r"\Z"), convs, {m.upper() for m in methods}, fn))
+            return fn
+        return deco
+
+    def dispatch(self, method, path):
+        path = path.split("?", 1)[0]
+        path_matched = False
+        for static in (True, False):
+            for st, rx, convs, methods, fn in self._routes:
+                if st != static:
+                    continue
+                m = rx.match(path)
+                if not m:
+                    continue
+                path_matched = True
+                if method.upper() not in methods:
+                    continue
+                kwargs = {k: convs[k](v) for k, v in m.groupdict().items()}
+                result = fn(**kwargs)
+                return result if isinstance(result, Response) else Response(200, result)
+        if path_matched:
+            return Response(405, "Method Not Allowed")
+        return Response(404, "Not Found")
+@@@ tests
+from solution import Router, Response
+
+
+def make():
+    r = Router()
+
+    @r.route("/users/{id:int}")
+    def get_user(id):
+        return {"id": id, "type": type(id).__name__}
+
+    @r.route("/users/me")
+    def me():
+        return "me"
+
+    @r.route("/users/{name}/posts/{slug}", methods=["GET", "POST"])
+    def post(name, slug):
+        return Response(201, (name, slug))
+
+    @r.route("/health")
+    def health():
+        return "ok"
+    return r
+
+
+def test_int_param_converted():
+    assert make().dispatch("GET", "/users/42") == Response(200, {"id": 42, "type": "int"})
+
+
+def test_static_beats_param_and_int_rejects_text():
+    r = make()
+    assert r.dispatch("GET", "/users/me") == Response(200, "me")
+    assert r.dispatch("GET", "/users/abc").status == 404
+
+
+def test_multiple_params_and_response_passthrough():
+    r = make()
+    assert r.dispatch("POST", "/users/ann/posts/hello-world") == Response(201, ("ann", "hello-world"))
+
+
+def test_404_vs_405():
+    r = make()
+    assert r.dispatch("GET", "/nothing") == Response(404, "Not Found")
+    assert r.dispatch("DELETE", "/health") == Response(405, "Method Not Allowed")
+    assert r.dispatch("PUT", "/users/ann/posts/x").status == 405
+
+
+def test_segments_do_not_span_slashes():
+    r = make()
+    assert r.dispatch("GET", "/users/a/b/posts/c").status == 404
+    assert r.dispatch("GET", "/users//posts/c").status == 404
+    assert r.dispatch("GET", "/health/").status == 404
+
+
+def test_query_string_ignored_and_method_case():
+    r = make()
+    assert r.dispatch("get", "/health?verbose=1") == Response(200, "ok")
+
+
+def test_decorator_returns_function():
+    r = Router()
+
+    @r.route("/x")
+    def x():
+        return 1
+    assert x() == 1
+@@@ task middleware_chain leaf=22 diff=3 entry=App,Request,Response
+@@@ prompt
+Write a tiny web application core with middleware. `Request` is a dataclass with fields `method: str`, `path: str` and `headers: dict` (defaulting to a new empty dict via `field(default_factory=dict)`); `Response` is a dataclass with `status: int = 200`, `body: str = ""` and `headers: dict` (also defaulting to a new empty dict). `App.route(path)` is a decorator mapping an exact path to a handler `handler(request) -> Response`. `App.use(middleware)` registers middleware with signature `middleware(request, call_next) -> Response`; the first registered middleware is the outermost, and a middleware may short-circuit by not calling `call_next`. `App.handle(request) -> Response` runs the chain; unknown paths give `Response(404, "not found")`. If a handler or middleware raises, `handle` returns `Response(500, "internal error")` instead of propagating.
+@@@ reference
+from dataclasses import dataclass, field
+
+
+@dataclass
+class Request:
+    method: str
+    path: str
+    headers: dict = field(default_factory=dict)
+
+
+@dataclass
+class Response:
+    status: int = 200
+    body: str = ""
+    headers: dict = field(default_factory=dict)
+
+
+class App:
+    def __init__(self):
+        self._routes = {}
+        self._middleware = []
+
+    def route(self, path):
+        def deco(fn):
+            self._routes[path] = fn
+            return fn
+        return deco
+
+    def use(self, middleware):
+        self._middleware.append(middleware)
+        return middleware
+
+    def _endpoint(self, request):
+        handler = self._routes.get(request.path)
+        if handler is None:
+            return Response(404, "not found")
+        return handler(request)
+
+    def handle(self, request):
+        call = self._endpoint
+        for mw in reversed(self._middleware):
+            call = (lambda m, nxt: lambda req: m(req, nxt))(mw, call)
+        try:
+            return call(request)
+        except Exception:
+            return Response(500, "internal error")
+@@@ tests
+from solution import App, Request, Response
+
+
+def make():
+    app = App()
+
+    @app.route("/hello")
+    def hello(req):
+        return Response(200, "hi " + req.headers.get("user", "anon"))
+
+    @app.route("/boom")
+    def boom(req):
+        raise RuntimeError("bug")
+    return app
+
+
+def test_basic_routing():
+    app = make()
+    assert app.handle(Request("GET", "/hello")) == Response(200, "hi anon")
+    assert app.handle(Request("GET", "/nope")).status == 404
+
+
+def test_middleware_order():
+    app = make()
+    trail = []
+
+    def outer(req, nxt):
+        trail.append("outer-in")
+        resp = nxt(req)
+        trail.append("outer-out")
+        return resp
+
+    def inner(req, nxt):
+        trail.append("inner-in")
+        resp = nxt(req)
+        trail.append("inner-out")
+        return resp
+    app.use(outer)
+    app.use(inner)
+    app.handle(Request("GET", "/hello"))
+    assert trail == ["outer-in", "inner-in", "inner-out", "outer-out"]
+
+
+def test_short_circuit_auth():
+    app = make()
+    reached = []
+
+    def auth(req, nxt):
+        if "user" not in req.headers:
+            return Response(401, "login required")
+        return nxt(req)
+
+    def spy(req, nxt):
+        reached.append(req.path)
+        return nxt(req)
+    app.use(auth)
+    app.use(spy)
+    assert app.handle(Request("GET", "/hello")).status == 401 and reached == []
+    assert app.handle(Request("GET", "/hello", {"user": "bo"})).body == "hi bo"
+
+
+def test_middleware_can_modify_request_and_response():
+    app = make()
+
+    def inject(req, nxt):
+        req.headers["user"] = "robot"
+        resp = nxt(req)
+        resp.headers["X-Served-By"] = "mw"
+        return resp
+    app.use(inject)
+    resp = app.handle(Request("GET", "/hello"))
+    assert resp.body == "hi robot" and resp.headers == {"X-Served-By": "mw"}
+
+
+def test_errors_become_500():
+    app = make()
+    assert app.handle(Request("GET", "/boom")) == Response(500, "internal error")
+
+    def bad_mw(req, nxt):
+        raise ValueError("mw bug")
+    app.use(bad_mw)
+    assert app.handle(Request("GET", "/hello")).status == 500
+
+
+def test_default_dicts_not_shared():
+    a, b = Request("GET", "/"), Request("GET", "/")
+    a.headers["x"] = 1
+    assert b.headers == {} and Response().headers == {}
+@@@ task todo_cli leaf=23 diff=3 entry=main
+@@@ prompt
+Write a todo command-line tool with `argparse` subcommands as `main(argv=None) -> int`. A global option `--db PATH` (default `todo.json`) names a JSON file holding the list. Subcommands: `add TEXT [--priority {low,normal,high}]` (default normal) appends an item and prints `added <id>`; `list [--all]` prints open items (or all with `--all`) one per line as `<id>. [ ] <text>` (or `[x]` when done) followed by ` (<priority>)` for non-normal priorities; `done ID` marks an item done and prints `done <id>`, or prints `error: no item <id>` to stderr and returns 1 if it does not exist. Ids start at 1 and are never reused. Print normal output to stdout and return 0. Missing subcommands or bad arguments should make argparse exit with status 2. Include the usual `if __name__ == "__main__":` guard.
+@@@ reference
+import argparse
+import json
+import os
+import sys
+
+
+def _load(path):
+    if not os.path.exists(path):
+        return {"next_id": 1, "items": []}
+    with open(path) as f:
+        return json.load(f)
+
+
+def _save(path, data):
+    with open(path, "w") as f:
+        json.dump(data, f)
+
+
+def build_parser():
+    p = argparse.ArgumentParser(prog="todo")
+    p.add_argument("--db", default="todo.json")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    a = sub.add_parser("add")
+    a.add_argument("text")
+    a.add_argument("--priority", choices=["low", "normal", "high"], default="normal")
+    l = sub.add_parser("list")
+    l.add_argument("--all", action="store_true")
+    d = sub.add_parser("done")
+    d.add_argument("id", type=int)
+    return p
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    data = _load(args.db)
+    if args.cmd == "add":
+        item = {"id": data["next_id"], "text": args.text, "priority": args.priority, "done": False}
+        data["next_id"] += 1
+        data["items"].append(item)
+        _save(args.db, data)
+        print(f"added {item['id']}")
+    elif args.cmd == "list":
+        for it in data["items"]:
+            if it["done"] and not args.all:
+                continue
+            mark = "x" if it["done"] else " "
+            suffix = "" if it["priority"] == "normal" else f" ({it['priority']})"
+            print(f"{it['id']}. [{mark}] {it['text']}{suffix}")
+    elif args.cmd == "done":
+        for it in data["items"]:
+            if it["id"] == args.id:
+                it["done"] = True
+                _save(args.db, data)
+                print(f"done {args.id}")
+                break
+        else:
+            print(f"error: no item {args.id}", file=sys.stderr)
+            return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+@@@ tests
+import pytest
+from solution import main
+
+
+def run(capsys, db, *args):
+    code = main(["--db", str(db), *args])
+    out = capsys.readouterr()
+    return code, out.out, out.err
+
+
+def test_add_and_list(tmp_path, capsys):
+    db = tmp_path / "t.json"
+    assert run(capsys, db, "add", "buy milk") == (0, "added 1\n", "")
+    run(capsys, db, "add", "file taxes", "--priority", "high")
+    code, out, _ = run(capsys, db, "list")
+    assert code == 0 and out == "1. [ ] buy milk\n2. [ ] file taxes (high)\n"
+
+
+def test_done_and_list_all(tmp_path, capsys):
+    db = tmp_path / "t.json"
+    run(capsys, db, "add", "a")
+    run(capsys, db, "add", "b")
+    assert run(capsys, db, "done", "1")[:2] == (0, "done 1\n")
+    assert run(capsys, db, "list")[1] == "2. [ ] b\n"
+    assert run(capsys, db, "list", "--all")[1] == "1. [x] a\n2. [ ] b\n"
+
+
+def test_done_unknown_id(tmp_path, capsys):
+    db = tmp_path / "t.json"
+    code, out, err = run(capsys, db, "done", "7")
+    assert code == 1 and out == "" and "error: no item 7" in err
+
+
+def test_ids_not_reused(tmp_path, capsys):
+    db = tmp_path / "t.json"
+    run(capsys, db, "add", "a")
+    run(capsys, db, "done", "1")
+    assert run(capsys, db, "add", "b")[1] == "added 2\n"
+
+
+def test_argparse_errors_exit_2(tmp_path, capsys):
+    db = tmp_path / "t.json"
+    for argv in (["--db", str(db)], ["--db", str(db), "add", "x", "--priority", "urgent"],
+                 ["--db", str(db), "done", "abc"], ["--db", str(db), "explode"]):
+        with pytest.raises(SystemExit) as ei:
+            main(argv)
+        assert ei.value.code == 2
+    capsys.readouterr()
+
+
+def test_default_db_in_cwd(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert main(["add", "x"]) == 0
+    assert (tmp_path / "todo.json").exists()
+    capsys.readouterr()
+
+
+def test_low_priority_suffix(tmp_path, capsys):
+    db = tmp_path / "t.json"
+    run(capsys, db, "add", "nap", "--priority", "low")
+    assert run(capsys, db, "list")[1] == "1. [ ] nap (low)\n"
+@@@ task file_watcher_snapshot leaf=24 diff=3 entry=snapshot,diff,Watcher,Changes
+@@@ prompt
+Write polling-based change detection for a directory tree. `snapshot(root) -> dict[str, tuple[int, int]]` maps every regular file below `root` (recursively, relative POSIX-style paths like `"sub/a.txt"`) to `(st_mtime_ns, st_size)`. `Changes` is a NamedTuple of three sorted lists `added`, `removed`, `modified`. `diff(old, new) -> Changes` compares two snapshots. `Watcher(root)` takes an initial snapshot on construction; `poll() -> Changes` takes a new snapshot, returns the changes since the previous poll and remembers the new snapshot. Directories themselves are not reported.
+@@@ reference
+import os
+from pathlib import Path
+from typing import NamedTuple
+
+
+class Changes(NamedTuple):
+    added: list
+    removed: list
+    modified: list
+
+
+def snapshot(root):
+    root = Path(root)
+    out = {}
+    for dirpath, _, files in os.walk(root):
+        for name in files:
+            p = Path(dirpath) / name
+            try:
+                st = p.stat()
+            except FileNotFoundError:
+                continue
+            out[p.relative_to(root).as_posix()] = (st.st_mtime_ns, st.st_size)
+    return out
+
+
+def diff(old, new):
+    added = sorted(set(new) - set(old))
+    removed = sorted(set(old) - set(new))
+    modified = sorted(k for k in set(old) & set(new) if old[k] != new[k])
+    return Changes(added, removed, modified)
+
+
+class Watcher:
+    def __init__(self, root):
+        self.root = root
+        self._last = snapshot(root)
+
+    def poll(self):
+        new = snapshot(self.root)
+        ch = diff(self._last, new)
+        self._last = new
+        return ch
+@@@ tests
+import os
+from solution import snapshot, diff, Watcher, Changes
+
+
+def test_snapshot_paths_and_values(tmp_path):
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "a.txt").write_text("hello")
+    (tmp_path / "sub" / "b.bin").write_bytes(b"\x00" * 10)
+    snap = snapshot(tmp_path)
+    assert set(snap) == {"a.txt", "sub/b.bin"}
+    st = os.stat(tmp_path / "a.txt")
+    assert snap["a.txt"] == (st.st_mtime_ns, 5)
+
+
+def test_diff_categories():
+    old = {"a": (1, 1), "b": (1, 1), "c": (1, 1)}
+    new = {"a": (1, 1), "b": (2, 1), "d": (1, 1)}
+    assert diff(old, new) == Changes(["d"], ["c"], ["b"])
+    assert diff(new, new) == Changes([], [], [])
+
+
+def test_watcher_detects_add_remove(tmp_path):
+    (tmp_path / "keep.txt").write_text("x")
+    (tmp_path / "gone.txt").write_text("x")
+    w = Watcher(tmp_path)
+    (tmp_path / "gone.txt").unlink()
+    (tmp_path / "new.txt").write_text("y")
+    assert w.poll() == Changes(["new.txt"], ["gone.txt"], [])
+    assert w.poll() == Changes([], [], [])
+
+
+def test_watcher_detects_modification(tmp_path):
+    f = tmp_path / "f.txt"
+    f.write_text("one")
+    os.utime(f, ns=(1_000_000_000, 1_000_000_000))
+    w = Watcher(tmp_path)
+    f.write_text("two")
+    os.utime(f, ns=(2_000_000_000, 2_000_000_000))
+    assert w.poll().modified == ["f.txt"]
+
+
+def test_size_change_alone_detected(tmp_path):
+    f = tmp_path / "f.txt"
+    f.write_text("a")
+    os.utime(f, ns=(5, 5))
+    w = Watcher(tmp_path)
+    f.write_text("abc")
+    os.utime(f, ns=(5, 5))
+    assert w.poll().modified == ["f.txt"]
+
+
+def test_directories_not_reported(tmp_path):
+    w = Watcher(tmp_path)
+    (tmp_path / "emptydir").mkdir()
+    (tmp_path / "d2" / "deep").mkdir(parents=True)
+    (tmp_path / "d2" / "deep" / "x.py").write_text("")
+    assert w.poll() == Changes(["d2/deep/x.py"], [], [])
+@@@ task content_change_detector leaf=24 diff=4 entry=ChangeDetector
+@@@ prompt
+Write `ChangeDetector(root)` that reports real content changes in a directory tree (recursive, relative POSIX paths). On construction it records every file's `(st_mtime_ns, st_size)` and SHA-256. `scan()` returns a dict with sorted lists under keys `added`, `removed`, `modified` and `moved` (a list of `(old_path, new_path)` pairs). Use mtime and size as a cheap first check and compute the SHA-256 only for files whose mtime or size changed, or that are new; count every hash computed in the attribute `hashes_computed` (including the initial ones). A file whose mtime changed but whose content hash is unchanged is not reported. A removed file and an added file with the same hash are reported as one move instead of an add and a remove. Hash files in chunks.
+@@@ reference
+import hashlib
+import os
+from pathlib import Path
+
+
+class ChangeDetector:
+    def __init__(self, root):
+        self.root = Path(root)
+        self.hashes_computed = 0
+        self._state = self._scan_state({})
+
+    def _hash(self, path):
+        self.hashes_computed += 1
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def _scan_state(self, old):
+        state = {}
+        for dirpath, _, files in os.walk(self.root):
+            for name in files:
+                p = Path(dirpath) / name
+                rel = p.relative_to(self.root).as_posix()
+                st = p.stat()
+                sig = (st.st_mtime_ns, st.st_size)
+                prev = old.get(rel)
+                digest = prev[1] if prev and prev[0] == sig else self._hash(p)
+                state[rel] = (sig, digest)
+        return state
+
+    def scan(self):
+        old = self._state
+        new = self._scan_state(old)
+        added = set(new) - set(old)
+        removed = set(old) - set(new)
+        modified = sorted(k for k in set(old) & set(new) if old[k][1] != new[k][1])
+        moved = []
+        by_hash = {}
+        for r in sorted(removed):
+            by_hash.setdefault(old[r][1], []).append(r)
+        for a in sorted(added):
+            cands = by_hash.get(new[a][1])
+            if cands:
+                r = cands.pop(0)
+                moved.append((r, a))
+                removed.discard(r)
+                added.discard(a)
+        self._state = new
+        return {"added": sorted(added), "removed": sorted(removed), "modified": modified, "moved": moved}
+@@@ tests
+import os
+from solution import ChangeDetector
+
+EMPTY = {"added": [], "removed": [], "modified": [], "moved": []}
+
+
+def setup(tmp_path):
+    (tmp_path / "a.txt").write_text("alpha")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "b.txt").write_text("beta")
+    return ChangeDetector(tmp_path)
+
+
+def test_initial_hashes_and_no_changes(tmp_path):
+    d = setup(tmp_path)
+    assert d.hashes_computed == 2
+    assert d.scan() == EMPTY
+    assert d.hashes_computed == 2
+
+
+def test_touch_without_change_not_reported(tmp_path):
+    d = setup(tmp_path)
+    os.utime(tmp_path / "a.txt", ns=(10**18, 10**18))
+    assert d.scan() == EMPTY
+    assert d.hashes_computed == 3
+
+
+def test_real_modification(tmp_path):
+    d = setup(tmp_path)
+    f = tmp_path / "a.txt"
+    f.write_text("ALPHA")
+    os.utime(f, ns=(10**18, 10**18))
+    assert d.scan()["modified"] == ["a.txt"]
+
+
+def test_move_detected(tmp_path):
+    d = setup(tmp_path)
+    os.rename(tmp_path / "sub" / "b.txt", tmp_path / "b_moved.txt")
+    assert d.scan() == {"added": [], "removed": [], "modified": [], "moved": [("sub/b.txt", "b_moved.txt")]}
+
+
+def test_add_and_remove(tmp_path):
+    d = setup(tmp_path)
+    (tmp_path / "a.txt").unlink()
+    (tmp_path / "c.txt").write_text("gamma")
+    r = d.scan()
+    assert r["added"] == ["c.txt"] and r["removed"] == ["a.txt"] and r["moved"] == []
+
+
+def test_state_advances(tmp_path):
+    d = setup(tmp_path)
+    (tmp_path / "n.txt").write_text("new")
+    assert d.scan()["added"] == ["n.txt"]
+    assert d.scan() == EMPTY
+@@@ task etl_validation leaf=25 diff=3 entry=run_etl,Report
+@@@ prompt
+Write a batch ETL step `run_etl(csv_text: str, conn) -> Report` that loads payments from CSV into SQLite. The CSV has a header `id,email,amount,date`. Validate each row: `id` an integer not seen before in this file, `email` with exactly one `@` and a dot in the domain part, `amount` a non-negative decimal with at most 2 decimal places, `date` a valid ISO `YYYY-MM-DD` date. Valid rows are inserted into table `payments(id INTEGER PRIMARY KEY, email TEXT, amount_cents INTEGER, date TEXT)` (create it if missing) with the email lowercased and the amount stored as integer cents, all in one transaction: if an insert fails (for example an id that is already in the table) the whole batch is rolled back and the `sqlite3` error propagates. `Report` is a NamedTuple `(loaded: int, rejected: list)` where `rejected` holds `(line_number, reason)` pairs; the header is line 1. Use parameterised queries.
+@@@ reference
+import csv
+import datetime
+import io
+from decimal import Decimal, InvalidOperation
+from typing import NamedTuple
+
+
+class Report(NamedTuple):
+    loaded: int
+    rejected: list
+
+
+def _validate(row, seen):
+    try:
+        pid = int(row["id"])
+    except (TypeError, ValueError):
+        raise ValueError("id is not an integer")
+    if pid in seen:
+        raise ValueError("duplicate id")
+    email = (row["email"] or "").strip()
+    if email.count("@") != 1 or "." not in email.split("@")[1] or not email.split("@")[0]:
+        raise ValueError("invalid email")
+    try:
+        amount = Decimal(row["amount"])
+    except (InvalidOperation, TypeError):
+        raise ValueError("invalid amount")
+    if not amount.is_finite() or amount < 0 or amount.as_tuple().exponent < -2:
+        raise ValueError("invalid amount")
+    try:
+        date = datetime.date.fromisoformat(row["date"] or "")
+    except ValueError:
+        raise ValueError("invalid date")
+    return pid, email.lower(), int(amount * 100), date.isoformat()
+
+
+def run_etl(csv_text, conn):
+    reader = csv.DictReader(io.StringIO(csv_text))
+    good, rejected, seen = [], [], set()
+    for line_no, row in enumerate(reader, start=2):
+        try:
+            rec = _validate(row, seen)
+        except ValueError as exc:
+            rejected.append((line_no, str(exc)))
+            continue
+        seen.add(rec[0])
+        good.append(rec)
+    with conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS payments (id INTEGER PRIMARY KEY, email TEXT, "
+                     "amount_cents INTEGER, date TEXT)")
+        conn.executemany("INSERT INTO payments (id, email, amount_cents, date) VALUES (?, ?, ?, ?)", good)
+    return Report(len(good), rejected)
+@@@ tests
+import sqlite3
+import pytest
+from solution import run_etl, Report
+
+HEADER = "id,email,amount,date\n"
+
+
+def db():
+    return sqlite3.connect(":memory:")
+
+
+def test_loads_valid_rows():
+    conn = db()
+    rep = run_etl(HEADER + "1,Ann@Example.com,12.50,2024-02-29\n2,bob@x.org,0,2023-01-01\n", conn)
+    assert rep == Report(2, [])
+    rows = conn.execute("SELECT id, email, amount_cents, date FROM payments ORDER BY id").fetchall()
+    assert rows == [(1, "ann@example.com", 1250, "2024-02-29"), (2, "bob@x.org", 0, "2023-01-01")]
+
+
+@pytest.mark.parametrize("row", [
+    "x,a@b.com,1,2024-01-01", "1,ab.com,1,2024-01-01", "1,a@b@c.com,1,2024-01-01", "1,a@bcom,1,2024-01-01",
+    "1,a@b.com,-1,2024-01-01", "1,a@b.com,1.234,2024-01-01", "1,a@b.com,abc,2024-01-01",
+    "1,a@b.com,1,2023-02-29", "1,a@b.com,1,01/02/2024",
+])
+def test_rejects_invalid(row):
+    conn = db()
+    rep = run_etl(HEADER + row + "\n", conn)
+    assert rep.loaded == 0 and len(rep.rejected) == 1 and rep.rejected[0][0] == 2
+
+
+def test_line_numbers_and_reasons():
+    conn = db()
+    text = HEADER + "1,a@b.com,1,2024-01-01\n2,bad,1,2024-01-01\n1,c@d.com,1,2024-01-01\n"
+    rep = run_etl(text, conn)
+    assert rep.loaded == 1
+    assert [ln for ln, _ in rep.rejected] == [3, 4]
+    assert all(isinstance(reason, str) and reason for _, reason in rep.rejected)
+
+
+def test_injection_safe():
+    conn = db()
+    rep = run_etl(HEADER + "1,\"x'); DROP TABLE payments;--@a.com\",1,2024-01-01\n", conn)
+    assert rep.loaded == 1
+    assert conn.execute("SELECT count(*) FROM payments").fetchone() == (1,)
+
+
+def test_existing_table_and_rollback_on_conflict():
+    conn = db()
+    run_etl(HEADER + "1,a@b.com,1,2024-01-01\n", conn)
+    with pytest.raises(sqlite3.IntegrityError):
+        run_etl(HEADER + "2,c@d.com,1,2024-01-01\n1,e@f.com,1,2024-01-01\n", conn)
+    assert conn.execute("SELECT count(*) FROM payments").fetchone() == (1,)
+
+
+def test_amount_cents_exact():
+    conn = db()
+    run_etl(HEADER + "1,a@b.com,0.29,2024-01-01\n2,a@b.com,19.99,2024-01-01\n", conn)
+    assert [r[0] for r in conn.execute("SELECT amount_cents FROM payments ORDER BY id")] == [29, 1999]
+@@@ task etl_pipeline_rejects leaf=25 diff=3 entry=Pipeline,RejectRow,PipelineError
+@@@ prompt
+Write a small ETL `Pipeline(steps)` where `steps` is a list of `(name, fn)` pairs and each `fn(row) -> row` transforms a dict. A step signals bad data by raising `RejectRow(reason)`. `Pipeline.run(rows) -> tuple[list, list]` passes each row through all steps in order and returns `(outputs, rejects)`, where each reject is a dict `{"index": i, "step": name, "reason": reason, "row": original_row}` (`i` is the row's position in the input). Steps must not be able to corrupt the caller's data: give each row's first step a shallow copy. Any other exception is a bug: abort by raising `PipelineError` with attributes `index` and `step`, chained to the original exception with `raise ... from`.
+@@@ reference
+class RejectRow(Exception):
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
+
+class PipelineError(Exception):
+    def __init__(self, index, step, cause):
+        super().__init__(f"row {index} failed in step {step!r}: {cause!r}")
+        self.index = index
+        self.step = step
+
+
+class Pipeline:
+    def __init__(self, steps):
+        self.steps = list(steps)
+
+    def run(self, rows):
+        outputs, rejects = [], []
+        for i, original in enumerate(rows):
+            row = dict(original)
+            for name, fn in self.steps:
+                try:
+                    row = fn(row)
+                except RejectRow as r:
+                    rejects.append({"index": i, "step": name, "reason": r.reason, "row": original})
+                    break
+                except Exception as exc:
+                    raise PipelineError(i, name, exc) from exc
+            else:
+                outputs.append(row)
+        return outputs, rejects
+@@@ tests
+import pytest
+from solution import Pipeline, RejectRow, PipelineError
+
+
+def parse_age(row):
+    try:
+        row["age"] = int(row["age"])
+    except ValueError:
+        raise RejectRow(f"bad age {row['age']!r}")
+    return row
+
+
+def adults_only(row):
+    if row["age"] < 18:
+        raise RejectRow("minor")
+    return row
+
+
+def upper_name(row):
+    row["name"] = row["name"].upper()
+    return row
+
+
+STEPS = [("parse", parse_age), ("filter", adults_only), ("name", upper_name)]
+
+
+def test_happy_path():
+    out, rej = Pipeline(STEPS).run([{"name": "ann", "age": "30"}])
+    assert out == [{"name": "ANN", "age": 30}] and rej == []
+
+
+def test_rejects_record_step_and_index():
+    rows = [{"name": "a", "age": "x"}, {"name": "b", "age": "12"}, {"name": "c", "age": "40"}]
+    out, rej = Pipeline(STEPS).run(rows)
+    assert [r["name"] for r in out] == ["C"]
+    assert [(r["index"], r["step"], r["reason"]) for r in rej] == [(0, "parse", "bad age 'x'"), (1, "filter", "minor")]
+    assert rej[1]["row"] == {"name": "b", "age": "12"}
+
+
+def test_input_not_mutated():
+    rows = [{"name": "ann", "age": "30"}]
+    Pipeline(STEPS).run(rows)
+    assert rows == [{"name": "ann", "age": "30"}]
+
+
+def test_bug_aborts_with_chain():
+    def buggy(row):
+        return row["missing_key"]
+    with pytest.raises(PipelineError) as ei:
+        Pipeline([("ok", lambda r: r), ("buggy", buggy)]).run([{"a": 1}, {"a": 2}])
+    assert ei.value.index == 0 and ei.value.step == "buggy"
+    assert isinstance(ei.value.__cause__, KeyError)
+
+
+def test_reject_is_not_an_abort():
+    def rej(row):
+        raise RejectRow("nope")
+    out, rej_list = Pipeline([("r", rej)]).run([{}, {}, {}])
+    assert out == [] and len(rej_list) == 3
+
+
+def test_empty_pipeline_and_generator_input():
+    out, rej = Pipeline([]).run(({"i": i} for i in range(3)))
+    assert out == [{"i": 0}, {"i": 1}, {"i": 2}] and rej == []
+@@@ task read_through_cache leaf=26 diff=3 entry=ReadThroughCache
+@@@ prompt
+Write a caching layer `ReadThroughCache(loader, ttl: float, clock=time.monotonic, negative_ttl=None)` in front of a slow `loader(key)` function. `get(key)` returns a cached value if it is younger than `ttl` seconds, otherwise calls the loader and caches the result. If the loader raises `KeyError` (the key does not exist) and `negative_ttl` is set, remember that miss for `negative_ttl` seconds and re-raise `KeyError` without calling the loader again until it expires; with `negative_ttl=None` misses are not cached. Any other exception propagates and is never cached. `invalidate(key)` drops both positive and negative entries. `stats` is a dict with integer counts `hits`, `misses` and `loads` (a negative-cache hit counts as a hit).
+@@@ reference
+import time
+
+_NEG = object()
+
+
+class ReadThroughCache:
+    def __init__(self, loader, ttl: float, clock=time.monotonic, negative_ttl=None):
+        self.loader = loader
+        self.ttl = ttl
+        self.clock = clock
+        self.negative_ttl = negative_ttl
+        self._data = {}
+        self.stats = {"hits": 0, "misses": 0, "loads": 0}
+
+    def get(self, key):
+        now = self.clock()
+        entry = self._data.get(key)
+        if entry is not None and now < entry[1]:
+            self.stats["hits"] += 1
+            if entry[0] is _NEG:
+                raise KeyError(key)
+            return entry[0]
+        self.stats["misses"] += 1
+        self.stats["loads"] += 1
+        try:
+            value = self.loader(key)
+        except KeyError:
+            if self.negative_ttl is not None:
+                self._data[key] = (_NEG, now + self.negative_ttl)
+            else:
+                self._data.pop(key, None)
+            raise
+        self._data[key] = (value, now + self.ttl)
+        return value
+
+    def invalidate(self, key):
+        self._data.pop(key, None)
+@@@ tests
+import pytest
+from solution import ReadThroughCache
+
+
+class Clock:
+    t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+class DB:
+    def __init__(self, rows):
+        self.rows = rows
+        self.calls = []
+
+    def __call__(self, key):
+        self.calls.append(key)
+        if key == "explode":
+            raise ConnectionError("db down")
+        return self.rows[key]
+
+
+def test_caches_within_ttl():
+    clk, db = Clock(), DB({"a": 1})
+    c = ReadThroughCache(db, ttl=10, clock=clk)
+    assert c.get("a") == 1 and c.get("a") == 1
+    assert db.calls == ["a"]
+    clk.t = 10
+    c.get("a")
+    assert db.calls == ["a", "a"]
+
+
+def test_stats():
+    clk, db = Clock(), DB({"a": 1})
+    c = ReadThroughCache(db, ttl=10, clock=clk)
+    c.get("a")
+    c.get("a")
+    c.get("a")
+    assert c.stats == {"hits": 2, "misses": 1, "loads": 1}
+
+
+def test_negative_caching():
+    clk, db = Clock(), DB({})
+    c = ReadThroughCache(db, ttl=10, clock=clk, negative_ttl=2)
+    for _ in range(3):
+        with pytest.raises(KeyError):
+            c.get("ghost")
+    assert db.calls == ["ghost"]
+    clk.t = 2
+    db.rows["ghost"] = "now exists"
+    assert c.get("ghost") == "now exists"
+
+
+def test_misses_not_cached_without_negative_ttl():
+    clk, db = Clock(), DB({})
+    c = ReadThroughCache(db, ttl=10, clock=clk)
+    for _ in range(2):
+        with pytest.raises(KeyError):
+            c.get("ghost")
+    assert db.calls == ["ghost", "ghost"]
+
+
+def test_other_errors_not_cached():
+    clk, db = Clock(), DB({})
+    c = ReadThroughCache(db, ttl=10, clock=clk, negative_ttl=5)
+    for _ in range(2):
+        with pytest.raises(ConnectionError):
+            c.get("explode")
+    assert db.calls == ["explode", "explode"]
+
+
+def test_invalidate():
+    clk, db = Clock(), DB({"a": 1})
+    c = ReadThroughCache(db, ttl=10, clock=clk, negative_ttl=10)
+    c.get("a")
+    db.rows["a"] = 2
+    c.invalidate("a")
+    assert c.get("a") == 2
+    with pytest.raises(KeyError):
+        c.get("b")
+    db.rows["b"] = 3
+    c.invalidate("b")
+    assert c.get("b") == 3
+
+
+def test_cached_none_value():
+    clk, db = Clock(), DB({"n": None})
+    c = ReadThroughCache(db, ttl=10, clock=clk)
+    assert c.get("n") is None and c.get("n") is None
+    assert db.calls == ["n"]
+@@@ task single_flight leaf=26 diff=4 entry=SingleFlight
+@@@ prompt
+Write a thread-safe `SingleFlight` helper that prevents cache stampedes. `do(key, fn)` runs `fn()` and returns its result, but if another thread is already running a call for the same key, it waits for that call and returns the same result (or re-raises the same exception) instead of calling `fn` again. Once a call finishes, the next `do` for that key starts a fresh call. Calls for different keys run independently. `inflight(key) -> int` returns how many callers (the one running plus the waiters) are currently inside `do` for that key, 0 if none.
+@@@ reference
+import threading
+
+
+class _Call:
+    def __init__(self):
+        self.done = threading.Event()
+        self.result = None
+        self.error = None
+        self.callers = 1
+
+
+class SingleFlight:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._calls = {}
+
+    def inflight(self, key):
+        with self._lock:
+            c = self._calls.get(key)
+            return c.callers if c else 0
+
+    def do(self, key, fn):
+        with self._lock:
+            call = self._calls.get(key)
+            if call is not None:
+                call.callers += 1
+                leader = False
+            else:
+                call = self._calls[key] = _Call()
+                leader = True
+        if leader:
+            try:
+                call.result = fn()
+            except BaseException as exc:
+                call.error = exc
+            finally:
+                with self._lock:
+                    del self._calls[key]
+                call.done.set()
+        else:
+            call.done.wait()
+        if call.error is not None:
+            raise call.error
+        return call.result
+@@@ tests
+import threading
+import time
+import pytest
+from solution import SingleFlight
+
+
+def wait_until(cond, timeout=3.0):
+    end = time.monotonic() + timeout
+    while not cond():
+        if time.monotonic() > end:
+            raise AssertionError("condition not reached")
+        time.sleep(0.001)
+
+
+def run_threads(n, target):
+    results = [None] * n
+    errors = [None] * n
+
+    def wrap(i):
+        try:
+            results[i] = target()
+        except Exception as e:
+            errors[i] = e
+    ts = [threading.Thread(target=wrap, args=(i,)) for i in range(n)]
+    for t in ts:
+        t.start()
+    return ts, results, errors
+
+
+def test_sequential_calls_run_each_time():
+    sf = SingleFlight()
+    calls = []
+    assert sf.do("k", lambda: calls.append(1) or len(calls)) == 1
+    assert sf.do("k", lambda: calls.append(1) or len(calls)) == 2
+    assert sf.inflight("k") == 0
+
+
+def test_concurrent_callers_share_one_call():
+    sf = SingleFlight()
+    release = threading.Event()
+    calls = []
+
+    def slow():
+        calls.append(1)
+        release.wait(5)
+        return "value"
+    ts, results, errors = run_threads(5, lambda: sf.do("k", slow))
+    wait_until(lambda: sf.inflight("k") == 5)
+    release.set()
+    for t in ts:
+        t.join(5)
+    assert calls == [1] and results == ["value"] * 5 and errors == [None] * 5
+    assert sf.inflight("k") == 0
+
+
+def test_exception_shared_by_waiters():
+    sf = SingleFlight()
+    release = threading.Event()
+    calls = []
+
+    def failing():
+        calls.append(1)
+        release.wait(5)
+        raise ValueError("backend failed")
+    ts, results, errors = run_threads(3, lambda: sf.do("k", failing))
+    wait_until(lambda: sf.inflight("k") == 3)
+    release.set()
+    for t in ts:
+        t.join(5)
+    assert calls == [1] and all(isinstance(e, ValueError) for e in errors)
+
+
+def test_different_keys_independent():
+    sf = SingleFlight()
+    release = threading.Event()
+    ts, _, _ = run_threads(1, lambda: sf.do("a", lambda: release.wait(5)))
+    wait_until(lambda: sf.inflight("a") == 1)
+    assert sf.do("b", lambda: 42) == 42
+    release.set()
+    for t in ts:
+        t.join(5)
+
+
+def test_fresh_call_after_completion():
+    sf = SingleFlight()
+    with pytest.raises(RuntimeError):
+        sf.do("k", lambda: (_ for _ in ()).throw(RuntimeError("x")))
+    assert sf.do("k", lambda: "ok") == "ok"
+@@@ task idempotency_store leaf=27 diff=3 entry=IdempotencyStore,IdempotencyConflict
+@@@ prompt
+Write `IdempotencyStore(ttl: float = 86400, clock=time.monotonic)` for idempotent request handling, plus an exception `IdempotencyConflict`. `handle(key, payload: dict, fn)` executes `fn(payload)` the first time a key is seen and stores the response together with a fingerprint of the payload (SHA-256 of `json.dumps(payload, sort_keys=True)`). Repeating the call with the same key and an equal payload returns the stored response without calling `fn`; the same key with a different payload raises `IdempotencyConflict`. If `fn` raises, nothing is stored, so the client can retry. Entries expire `ttl` seconds after they were stored, after which the key is free again. `len(store)` counts unexpired entries.
+@@@ reference
+import hashlib
+import json
+import time
+
+
+class IdempotencyConflict(Exception):
+    pass
+
+
+def _fingerprint(payload):
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+class IdempotencyStore:
+    def __init__(self, ttl: float = 86400, clock=time.monotonic):
+        self.ttl = ttl
+        self.clock = clock
+        self._entries = {}
+
+    def _get(self, key):
+        e = self._entries.get(key)
+        if e is not None and self.clock() >= e[2]:
+            del self._entries[key]
+            return None
+        return e
+
+    def handle(self, key, payload, fn):
+        fp = _fingerprint(payload)
+        e = self._get(key)
+        if e is not None:
+            if e[0] != fp:
+                raise IdempotencyConflict(f"key {key!r} reused with a different payload")
+            return e[1]
+        response = fn(payload)
+        self._entries[key] = (fp, response, self.clock() + self.ttl)
+        return response
+
+    def __len__(self):
+        now = self.clock()
+        return sum(1 for e in self._entries.values() if now < e[2])
+@@@ tests
+import pytest
+from solution import IdempotencyStore, IdempotencyConflict
+
+
+class Clock:
+    t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+class Charger:
+    def __init__(self):
+        self.charges = []
+
+    def __call__(self, payload):
+        self.charges.append(payload)
+        return {"charge_id": len(self.charges), "amount": payload["amount"]}
+
+
+def test_repeat_returns_same_response():
+    store, ch = IdempotencyStore(clock=Clock()), Charger()
+    r1 = store.handle("k1", {"amount": 10, "currency": "EUR"}, ch)
+    r2 = store.handle("k1", {"currency": "EUR", "amount": 10}, ch)
+    assert r1 == r2 == {"charge_id": 1, "amount": 10}
+    assert len(ch.charges) == 1
+
+
+def test_conflict_on_different_payload():
+    store, ch = IdempotencyStore(clock=Clock()), Charger()
+    store.handle("k1", {"amount": 10}, ch)
+    with pytest.raises(IdempotencyConflict):
+        store.handle("k1", {"amount": 11}, ch)
+    assert len(ch.charges) == 1
+
+
+def test_distinct_keys():
+    store, ch = IdempotencyStore(clock=Clock()), Charger()
+    store.handle("a", {"amount": 1}, ch)
+    store.handle("b", {"amount": 1}, ch)
+    assert len(ch.charges) == 2 and len(store) == 2
+
+
+def test_failures_not_stored():
+    store = IdempotencyStore(clock=Clock())
+    attempts = []
+
+    def flaky(p):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise TimeoutError("gateway timeout")
+        return "ok"
+    with pytest.raises(TimeoutError):
+        store.handle("k", {"x": 1}, flaky)
+    assert len(store) == 0
+    assert store.handle("k", {"x": 1}, flaky) == "ok"
+    assert store.handle("k", {"x": 1}, flaky) == "ok" and len(attempts) == 2
+
+
+def test_expiry_frees_key():
+    clk = Clock()
+    store, ch = IdempotencyStore(ttl=60, clock=clk), Charger()
+    store.handle("k", {"amount": 1}, ch)
+    clk.t = 59
+    store.handle("k", {"amount": 1}, ch)
+    clk.t = 60
+    assert len(store) == 0
+    store.handle("k", {"amount": 2}, ch)
+    assert len(ch.charges) == 2
+
+
+def test_nested_payload_fingerprint():
+    store, ch = IdempotencyStore(clock=Clock()), Charger()
+    store.handle("k", {"amount": 1, "meta": {"b": 2, "a": 1}}, ch)
+    store.handle("k", {"meta": {"a": 1, "b": 2}, "amount": 1}, ch)
+    assert len(ch.charges) == 1
+@@@ task idempotent_concurrent leaf=27 diff=4 entry=IdempotentHandler,RequestInProgress
+@@@ prompt
+Write a thread-safe `IdempotentHandler(fn)` plus an exception `RequestInProgress`. `call(key, payload)` invokes `fn(payload)` at most once successfully per key and caches the result: later calls with the same key return the cached result without calling `fn`. If a call for the same key is still running in another thread, raise `RequestInProgress` immediately (do not wait and do not run `fn` a second time); this is how APIs answer with HTTP 409 for concurrent duplicate requests. If `fn` raises, the exception propagates to that caller, the key is released and nothing is cached, so a retry runs `fn` again. Do not hold a lock while `fn` runs, so different keys proceed in parallel.
+@@@ reference
+import threading
+
+
+class RequestInProgress(Exception):
+    pass
+
+
+_RUNNING = object()
+
+
+class IdempotentHandler:
+    def __init__(self, fn):
+        self.fn = fn
+        self._lock = threading.Lock()
+        self._state = {}
+
+    def call(self, key, payload):
+        with self._lock:
+            st = self._state.get(key)
+            if st is _RUNNING:
+                raise RequestInProgress(key)
+            if st is not None:
+                return st[0]
+            self._state[key] = _RUNNING
+        try:
+            result = self.fn(payload)
+        except BaseException:
+            with self._lock:
+                del self._state[key]
+            raise
+        with self._lock:
+            self._state[key] = (result,)
+        return result
+@@@ tests
+import threading
+import pytest
+from solution import IdempotentHandler, RequestInProgress
+
+
+def test_cached_result():
+    calls = []
+    h = IdempotentHandler(lambda p: calls.append(p) or len(calls))
+    assert h.call("k", {"a": 1}) == 1
+    assert h.call("k", {"a": 1}) == 1
+    assert len(calls) == 1
+
+
+def test_concurrent_duplicate_rejected():
+    started, release = threading.Event(), threading.Event()
+    calls = []
+
+    def slow(p):
+        calls.append(p)
+        started.set()
+        release.wait(5)
+        return "done"
+    h = IdempotentHandler(slow)
+    out = []
+    t = threading.Thread(target=lambda: out.append(h.call("k", 1)))
+    t.start()
+    assert started.wait(5)
+    with pytest.raises(RequestInProgress):
+        h.call("k", 1)
+    release.set()
+    t.join(5)
+    assert out == ["done"] and h.call("k", 1) == "done" and len(calls) == 1
+
+
+def test_failure_releases_key():
+    attempts = []
+
+    def flaky(p):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise ConnectionError("down")
+        return "ok"
+    h = IdempotentHandler(flaky)
+    with pytest.raises(ConnectionError):
+        h.call("k", None)
+    assert h.call("k", None) == "ok" and len(attempts) == 2
+
+
+def test_other_keys_not_blocked():
+    started, release = threading.Event(), threading.Event()
+
+    def fn(p):
+        if p == "slow":
+            started.set()
+            release.wait(5)
+        return p
+    h = IdempotentHandler(fn)
+    t = threading.Thread(target=h.call, args=("a", "slow"))
+    t.start()
+    assert started.wait(5)
+    assert h.call("b", "fast") == "fast"
+    release.set()
+    t.join(5)
+
+
+def test_none_result_cached():
+    calls = []
+    h = IdempotentHandler(lambda p: calls.append(1))
+    assert h.call("k", 0) is None and h.call("k", 0) is None
+    assert len(calls) == 1
+
+
+def test_many_threads_exactly_one_execution():
+    gate = threading.Event()
+    calls = []
+    lock = threading.Lock()
+
+    def fn(p):
+        with lock:
+            calls.append(1)
+        gate.wait(5)
+        return 7
+    h = IdempotentHandler(fn)
+    outcomes = []
+
+    def worker():
+        try:
+            outcomes.append(h.call("k", 0))
+        except RequestInProgress:
+            outcomes.append("409")
+    ts = [threading.Thread(target=worker) for _ in range(8)]
+    for t in ts:
+        t.start()
+    while not calls:
+        gate.wait(0.001)
+    gate.set()
+    for t in ts:
+        t.join(5)
+    assert len(calls) == 1 and outcomes.count(7) >= 1
+    assert set(outcomes) <= {7, "409"} and h.call("k", 0) == 7
+@@@ task di_container leaf=28 diff=4 entry=Container,ResolutionError
+@@@ prompt
+Write a simple dependency injection `Container` and a `ResolutionError` exception. `register(interface, factory=None, *, singleton=False)` maps a type to a factory (default: the type itself); `register_instance(interface, obj)` registers a ready-made object. `resolve(interface)` builds the object by calling its factory, automatically resolving each constructor parameter from its type annotation (use `typing.get_type_hints` on the class `__init__`, or on the function for factory functions). A parameter that has a default and whose annotated type is not registered keeps its default. A required dependency that is not registered raises `ResolutionError` naming the missing type, and a dependency cycle raises `ResolutionError` whose message contains `"cycle"`. Singletons are built once and reused; everything else is built fresh on each resolve.
+@@@ reference
+import inspect
+import typing
+
+
+class ResolutionError(Exception):
+    pass
+
+
+class Container:
+    def __init__(self):
+        self._regs = {}
+        self._singletons = {}
+
+    def register(self, interface, factory=None, *, singleton=False):
+        self._regs[interface] = (factory or interface, singleton)
+
+    def register_instance(self, interface, obj):
+        self._regs[interface] = (lambda: obj, True)
+        self._singletons[interface] = obj
+
+    def resolve(self, interface):
+        return self._resolve(interface, [])
+
+    def _resolve(self, interface, stack):
+        if interface in self._singletons:
+            return self._singletons[interface]
+        if interface not in self._regs:
+            raise ResolutionError(f"no registration for {getattr(interface, '__name__', interface)}")
+        if interface in stack:
+            chain = " -> ".join(t.__name__ for t in stack + [interface])
+            raise ResolutionError(f"dependency cycle: {chain}")
+        factory, singleton = self._regs[interface]
+        target = factory.__init__ if inspect.isclass(factory) else factory
+        hints = typing.get_type_hints(target)
+        sig = inspect.signature(factory)
+        kwargs = {}
+        for name, param in sig.parameters.items():
+            if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+                continue
+            dep = hints.get(name)
+            if dep is not None and (dep in self._regs or dep in self._singletons):
+                kwargs[name] = self._resolve(dep, stack + [interface])
+            elif param.default is not param.empty:
+                continue
+            elif dep is None:
+                raise ResolutionError(f"parameter {name!r} of {factory!r} has no annotation")
+            else:
+                raise ResolutionError(f"no registration for {getattr(dep, '__name__', dep)} "
+                                      f"(needed by {getattr(interface, '__name__', interface)})")
+        obj = factory(**kwargs)
+        if singleton:
+            self._singletons[interface] = obj
+        return obj
+@@@ tests
+import pytest
+from solution import Container, ResolutionError
+
+
+class Config:
+    def __init__(self):
+        self.url = "sqlite://"
+
+
+class Database:
+    def __init__(self, config: Config):
+        self.config = config
+
+
+class Mailer:
+    def __init__(self, sender: str = "noreply@x.com"):
+        self.sender = sender
+
+
+class UserService:
+    def __init__(self, db: Database, mailer: Mailer, retries: int = 3):
+        self.db, self.mailer, self.retries = db, mailer, retries
+
+
+def make():
+    c = Container()
+    c.register(Config, singleton=True)
+    c.register(Database)
+    c.register(Mailer)
+    c.register(UserService)
+    return c
+
+
+def test_auto_wiring():
+    svc = make().resolve(UserService)
+    assert isinstance(svc.db, Database) and isinstance(svc.db.config, Config)
+    assert svc.mailer.sender == "noreply@x.com" and svc.retries == 3
+
+
+def test_singleton_vs_transient():
+    c = make()
+    a, b = c.resolve(Database), c.resolve(Database)
+    assert a is not b and a.config is b.config
+
+
+def test_factory_function_and_instance():
+    c = make()
+    cfg = Config()
+    cfg.url = "postgres://"
+    c.register_instance(Config, cfg)
+
+    def mailer_factory(config: Config) -> Mailer:
+        return Mailer(sender="ops@" + config.url.split(":")[0])
+    c.register(Mailer, mailer_factory)
+    svc = c.resolve(UserService)
+    assert svc.db.config is cfg and svc.mailer.sender == "ops@postgres"
+
+
+def test_missing_dependency():
+    c = Container()
+    c.register(Database)
+    with pytest.raises(ResolutionError) as ei:
+        c.resolve(Database)
+    assert "Config" in str(ei.value)
+    with pytest.raises(ResolutionError):
+        c.resolve(Mailer)
+
+
+class A:
+    def __init__(self, b: "B"):
+        self.b = b
+
+
+class B:
+    def __init__(self, a: A):
+        self.a = a
+
+
+def test_cycle_detected():
+    c = Container()
+    c.register(A)
+    c.register(B)
+    with pytest.raises(ResolutionError) as ei:
+        c.resolve(A)
+    assert "cycle" in str(ei.value)
+
+
+def test_interface_to_implementation():
+    class Repo:
+        pass
+
+    class SqlRepo(Repo):
+        def __init__(self, db: Database):
+            self.db = db
+    c = make()
+    c.register(Repo, SqlRepo, singleton=True)
+    r = c.resolve(Repo)
+    assert isinstance(r, SqlRepo) and c.resolve(Repo) is r
+@@@ task undo_redo_history leaf=29 diff=3 entry=History
+@@@ prompt
+Write a generic undo/redo `History(initial, limit=None)` that stores snapshots of an immutable state value. `state` returns the current value. `push(new_state)` records a new current state and clears the redo stack. `undo()` and `redo()` move through history and return the new current state; when there is nothing to undo or redo they raise `IndexError`. `can_undo` and `can_redo` are bool properties. `limit` caps the number of undo steps kept (oldest dropped first). `batch()` is a context manager that groups several pushes into a single undo step; nested batches join the outer one, and if the block raises, the state is restored to what it was before the batch and no undo step is recorded.
+@@@ reference
+from contextlib import contextmanager
+
+
+class History:
+    def __init__(self, initial, limit=None):
+        self._state = initial
+        self._undo = []
+        self._redo = []
+        self.limit = limit
+        self._batch_depth = 0
+        self._batch_start = None
+
+    @property
+    def state(self):
+        return self._state
+
+    @property
+    def can_undo(self):
+        return bool(self._undo)
+
+    @property
+    def can_redo(self):
+        return bool(self._redo)
+
+    def _record(self, previous):
+        self._undo.append(previous)
+        if self.limit is not None and len(self._undo) > self.limit:
+            del self._undo[0]
+        self._redo.clear()
+
+    def push(self, new_state):
+        if self._batch_depth == 0:
+            self._record(self._state)
+        self._state = new_state
+
+    def undo(self):
+        if not self._undo:
+            raise IndexError("nothing to undo")
+        self._redo.append(self._state)
+        self._state = self._undo.pop()
+        return self._state
+
+    def redo(self):
+        if not self._redo:
+            raise IndexError("nothing to redo")
+        self._undo.append(self._state)
+        self._state = self._redo.pop()
+        return self._state
+
+    @contextmanager
+    def batch(self):
+        outer = self._batch_depth == 0
+        if outer:
+            self._batch_start = self._state
+        self._batch_depth += 1
+        try:
+            yield self
+        except BaseException:
+            self._batch_depth -= 1
+            if outer:
+                self._state = self._batch_start
+            raise
+        self._batch_depth -= 1
+        if outer and self._state is not self._batch_start:
+            self._record(self._batch_start)
+@@@ tests
+import pytest
+from solution import History
+
+
+def test_undo_redo_cycle():
+    h = History("")
+    h.push("a")
+    h.push("ab")
+    assert h.undo() == "a" and h.undo() == ""
+    assert h.redo() == "a" and h.state == "a"
+
+
+def test_push_clears_redo():
+    h = History(0)
+    h.push(1)
+    h.undo()
+    assert h.can_redo
+    h.push(2)
+    assert not h.can_redo
+    with pytest.raises(IndexError):
+        h.redo()
+
+
+def test_empty_raises():
+    h = History(0)
+    assert not h.can_undo
+    with pytest.raises(IndexError):
+        h.undo()
+
+
+def test_limit_drops_oldest():
+    h = History(0, limit=2)
+    for i in range(1, 6):
+        h.push(i)
+    assert h.undo() == 4 and h.undo() == 3
+    with pytest.raises(IndexError):
+        h.undo()
+
+
+def test_batch_is_one_step():
+    h = History(())
+    with h.batch():
+        h.push((1,))
+        h.push((1, 2))
+        with h.batch():
+            h.push((1, 2, 3))
+    h.push((9,))
+    assert h.undo() == (1, 2, 3)
+    assert h.undo() == ()
+    assert not h.can_undo
+
+
+def test_failed_batch_rolls_back():
+    h = History("start")
+    h.push("v1")
+    with pytest.raises(ValueError):
+        with h.batch():
+            h.push("v2")
+            h.push("v3")
+            raise ValueError("abort")
+    assert h.state == "v1"
+    assert h.undo() == "start"
+
+
+def test_redo_after_batch_undo():
+    h = History(0)
+    with h.batch():
+        h.push(1)
+        h.push(2)
+    h.undo()
+    assert h.redo() == 2
+@@@ task leaderboard leaf=30 diff=3 entry=Leaderboard
+@@@ prompt
+Write a `Leaderboard` that keeps players sorted by score using `bisect` on a sorted list (no full re-sort per update). `submit(player, score)` records a score but keeps only each player's best. `top(n)` returns the best `n` as `(player, score)` pairs ordered by score descending, then player name ascending. `rank(player)` returns the 1-based competition rank, where tied players share a rank and the next rank skips (scores 100, 90, 90, 80 have ranks 1, 2, 2, 4); unknown players raise `KeyError`. `around(player, k)` returns up to `k` entries before and after the player in leaderboard order (including the player). `remove(player)` deletes a player. `len()` is the number of players.
+@@@ reference
+import bisect
+
+
+class Leaderboard:
+    def __init__(self):
+        self._best = {}
+        self._sorted = []  # (-score, player)
+
+    def submit(self, player, score):
+        old = self._best.get(player)
+        if old is not None and old >= score:
+            return
+        if old is not None:
+            self._sorted.pop(bisect.bisect_left(self._sorted, (-old, player)))
+        self._best[player] = score
+        bisect.insort(self._sorted, (-score, player))
+
+    def top(self, n):
+        return [(p, -s) for s, p in self._sorted[:n]]
+
+    def rank(self, player):
+        score = self._best[player]
+        return bisect.bisect_left(self._sorted, (-score,)) + 1
+
+    def around(self, player, k):
+        i = bisect.bisect_left(self._sorted, (-self._best[player], player))
+        return [(p, -s) for s, p in self._sorted[max(0, i - k): i + k + 1]]
+
+    def remove(self, player):
+        score = self._best.pop(player)
+        self._sorted.pop(bisect.bisect_left(self._sorted, (-score, player)))
+
+    def __len__(self):
+        return len(self._best)
+@@@ tests
+import pytest
+from solution import Leaderboard
+
+
+def make():
+    lb = Leaderboard()
+    for p, s in [("ann", 100), ("bob", 90), ("cat", 90), ("dan", 80), ("eve", 70)]:
+        lb.submit(p, s)
+    return lb
+
+
+def test_top_order_with_ties():
+    assert make().top(3) == [("ann", 100), ("bob", 90), ("cat", 90)]
+
+
+def test_competition_rank():
+    lb = make()
+    assert [lb.rank(p) for p in ["ann", "bob", "cat", "dan", "eve"]] == [1, 2, 2, 4, 5]
+    with pytest.raises(KeyError):
+        lb.rank("zed")
+
+
+def test_best_score_kept():
+    lb = make()
+    lb.submit("eve", 50)
+    assert lb.rank("eve") == 5
+    lb.submit("eve", 95)
+    assert lb.rank("eve") == 2 and lb.rank("bob") == 3 and len(lb) == 5
+
+
+def test_around():
+    lb = make()
+    assert lb.around("dan", 1) == [("cat", 90), ("dan", 80), ("eve", 70)]
+    assert lb.around("ann", 2) == [("ann", 100), ("bob", 90), ("cat", 90)]
+
+
+def test_remove():
+    lb = make()
+    lb.remove("ann")
+    assert lb.rank("bob") == 1 and len(lb) == 4
+    with pytest.raises(KeyError):
+        lb.remove("ann")
+
+
+def test_scales():
+    lb = Leaderboard()
+    for i in range(20000):
+        lb.submit(f"p{i % 5000}", (i * 7919) % 10007)
+    assert len(lb) == 5000
+    top = lb.top(10)
+    assert top == sorted(top, key=lambda x: (-x[1], x[0]))
+    assert lb.rank(top[0][0]) == 1
+@@@ task metrics_registry leaf=31 diff=4 entry=MetricsRegistry
+@@@ prompt
+Write a `MetricsRegistry` for application metrics with Prometheus-style text output. `counter(name, **labels)` returns a counter object with `inc(n=1)` (a negative n raises `ValueError`); `gauge(name, **labels)` returns an object with `set(v)`, `inc(n=1)` and `dec(n=1)`; `histogram(name, buckets, **labels)` returns an object with `observe(v)`. Asking again for the same name and labels returns the same object; reusing a name with a different metric type raises `TypeError`. `render()` returns text with one line per sample, sorted by line: `name{k="v",...} value` with labels sorted by key (no braces when there are no labels). Histograms emit cumulative `name_bucket{le="<bound>"}` lines for each bucket plus `le="+Inf"`, then `name_sum` and `name_count`; the `le` label sorts together with the other labels. Format every number with `format(v, "g")`.
+@@@ reference
+import bisect
+
+
+def _labels(d):
+    if not d:
+        return ""
+    return "{" + ",".join(f'{k}="{v}"' for k, v in sorted(d.items())) + "}"
+
+
+class _Counter:
+    def __init__(self):
+        self.value = 0
+
+    def inc(self, n=1):
+        if n < 0:
+            raise ValueError("counters only go up")
+        self.value += n
+
+    def samples(self, name, labels):
+        return [f"{name}{_labels(labels)} {format(self.value, 'g')}"]
+
+
+class _Gauge:
+    def __init__(self):
+        self.value = 0
+
+    def set(self, v):
+        self.value = v
+
+    def inc(self, n=1):
+        self.value += n
+
+    def dec(self, n=1):
+        self.value -= n
+
+    def samples(self, name, labels):
+        return [f"{name}{_labels(labels)} {format(self.value, 'g')}"]
+
+
+class _Histogram:
+    def __init__(self, buckets):
+        self.buckets = sorted(buckets)
+        self.counts = [0] * len(self.buckets)
+        self.sum = 0
+        self.count = 0
+
+    def observe(self, v):
+        i = bisect.bisect_left(self.buckets, v)
+        if i < len(self.buckets):
+            self.counts[i] += 1
+        self.sum += v
+        self.count += 1
+
+    def samples(self, name, labels):
+        out, cum = [], 0
+        for b, c in zip(self.buckets, self.counts):
+            cum += c
+            out.append(f"{name}_bucket{_labels({**labels, 'le': format(b, 'g')})} {format(cum, 'g')}")
+        out.append(f"{name}_bucket{_labels({**labels, 'le': '+Inf'})} {format(self.count, 'g')}")
+        out.append(f"{name}_sum{_labels(labels)} {format(self.sum, 'g')}")
+        out.append(f"{name}_count{_labels(labels)} {format(self.count, 'g')}")
+        return out
+
+
+class MetricsRegistry:
+    def __init__(self):
+        self._types = {}
+        self._metrics = {}
+
+    def _get(self, cls, name, labels, *args):
+        if self._types.setdefault(name, cls) is not cls:
+            raise TypeError(f"{name} is already a {self._types[name].__name__}")
+        key = (name, tuple(sorted(labels.items())))
+        if key not in self._metrics:
+            self._metrics[key] = cls(*args)
+        return self._metrics[key]
+
+    def counter(self, name, **labels):
+        return self._get(_Counter, name, labels)
+
+    def gauge(self, name, **labels):
+        return self._get(_Gauge, name, labels)
+
+    def histogram(self, name, buckets, **labels):
+        return self._get(_Histogram, name, labels, buckets)
+
+    def render(self):
+        lines = []
+        for (name, labels), m in self._metrics.items():
+            lines.extend(m.samples(name, dict(labels)))
+        return "\n".join(sorted(lines))
+@@@ tests
+import pytest
+from solution import MetricsRegistry
+
+
+def test_counter_and_labels():
+    m = MetricsRegistry()
+    m.counter("requests_total", method="GET", code="200").inc()
+    m.counter("requests_total", code="200", method="GET").inc(2)
+    m.counter("requests_total", method="POST", code="500").inc()
+    assert m.render().splitlines() == [
+        'requests_total{code="200",method="GET"} 3',
+        'requests_total{code="500",method="POST"} 1',
+    ]
+
+
+def test_counter_rejects_negative():
+    c = MetricsRegistry().counter("x")
+    with pytest.raises(ValueError):
+        c.inc(-1)
+
+
+def test_gauge():
+    m = MetricsRegistry()
+    g = m.gauge("queue_depth")
+    g.set(10)
+    g.inc(2.5)
+    g.dec()
+    assert m.render() == "queue_depth 11.5"
+
+
+def test_same_object_returned_and_type_conflict():
+    m = MetricsRegistry()
+    assert m.counter("a", x="1") is m.counter("a", x="1")
+    assert m.counter("a", x="1") is not m.counter("a", x="2")
+    with pytest.raises(TypeError):
+        m.gauge("a")
+
+
+def test_histogram_cumulative():
+    m = MetricsRegistry()
+    h = m.histogram("latency", [0.1, 0.5, 1])
+    for v in [0.05, 0.1, 0.3, 0.7, 2]:
+        h.observe(v)
+    assert m.render().splitlines() == [
+        "latency_bucket{le=\"+Inf\"} 5",
+        "latency_bucket{le=\"0.1\"} 2",
+        "latency_bucket{le=\"0.5\"} 3",
+        "latency_bucket{le=\"1\"} 4",
+        "latency_count 5",
+        "latency_sum 3.15",
+    ]
+
+
+def test_histogram_with_labels():
+    m = MetricsRegistry()
+    m.histogram("size", [10], route="/a").observe(3)
+    lines = m.render().splitlines()
+    assert 'size_bucket{le="10",route="/a"} 1' in lines
+    assert 'size_count{route="/a"} 1' in lines and 'size_sum{route="/a"} 3' in lines
+
+
+def test_number_formatting():
+    m = MetricsRegistry()
+    m.gauge("big").set(1e6)
+    m.counter("n").inc(3)
+    assert m.render().splitlines() == ["big 1e+06", "n 3"]
+@@@ task rolling_timer leaf=31 diff=3 entry=RollingStats,timed
+@@@ prompt
+Write latency metrics over a sliding time window. `RollingStats(window: float, clock=time.monotonic)` has `record(value)`, which stores the value with the current time, `count()`, `mean()` and `percentile(p)`. Only values recorded within the last `window` seconds count (a value recorded at t is dropped once `clock() >= t + window`). `percentile(p)` for p in (0, 100] uses the nearest-rank method: sort the values and take the element at 1-based rank `ceil(p / 100 * n)`; with no values, `mean` and `percentile` return None; p outside (0, 100] raises `ValueError`. Also write `timed(stats, clock=time.perf_counter)`, usable both as a context manager and as a decorator, that records the elapsed time of the block or call into `stats`, even when it raises.
+@@@ reference
+import functools
+import math
+import time
+from collections import deque
+
+
+class RollingStats:
+    def __init__(self, window: float, clock=time.monotonic):
+        self.window = window
+        self.clock = clock
+        self._items = deque()
+
+    def _prune(self):
+        now = self.clock()
+        while self._items and now >= self._items[0][0] + self.window:
+            self._items.popleft()
+
+    def record(self, value):
+        self._items.append((self.clock(), value))
+
+    def count(self):
+        self._prune()
+        return len(self._items)
+
+    def mean(self):
+        self._prune()
+        if not self._items:
+            return None
+        return sum(v for _, v in self._items) / len(self._items)
+
+    def percentile(self, p):
+        if not 0 < p <= 100:
+            raise ValueError("p must be in (0, 100]")
+        self._prune()
+        if not self._items:
+            return None
+        vals = sorted(v for _, v in self._items)
+        return vals[math.ceil(p * len(vals) / 100) - 1]
+
+
+class timed:
+    def __init__(self, stats, clock=time.perf_counter):
+        self.stats = stats
+        self.clock = clock
+        self._starts = []
+
+    def __enter__(self):
+        self._starts.append(self.clock())
+        return self
+
+    def __exit__(self, *exc):
+        self.stats.record(self.clock() - self._starts.pop())
+        return False
+
+    def __call__(self, fn):
+        @functools.wraps(fn)
+        def wrapper(*a, **kw):
+            with self:
+                return fn(*a, **kw)
+        return wrapper
+@@@ tests
+import pytest
+from solution import RollingStats, timed
+
+
+class Clock:
+    t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+def test_nearest_rank_percentiles():
+    s = RollingStats(60, clock=Clock())
+    for v in [15, 20, 35, 40, 50]:
+        s.record(v)
+    assert s.percentile(5) == 15 and s.percentile(30) == 20 and s.percentile(40) == 20
+    assert s.percentile(50) == 35 and s.percentile(100) == 50
+    assert s.mean() == 32 and s.count() == 5
+
+
+def test_window_expiry():
+    clk = Clock()
+    s = RollingStats(10, clock=clk)
+    s.record(1)
+    clk.t = 5
+    s.record(100)
+    clk.t = 10
+    assert s.count() == 1 and s.mean() == 100
+    clk.t = 15
+    assert s.count() == 0 and s.mean() is None and s.percentile(50) is None
+
+
+def test_bad_percentile():
+    s = RollingStats(10, clock=Clock())
+    for p in (0, -5, 101):
+        with pytest.raises(ValueError):
+            s.percentile(p)
+
+
+def test_timed_context_manager():
+    clk = Clock()
+    s = RollingStats(60, clock=Clock())
+    with timed(s, clock=clk):
+        clk.t += 0.25
+    assert s.count() == 1 and s.mean() == pytest.approx(0.25)
+
+
+def test_timed_records_on_exception():
+    clk = Clock()
+    s = RollingStats(60, clock=Clock())
+    with pytest.raises(RuntimeError):
+        with timed(s, clock=clk):
+            clk.t += 1
+            raise RuntimeError("x")
+    assert s.count() == 1 and s.mean() == pytest.approx(1)
+
+
+def test_timed_decorator():
+    clk = Clock()
+    s = RollingStats(60, clock=Clock())
+
+    @timed(s, clock=clk)
+    def work(n):
+        """Doc."""
+        clk.t += n
+        return n * 2
+    assert work(2) == 4 and work(3) == 6
+    assert work.__name__ == "work" and work.__doc__ == "Doc."
+    assert s.count() == 2 and s.percentile(100) == pytest.approx(3)
+@@@ task lease_lock_service leaf=32 diff=4 entry=LockService,InMemoryLockService,Lease,LockLost,FencedResource,StaleToken
+@@@ prompt
+Define a distributed-lock interface and an in-memory implementation. `LockService` is an `abc.ABC` with abstract methods `acquire(name, owner, ttl)`, `renew(lease, ttl)` and `release(lease)`. `Lease` is a frozen dataclass `(name, owner, token: int, expires_at: float)`. `InMemoryLockService(clock=time.monotonic)` implements it: `acquire` returns a `Lease` or None if another unexpired lease holds the lock (even for the same owner); every successful acquisition of a given lock name gets a fencing `token` strictly greater than all previous tokens for that name. `renew` returns a new Lease with a later expiry and the same token, or raises `LockLost` if the lease expired or is no longer the current holder. `release` returns True if it released the current lease, False otherwise. Finally `FencedResource` with `write(token, value)` rejects writes whose token is lower than the highest token it has seen by raising `StaleToken`; it stores accepted values in a `values` list.
+@@@ reference
+import abc
+import time
+from dataclasses import dataclass, replace
+
+
+class LockLost(Exception):
+    pass
+
+
+class StaleToken(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class Lease:
+    name: str
+    owner: str
+    token: int
+    expires_at: float
+
+
+class LockService(abc.ABC):
+    @abc.abstractmethod
+    def acquire(self, name, owner, ttl):
+        ...
+
+    @abc.abstractmethod
+    def renew(self, lease, ttl):
+        ...
+
+    @abc.abstractmethod
+    def release(self, lease):
+        ...
+
+
+class InMemoryLockService(LockService):
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
+        self._held = {}
+        self._tokens = {}
+
+    def _current(self, name):
+        lease = self._held.get(name)
+        if lease is not None and self.clock() >= lease.expires_at:
+            del self._held[name]
+            return None
+        return lease
+
+    def acquire(self, name, owner, ttl):
+        if self._current(name) is not None:
+            return None
+        token = self._tokens.get(name, 0) + 1
+        self._tokens[name] = token
+        lease = Lease(name, owner, token, self.clock() + ttl)
+        self._held[name] = lease
+        return lease
+
+    def renew(self, lease, ttl):
+        cur = self._current(lease.name)
+        if cur is None or cur.token != lease.token:
+            raise LockLost(lease.name)
+        new = replace(cur, expires_at=self.clock() + ttl)
+        self._held[lease.name] = new
+        return new
+
+    def release(self, lease):
+        cur = self._current(lease.name)
+        if cur is None or cur.token != lease.token:
+            return False
+        del self._held[lease.name]
+        return True
+
+
+class FencedResource:
+    def __init__(self):
+        self.values = []
+        self._highest = 0
+
+    def write(self, token, value):
+        if token < self._highest:
+            raise StaleToken(f"token {token} < {self._highest}")
+        self._highest = token
+        self.values.append(value)
+@@@ tests
+import dataclasses
+import pytest
+from solution import LockService, InMemoryLockService, Lease, LockLost, FencedResource, StaleToken
+
+
+class Clock:
+    t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+def test_interface_is_abstract():
+    with pytest.raises(TypeError):
+        LockService()
+    assert issubclass(InMemoryLockService, LockService)
+
+
+def test_mutual_exclusion_and_expiry():
+    clk = Clock()
+    svc = InMemoryLockService(clk)
+    a = svc.acquire("job", "w1", ttl=10)
+    assert isinstance(a, Lease) and a.expires_at == 10
+    assert svc.acquire("job", "w2", 10) is None
+    assert svc.acquire("job", "w1", 10) is None
+    assert svc.acquire("other", "w2", 10) is not None
+    clk.t = 10
+    b = svc.acquire("job", "w2", 10)
+    assert b is not None and b.token > a.token
+
+
+def test_tokens_strictly_increase():
+    clk = Clock()
+    svc = InMemoryLockService(clk)
+    tokens = []
+    for _ in range(5):
+        l = svc.acquire("x", "o", 1)
+        tokens.append(l.token)
+        svc.release(l)
+    assert tokens == sorted(set(tokens))
+
+
+def test_renew():
+    clk = Clock()
+    svc = InMemoryLockService(clk)
+    l = svc.acquire("x", "o", 5)
+    clk.t = 4
+    l2 = svc.renew(l, 5)
+    assert l2.expires_at == 9 and l2.token == l.token
+    clk.t = 8
+    assert svc.acquire("x", "p", 5) is None
+    clk.t = 9
+    with pytest.raises(LockLost):
+        svc.renew(l2, 5)
+
+
+def test_release_only_current_holder():
+    clk = Clock()
+    svc = InMemoryLockService(clk)
+    old = svc.acquire("x", "a", 1)
+    clk.t = 1
+    new = svc.acquire("x", "b", 10)
+    assert svc.release(old) is False
+    assert svc.acquire("x", "c", 1) is None
+    assert svc.release(new) is True and svc.release(new) is False
+
+
+def test_fencing_rejects_stale_writer():
+    clk = Clock()
+    svc = InMemoryLockService(clk)
+    res = FencedResource()
+    slow = svc.acquire("x", "slow", 1)
+    clk.t = 2  # slow worker paused past its lease
+    fast = svc.acquire("x", "fast", 1)
+    res.write(fast.token, "fast")
+    with pytest.raises(StaleToken):
+        res.write(slow.token, "slow")
+    assert res.values == ["fast"]
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        fast.token = 99
+@@@ task resilient_api_client leaf=33 diff=4 entry=ApiClient,TransientError,PermanentError,CircuitOpen
+@@@ prompt
+Write a circuit-broken API client with retries. Exceptions: `TransientError`, `PermanentError`, `CircuitOpen`. `ApiClient(transport, *, max_retries=2, base_delay=0.1, failure_threshold=3, reset_timeout=30.0, clock=time.monotonic, sleep=time.sleep)`. `get(path)` calls `transport(path)`. On `TransientError` it retries up to `max_retries` more times, sleeping `base_delay * 2 ** i` before retry i (0-based) via the injected `sleep`; if all attempts fail it re-raises the last `TransientError`. A `PermanentError` is raised at once without retries and does not count as a breaker failure. The breaker counts consecutive failed `get` calls (after retries are exhausted); at `failure_threshold` it opens and `get` raises `CircuitOpen` without calling the transport. Once `reset_timeout` has passed since it opened, one trial `get` is allowed with no retries: success closes the breaker and resets the count, failure re-opens it for another `reset_timeout`. Expose `state` as `"closed"`, `"open"` or `"half_open"`.
+@@@ reference
+import time
+
+
+class TransientError(Exception):
+    pass
+
+
+class PermanentError(Exception):
+    pass
+
+
+class CircuitOpen(Exception):
+    pass
+
+
+class ApiClient:
+    def __init__(self, transport, *, max_retries=2, base_delay=0.1, failure_threshold=3,
+                 reset_timeout=30.0, clock=time.monotonic, sleep=time.sleep):
+        self.transport = transport
+        self.max_retries = max_retries
+        self.base_delay = base_delay
+        self.failure_threshold = failure_threshold
+        self.reset_timeout = reset_timeout
+        self.clock = clock
+        self.sleep = sleep
+        self._failures = 0
+        self._opened_at = None
+
+    @property
+    def state(self):
+        if self._opened_at is None:
+            return "closed"
+        if self.clock() - self._opened_at >= self.reset_timeout:
+            return "half_open"
+        return "open"
+
+    def get(self, path):
+        state = self.state
+        if state == "open":
+            raise CircuitOpen(path)
+        retries = 0 if state == "half_open" else self.max_retries
+        for i in range(retries + 1):
+            try:
+                result = self.transport(path)
+            except PermanentError:
+                if state == "half_open":
+                    self._opened_at = None
+                    self._failures = 0
+                raise
+            except TransientError:
+                if i == retries:
+                    self._failures += 1
+                    if state == "half_open" or self._failures >= self.failure_threshold:
+                        self._opened_at = self.clock()
+                    raise
+                self.sleep(self.base_delay * 2 ** i)
+            else:
+                self._failures = 0
+                self._opened_at = None
+                return result
+@@@ tests
+import pytest
+from solution import ApiClient, TransientError, PermanentError, CircuitOpen
+
+
+class Clock:
+    t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+class Transport:
+    def __init__(self, script):
+        self.script = list(script)
+        self.calls = 0
+
+    def __call__(self, path):
+        self.calls += 1
+        r = self.script.pop(0) if self.script else "ok"
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+
+def client(script, **kw):
+    sleeps = []
+    t = Transport(script)
+    clk = kw.pop("clock", Clock())
+    c = ApiClient(t, clock=clk, sleep=sleeps.append, **kw)
+    return c, t, sleeps, clk
+
+
+def test_retries_then_succeeds():
+    c, t, sleeps, _ = client([TransientError(), TransientError(), "data"], max_retries=2, base_delay=0.1)
+    assert c.get("/x") == "data"
+    assert t.calls == 3 and sleeps == pytest.approx([0.1, 0.2])
+
+
+def test_gives_up_after_retries():
+    c, t, sleeps, _ = client([TransientError()] * 5, max_retries=2)
+    with pytest.raises(TransientError):
+        c.get("/x")
+    assert t.calls == 3 and len(sleeps) == 2
+
+
+def test_permanent_not_retried_and_not_counted():
+    c, t, sleeps, _ = client([PermanentError()] * 10, failure_threshold=2)
+    for _ in range(4):
+        with pytest.raises(PermanentError):
+            c.get("/x")
+    assert t.calls == 4 and sleeps == [] and c.state == "closed"
+
+
+def test_breaker_opens_and_short_circuits():
+    c, t, _, _ = client([TransientError()] * 100, max_retries=0, failure_threshold=3)
+    for _ in range(3):
+        with pytest.raises(TransientError):
+            c.get("/x")
+    assert c.state == "open"
+    calls = t.calls
+    with pytest.raises(CircuitOpen):
+        c.get("/x")
+    assert t.calls == calls
+
+
+def test_half_open_trial_success_closes():
+    clk = Clock()
+    c, t, sleeps, _ = client([TransientError()] * 3 + ["back"], max_retries=0, failure_threshold=3,
+                             reset_timeout=30, clock=clk)
+    for _ in range(3):
+        with pytest.raises(TransientError):
+            c.get("/x")
+    clk.t = 30
+    assert c.state == "half_open"
+    assert c.get("/x") == "back" and c.state == "closed"
+
+
+def test_half_open_trial_failure_reopens_without_retries():
+    clk = Clock()
+    c, t, sleeps, _ = client([TransientError()] * 20, max_retries=2, failure_threshold=1,
+                             reset_timeout=10, clock=clk)
+    with pytest.raises(TransientError):
+        c.get("/x")
+    assert c.state == "open" and t.calls == 3
+    clk.t = 10
+    with pytest.raises(TransientError):
+        c.get("/x")
+    assert t.calls == 4 and c.state == "open"
+    clk.t = 19
+    with pytest.raises(CircuitOpen):
+        c.get("/x")
+
+
+def test_success_resets_failure_count():
+    c, t, _, _ = client([TransientError(), TransientError(), "ok", TransientError(), TransientError()],
+                        max_retries=0, failure_threshold=3)
+    for _ in range(2):
+        with pytest.raises(TransientError):
+            c.get("/x")
+    c.get("/x")
+    for _ in range(2):
+        with pytest.raises(TransientError):
+            c.get("/x")
+    assert c.state == "closed"
