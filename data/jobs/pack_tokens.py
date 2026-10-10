@@ -16,6 +16,7 @@ REPO = CONFIG.get("repo", "abhash-chakraborty/pycoder-data")
 V = CONFIG.get("version", "v1")
 OUT = "/kaggle/working" if os.path.isdir("/kaggle") else os.path.abspath("pack-out")
 LIMIT = CONFIG.get("limit_gb", 19.0) * 1e9
+BUCKETS = CONFIG.get("buckets")  # optional subset, e.g. ["github_a", "github_b"]: one kernel output holds <= 20 GB
 T0 = time.time()
 
 keys = json.load(open(glob.glob("/kaggle/input/**/keys.json", recursive=True)[0]))
@@ -23,13 +24,15 @@ from huggingface_hub import HfApi, snapshot_download  # noqa: E402
 
 api = HfApi(token=keys["HF_TOKEN"])
 info = api.dataset_info(REPO, files_metadata=True)
-files = [s for s in info.siblings if s.rfilename.startswith(f"{V}/tokens/") and s.rfilename.endswith(".bin")]
+files = [s for s in info.siblings if s.rfilename.startswith(f"{V}/tokens/") and s.rfilename.endswith(".bin")
+         and (not BUCKETS or s.rfilename.split("/")[2] in BUCKETS)]
 total = sum(s.size or 0 for s in files)
 print(f"{len(files)} token files, {total / 1e9:.2f} GB", flush=True)
 if total > LIMIT:
     raise SystemExit(f"{total / 1e9:.1f} GB does not fit in the kernel output; split the pack by bucket")
 snapshot_download(REPO, repo_type="dataset", token=keys["HF_TOKEN"], local_dir=os.path.join(OUT, "_dl"),
-                  allow_patterns=[f"{V}/tokens/*/*/*.bin", f"{V}/tokenizer/*"], max_workers=16)
+                  allow_patterns=([f"{V}/tokens/{b}/*/*.bin" for b in BUCKETS] if BUCKETS else [f"{V}/tokens/*/*/*.bin"])
+                  + [f"{V}/tokenizer/*"], max_workers=16)
 os.rename(os.path.join(OUT, "_dl", V, "tokens"), os.path.join(OUT, "tokens"))
 os.rename(os.path.join(OUT, "_dl", V, "tokenizer", "tokenizer.json"), os.path.join(OUT, "tokenizer.json"))
 manifest = collections.defaultdict(lambda: collections.Counter())
