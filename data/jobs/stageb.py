@@ -284,9 +284,11 @@ def job_sig():
 # ---------------------------------------------------------------- job: dedup
 
 
-def bucket_of(source, kind, quality, stack_cut):
+def bucket_of(source, kind, quality, stack_cut, github_cut=99.0):
     if source == "stack_edu":
         return "stack_edu_a" if (quality or 0) >= stack_cut else "stack_edu_b"
+    if source == "github":  # repo-level quality score (tests, CI, typing, docstrings, lint)
+        return "github_a" if (quality or 0) >= github_cut else "github_b"
     if source in ("cpython_docs", "peps_docs"):
         return "python_docs"
     if source.startswith("opencoder_"):
@@ -372,14 +374,16 @@ def job_dedup():
 
     stack_q = qual[(src == "stack_edu") & (status == 0)]
     stack_cut = float(np.quantile(stack_q, 0.75)) if len(stack_q) else 99.0
+    gh_q = qual[(src == "github") & (status == 0)]
+    github_cut = float(np.quantile(gh_q, 0.70)) if len(gh_q) else 99.0
     keep = np.where(status == 0)[0]
-    buckets = [bucket_of(cols["source"][i], cols["kind"][i], cols["quality"][i], stack_cut) for i in keep]
+    buckets = [bucket_of(cols["source"][i], cols["kind"][i], cols["quality"][i], stack_cut, github_cut) for i in keep]
     keep_tab = pa.table({"id": ids[keep].tolist(), "bucket": buckets, "part": [cols["part"][i] for i in keep]})
     kp = os.path.join(WORK, "keep.parquet")
     pq.write_table(keep_tab, kp, compression="zstd")
 
     names = {0: "kept", 1: "exact_dup", 2: "near_dup", 3: "bench_ngram", 4: "bench_minhash"}
-    report = {"stack_edu_tier_a_quality_cut": stack_cut, "benchmarks": getattr(bench_items, "report", {}), "by_source": {}}
+    report = {"stack_edu_tier_a_quality_cut": stack_cut, "github_tier_a_quality_cut": github_cut, "benchmarks": getattr(bench_items, "report", {}), "by_source": {}}
     for s in sorted(set(cols["source"]) - {"benchmark"}):
         m = src == s
         r = {names[k]: int(((status == k) & m).sum()) for k in names}
