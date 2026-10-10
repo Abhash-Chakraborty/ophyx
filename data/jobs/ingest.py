@@ -725,6 +725,54 @@ def job_opencoder(uploader, pool):
     return totals
 
 
+# ---------------------------------------------------------------- job: synth (verified samples)
+
+
+def _clean_synth(text):
+    return clean_code(text, "", None)
+
+
+def job_synth(uploader, pool):
+    """Verified synthetic samples (data/synth/verify.py output, attached as kernel sources) -> raw parts."""
+    import gzip as _gz
+
+    files = sorted(glob.glob("/kaggle/input/**/verified/batch-*.jsonl.gz", recursive=True))
+    if SMOKE:
+        files = sorted(glob.glob(os.path.join(WORK, "verified", "batch-*.jsonl.gz")))
+    totals = {}
+    seen_batches = set()
+    for path in files:
+        bname = os.path.basename(path).replace(".jsonl.gz", "")
+        if bname in seen_batches:  # the same batch can arrive from more than one verifier output
+            continue
+        seen_batches.add(bname)
+        name = f"synth/{bname}.parquet"
+        if uploader.exists(f"{PREFIX}/{name}"):
+            continue
+        recs = [json.loads(l) for l in _gz.open(path, "rt")]
+        res = pool.map(_clean_synth, [r["code"] for r in recs], chunksize=16)
+        kept, stats = [], {"input_rows": len(recs)}
+        for r, (clean, reason, nred) in zip(recs, res):
+            stats[reason] = stats.get(reason, 0) + 1
+            if clean is None:
+                continue
+            kept.append({"id": sha1(clean), "source": f"synth_{r['kind']}", "repo": None, "path": None,
+                         "licence": "Apache-2.0", "kind": "code", "text": clean, "text_raw": None, "quality": None,
+                         "meta": json.dumps({k: r.get(k) for k in ("id", "area", "leaf", "kind", "difficulty", "domain",
+                                                                   "style", "teacher", "prompt_version", "verify")})})
+        formatted = ruff_format([k["text"] for k in kept])
+        for k, f, good in zip(kept, formatted, pool.map(_parse_ok, formatted, chunksize=16)):
+            if good:
+                k["text"] = f
+        stats["kept"] = len(kept)
+        stats["kept_chars"] = sum(len(k["text"]) for k in kept)
+        write_part(kept, name, uploader, stats)
+        for k2, v in stats.items():
+            totals[k2] = totals.get(k2, 0) + v
+        log(f"{name}: {len(recs)} verified -> {len(kept)} kept")
+    return totals
+
+
 # ---------------------------------------------------------------- main
 
 
@@ -734,7 +782,8 @@ def main():
     log(f"job={JOB} shard={SHARD}/{NSHARDS} cpus={os.cpu_count()} ruff={bool(shutil.which('ruff'))}")
     uploader = Uploader()
     with mp.get_context("fork").Pool(os.cpu_count()) as pool:
-        totals = {"stack_edu": job_stack_edu, "fineweb": job_fineweb, "opencoder": job_opencoder}[JOB](uploader, pool)
+        totals = {"stack_edu": job_stack_edu, "fineweb": job_fineweb, "opencoder": job_opencoder,
+                  "synth": job_synth}[JOB](uploader, pool)
     uploader.flush()
     mins = (time.time() - T0) / 60
     summary = {k: v for k, v in totals.items()}

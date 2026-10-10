@@ -324,7 +324,8 @@ def job_dedup():
         cols["part"].append(None)
     N = len(cols["id"])
     src = np.array(cols["source"])
-    rank = np.array([-1 if s == "benchmark" else SOURCE_RANK.get(s, 5) for s in cols["source"]])
+    rank = np.array([-1 if s == "benchmark" else (1 if s.startswith("synth_") else SOURCE_RANK.get(s, 5))
+                     for s in cols["source"]])
     qual = np.array([q if q is not None else 0.0 for q in cols["quality"]], dtype=np.float64)
     nch = np.array(cols["n_chars"], dtype=np.int64)
     order = np.lexsort((-nch, -qual, rank))  # best first
