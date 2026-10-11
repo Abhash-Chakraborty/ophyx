@@ -153,9 +153,8 @@ def start_heartbeat(every_s=600):
                 api.create_repo(repo, repo_type="model", private=True, exist_ok=True)
                 body = {"utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "uptime_s": round(time.time() - T0),
                         **PHASE, "tail": _LOG_TAIL[-40:]}
-                path = os.path.join("/kaggle/tmp" if KAGGLE else out_dir(), "heartbeat.json")
-                json.dump(body, open(path, "w"), indent=1)
-                api.upload_file(path_or_fileobj=path, path_in_repo=name, repo_id=repo, repo_type="model",
+                api.upload_file(path_or_fileobj=json.dumps(body, indent=1).encode(), path_in_repo=name,
+                                repo_id=repo, repo_type="model",
                                 commit_message=f"heartbeat: {PHASE.get('phase')} step {PHASE.get('step')}")
             except Exception as e:
                 if not warned:
