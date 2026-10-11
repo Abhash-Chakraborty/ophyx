@@ -425,7 +425,8 @@ class Data:
 
     def __init__(self, spec, seq, seed, total_steps=None):
         self.seq, self.seed, self.total_steps = seq, seed, total_steps
-        self.phases = spec.get("phases")
+        # copies: a numpy array written back into CONFIG makes the checkpoint meta.json unserializable
+        self.phases = [dict(ph) for ph in spec["phases"]] if spec.get("phases") else None
         self.fim_rate = float(spec.get("fim_rate", 0.0))
         self.fim_buckets = set(spec.get("fim_buckets", []))
         self.buckets = []
@@ -567,7 +568,8 @@ def save_ckpt(state, step, extra):
     np.savez(os.path.join(tmp, "params.npz"), **flat(state[0]))
     np.savez(os.path.join(tmp, "opt.npz"), **flat(state[1]))
     with open(os.path.join(tmp, "meta.json"), "w") as f:
-        json.dump({"step": step, "config": CONFIG, **extra}, f, indent=1)
+        json.dump({"step": step, "config": CONFIG, **extra}, f, indent=1,
+                  default=lambda o: o.tolist() if hasattr(o, "tolist") else str(o))  # never lose a save to meta
     if os.path.isdir(d):  # same step saved before (e.g. a finished run re-launched): replace it
         shutil.rmtree(d)
     os.replace(tmp, d)
