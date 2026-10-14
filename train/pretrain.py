@@ -147,18 +147,25 @@ def start_heartbeat(every_s=600):
     def beat():
         from huggingface_hub import HfApi
         api = HfApi(token=KEYS["HF_TOKEN"])
+        notify(f"session {CONFIG.get('session_name', 'session')} started", f"script up after {time.time() - T0:.0f}s")
         warned = False
         while True:
+            body = {"utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "uptime_s": round(time.time() - T0),
+                    **PHASE, "tail": _LOG_TAIL[-40:]}
+            try:  # copy in the session output, readable after the session even if HF uploads never work
+                with open(os.path.join("/kaggle/working" if KAGGLE else out_dir(), "heartbeat.json"), "w") as f:
+                    json.dump(body, f, indent=1)
+            except Exception:
+                pass
             try:
                 api.create_repo(repo, repo_type="model", private=True, exist_ok=True)
-                body = {"utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "uptime_s": round(time.time() - T0),
-                        **PHASE, "tail": _LOG_TAIL[-40:]}
                 api.upload_file(path_or_fileobj=json.dumps(body, indent=1).encode(), path_in_repo=name,
                                 repo_id=repo, repo_type="model",
                                 commit_message=f"heartbeat: {PHASE.get('phase')} step {PHASE.get('step')}")
             except Exception as e:
                 if not warned:
-                    print(f"heartbeat failed: {type(e).__name__}: {str(e)[:200]}", flush=True)
+                    log(f"heartbeat failed: {type(e).__name__}: {str(e)[:200]}")
+                    notify("heartbeat failed", f"{type(e).__name__}: {str(e)[:300]}", "warning")
                     warned = True
             time.sleep(every_s)
 
@@ -611,10 +618,18 @@ def hf_backup(ckpt_dir, step):
                 time.sleep(60 * (attempt + 1))
 
     global _backup_thread
-    if _backup_thread is not None and _backup_thread.is_alive():
-        _backup_thread.join()  # never two uploads at once
-    _backup_thread = threading.Thread(target=push, daemon=False)
+    if not wait_backup(1800):  # never two uploads at once, and a hung upload must not stall training
+        log(f"previous HF backup still running after 30 min; skipping the backup of step {step}")
+        notify("HF backup stuck", f"skipped the backup of step {step}", "warning")
+        return
+    _backup_thread = threading.Thread(target=push, daemon=True)
     _backup_thread.start()
+
+
+def wait_backup(timeout):
+    if _backup_thread is not None and _backup_thread.is_alive():
+        _backup_thread.join(timeout)
+    return _backup_thread is None or not _backup_thread.is_alive()
 
 
 def hf_restore_if_newer(found):
@@ -904,6 +919,8 @@ def train(data=None):
     set_phase("saving", step=step)
     if stop_reason != "nan" and cfg("save", True):
         hf_backup(save_ckpt((params, opt_state), step, {"n_params": n_params}), step)
+    if not wait_backup(1800):
+        log("final HF backup did not finish within 30 min; the checkpoint is still in the session output")
     status = {"step": step, "total_steps": total_steps, "finished": step >= total_steps, "reason": stop_reason,
               "hours": round((time.time() - T0) / 3600, 2), "tokens_per_s": last_rate, "n_params": n_params,
               "final_loss": round(float(ce), 4)}
