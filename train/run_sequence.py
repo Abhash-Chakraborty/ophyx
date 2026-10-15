@@ -7,6 +7,20 @@ listed last simply stops at the deadline, checkpoints, and is continued by its c
 restores from the HF backup).
 """
 
+def finished_on_hf(run):
+    """A run whose HF status says finished (e.g. an SFT run done in an earlier chain session) is skipped
+    before anything is downloaded."""
+    if not run.get("hf_ckpt_repo") or not KEYS.get("HF_TOKEN"):
+        return False
+    try:
+        from huggingface_hub import hf_hub_download
+        p = hf_hub_download(run["hf_ckpt_repo"], f"{run.get('run_name', 'run')}/status.json", token=KEYS["HF_TOKEN"],
+                            force_download=True)
+        return bool(json.load(open(p)).get("finished"))
+    except Exception:
+        return False
+
+
 start_heartbeat()
 set_phase("sequence start")
 RUNS = CONFIG["runs"]
@@ -14,17 +28,22 @@ SESSION = {k: v for k, v in CONFIG.items() if k != "runs"}
 summary = []
 for i, run in enumerate(RUNS):
     CONFIG.clear()
-    out = os.path.join("/kaggle/working" if KAGGLE else os.path.abspath("run"), run.get("run_name", f"run{i}"))
-    CONFIG.update({**SESSION, **run, "library": True, "out": out})  # own dir: never resume another run's checkpoint
-    log(f"=== run {i + 1}/{len(RUNS)}: {run.get('run_name')} ===")
+    name = {**SESSION, **run}.get("run_name", f"run{i}")  # an empty run entry is the session's own run
+    out = os.path.join("/kaggle/working" if KAGGLE else os.path.abspath("run"), name)
+    CONFIG.update({**SESSION, **run, "run_name": name, "library": True, "out": out})  # own dir per run
+    log(f"=== run {i + 1}/{len(RUNS)}: {name} ===")
+    if finished_on_hf(CONFIG):
+        log(f"{name} already finished (HF status); skipping")
+        summary.append({"run": name, "skipped": "finished"})
+        continue
     try:
         _, status = train()
-        summary.append({"run": run.get("run_name"), **status})
+        summary.append({"run": name, **status})
     except Exception as e:
         import traceback
         traceback.print_exc()
-        summary.append({"run": run.get("run_name"), "error": f"{type(e).__name__}: {str(e)[:300]}"})
-        notify(f"sequence run {run.get('run_name')} FAILED", str(e)[:500], "x")
+        summary.append({"run": name, "error": f"{type(e).__name__}: {str(e)[:300]}"})
+        notify(f"sequence run {name} FAILED", str(e)[:500], "x")
     try:
         import wandb
         if wandb.run is not None:

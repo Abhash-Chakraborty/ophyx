@@ -20,6 +20,8 @@ CONFIG keys (all optional except data):
   ckpt_every_s    checkpoint interval
   export_hf       write a Hugging Face Qwen3 checkpoint when the run completes
   wandb           project name, or null
+  hf_data         {"repo", "patterns", "dir"}: download data files from an HF dataset before reading globs
+  init_from       weights to start from (SFT): checkpoint dir/glob or "hf://<repo>/<run>/latest"
 """
 
 import glob
@@ -672,12 +674,30 @@ def find_latest_ckpt():
     best = None
     for m in cands:
         try:
-            step = json.load(open(m))["step"]
+            meta = json.load(open(m))
+            step = meta["step"]
         except Exception:
             continue
+        if meta.get("config", {}).get("run_name", cfg("run_name", None)) != cfg("run_name", None):
+            continue  # an attached session output can hold several runs' checkpoints
         if best is None or step > best[0]:
             best = (step, os.path.dirname(m))
     return best
+
+
+def fetch_hf_data():
+    """SFT packs (a few GB) come straight from the HF dataset: quicker than attaching them as Kaggle inputs,
+    which can add hours of setup before the script starts."""
+    spec = cfg("hf_data", None)
+    if not spec:
+        return
+    from huggingface_hub import snapshot_download
+    t = time.time()
+    d = snapshot_download(spec["repo"], repo_type="dataset", allow_patterns=spec["patterns"], token=KEYS.get("HF_TOKEN"),
+                          local_dir=spec.get("dir") or ("/kaggle/tmp/hf_data" if KAGGLE else os.path.join(out_dir(), "hf_data")),
+                          max_workers=16)
+    n = sum(os.path.getsize(f) for f in glob.glob(os.path.join(d, "**", "*"), recursive=True) if os.path.isfile(f))
+    log(f"hf_data: {n / 1e9:.2f} GB from {spec['repo']} into {d} in {time.time() - t:.0f}s")
 
 
 def load_params(src, like_params):
@@ -780,6 +800,8 @@ def train(data=None):
     sched = wsd_schedule(cfg("lr", 3e-3), warmup, total_steps, cfg("decay_frac", 0.15), cfg("min_lr_frac", 0.05))
     opt = build_optimizer(sched)
     set_phase("data")
+    if data is None:
+        fetch_hf_data()
     data = data or Data(cfg("data", {}), seq, cfg("seed", 0), total_steps)
     log(f"model {dims}, vocab {vocab}, seq {seq}, {ndev} devices, micro {micro} x accum {accum} = "
         f"{step_tokens:,} tokens/step, {total_steps} steps, warmup {warmup}")
