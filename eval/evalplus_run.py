@@ -6,6 +6,10 @@ outputs that parse as Python.
 
 CONFIG keys: models (list of HF ids or local paths), datasets, batch_size, max_new_tokens,
 smoke (score the canonical solutions instead of generating, to check the harness itself).
+
+A models entry can also be {"id": ..., "chat": true, "prefill": true} for our SFT models: the prompt
+uses the SFT template (<|user|>\n task \n<|python|>\n, answer ends at <|end|>). With prefill, the
+HumanEval answer starts with the function signature and docstring, so the model writes the body.
 """
 
 import ast
@@ -73,6 +77,17 @@ def problems_for(ds):
     return get_human_eval_plus() if ds == "humaneval" else get_mbpp_plus()
 
 
+def chat_prompt(ds, p, prefill):
+    """SFT template. HumanEval: the stub in a fence; MBPP: the description and its example assert."""
+    if ds == "humaneval":
+        task = f"Complete this Python function:\n```python\n{p.strip()}\n```"
+    else:
+        task = p.strip().strip('"').strip()
+    head = f"<|user|>\n{task}\n<|python|>\n"
+    pre = p.rstrip() if prefill and ds == "humaneval" else ""
+    return head + pre, pre
+
+
 def truncate(text, stops):
     cut = min((text.find(s) for s in stops if s in text), default=-1)
     return text if cut < 0 else text[:cut]
@@ -127,8 +142,11 @@ def main():
     from evalplus.sanitize import sanitize
 
     results = {}
-    for model_id in (["canonical"] if SMOKE else MODELS):
-        results[model_id] = {}
+    for entry in (["canonical"] if SMOKE else MODELS):
+        spec = entry if isinstance(entry, dict) else {"id": entry}
+        model_id, chat, prefill = spec["id"], spec.get("chat", False), spec.get("prefill", False)
+        name = model_id + ("|chat" + ("+prefill" if prefill else "") if chat else "")
+        results[name] = {}
         for ds in DATASETS:
             probs = problems_for(ds)
             ids = list(probs)
@@ -139,20 +157,25 @@ def main():
             else:
                 # HumanEval prompts end in "\n"; many tokenizers merge "\n" with the next indent, so a prompt
                 # ending in a bare newline pushes the model into a wrong indent. Let it write the newline.
-                prompts = [probs[i]["prompt"].rstrip() if ds == "humaneval" else probs[i]["prompt"] for i in ids]
-                comps = generate(model_id, prompts, STOPS[ds])
-                raw = [p + truncate(c, STOPS[ds]) for p, c in zip(prompts, comps)]
+                if chat:  # the answer ends at <|end|> (the eos); sanitize keeps the entry point and its helpers
+                    pairs = [chat_prompt(ds, probs[i]["prompt"], prefill) for i in ids]
+                    comps = generate(model_id, [a for a, _ in pairs], ["\n```"])
+                    raw = [pre + truncate(c, ["\n```"]) for (_, pre), c in zip(pairs, comps)]
+                else:
+                    prompts = [probs[i]["prompt"].rstrip() if ds == "humaneval" else probs[i]["prompt"] for i in ids]
+                    comps = generate(model_id, prompts, STOPS[ds])
+                    raw = [p + truncate(c, STOPS[ds]) for p, c in zip(prompts, comps)]
                 sols = [sanitize(r, probs[i]["entry_point"]) for r, i in zip(raw, ids)]
             parse_ok = sum(1 for s in sols if _parses(s)) / len(sols)
-            tag = model_id.replace("/", "__")
+            tag = name.replace("/", "__").replace("|", "_").replace("+", "_")
             sp = os.path.join(OUT, f"{tag}-{ds}.jsonl")
             with open(sp, "w") as f:
                 for i, s in zip(ids, sols):
                     f.write(json.dumps({"task_id": i, "solution": s}) + "\n")
             base, plus = evaluate(ds, sp)
-            results[model_id][ds] = {"base": base, "plus": plus, "parses": round(100 * parse_ok, 1),
+            results[name][ds] = {"base": base, "plus": plus, "parses": round(100 * parse_ok, 1),
                                      "seconds": round(time.time() - t)}
-            log(f"{model_id} {ds}: base {base}%, plus {plus}%, parses {parse_ok:.1%}")
+            log(f"{name} {ds}: base {base}%, plus {plus}%, parses {parse_ok:.1%}")
             json.dump(results, open(os.path.join(OUT, "evalplus_results.json"), "w"), indent=1)
     lines = [f"{m.split('/')[-1]}: " + ", ".join(f"{d} {r['plus']}%+" for d, r in v.items()) for m, v in results.items()]
     log("SUMMARY\n" + "\n".join(lines))
