@@ -16,3 +16,14 @@ matches the numbers in Qwen's report exactly. Reference solutions score 99.4% on
 timeout on a slow CPU).
 
 Targets for our models (PLAN.md): nano (125M) above SmolLM2-360M, base (350M) at 30–40% HumanEval+.
+
+## Our checkpoints
+
+Same script and settings as the baselines above.
+
+| Model | Params | Tokens | HumanEval | HumanEval+ | MBPP | MBPP+ |
+|---|---|---|---|---|---|---|
+| nano125m-v1 (step 7629, 15 Oct 2026) | 126M | 2B | 17.7 | 15.9 | 25.4 | 20.9 |
+
+nano125m-v1 beats SmolLM2-360M on HumanEval+ (15.9 vs 9.8) and lands just under it on MBPP+ (20.9 vs
+22.2), at a third of the size. Every output parsed as Python.
