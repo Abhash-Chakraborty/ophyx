@@ -54,6 +54,8 @@ def load_keys():
 
 
 KEYS = load_keys()
+if KEYS.get("HF_TOKEN"):  # our own checkpoints live in private HF repos
+    os.environ.setdefault("HF_TOKEN", KEYS["HF_TOKEN"])
 
 
 def notify(title, msg, tags="bar_chart"):
