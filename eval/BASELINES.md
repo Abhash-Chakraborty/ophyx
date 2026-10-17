@@ -24,6 +24,16 @@ Same script and settings as the baselines above.
 | Model | Params | Tokens | HumanEval | HumanEval+ | MBPP | MBPP+ |
 |---|---|---|---|---|---|---|
 | nano125m-v1 (step 7629, 15 Oct 2026) | 126M | 2B | 17.7 | 15.9 | 25.4 | 20.9 |
+| nano125m-sft-v1, completion prompt | 126M | 2B + 0.6B SFT | 20.7 | 19.5 | 0.0 | 0.0 |
+| nano125m-sft-v1, SFT template | 126M | 2B + 0.6B SFT | 17.1 | 15.2 | 43.1 | 36.8 |
+| nano125m-sft-v1, SFT template + signature prefill | 126M | 2B + 0.6B SFT | 17.7 | 16.5 | 43.1 | 36.8 |
 
 nano125m-v1 beats SmolLM2-360M on HumanEval+ (15.9 vs 9.8) and lands just under it on MBPP+ (20.9 vs
 22.2), at a third of the size. Every output parsed as Python.
+
+nano125m-sft-v1 is nano125m-v1 after 600M tokens of SFT (OpenCoder stage 1 then stage 2, filtered
+to Python and decontaminated; 0.7 h on a v5e-8). MBPP+ goes from 20.9 to 36.8 with the SFT template.
+HumanEval+ is best as plain completion (19.5). The completion MBPP score of 0 is a prompt mismatch:
+the MBPP prompt is a bare docstring, and the SFT model ends its answer there instead of writing a
+function. The MBPP numbers are the same with and without prefill because prefill only applies to
+HumanEval.
