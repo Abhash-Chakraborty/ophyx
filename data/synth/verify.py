@@ -8,7 +8,8 @@ environment, and no network (the session has internet off and no secrets attache
   exercise/design/  `pytest module.py` must pass with at least 4 tests and no failures
   errors
 
-Writes /kaggle/working/verified/<batch>.jsonl and a stats file. Restart-safe per batch.
+Writes /kaggle/working/verified/<batch>.jsonl and a stats file. Restart-safe per batch. With
+{"keep_failures": true} it also writes <batch>.failed.jsonl (each failure with its output tail).
 """
 
 import concurrent.futures as cf
@@ -136,6 +137,11 @@ def main():
                     if res["ok"]:
                         f.write(json.dumps({**r, "verify": {k: res.get(k) for k in ("passed", "sec")}}) + "\n")
             os.replace(dest + ".tmp", dest)
+            if CONFIG.get("keep_failures"):  # every failure with its pytest output, for a repair round
+                with open(os.path.join(OUT, name + ".failed.jsonl"), "w") as f:
+                    for r, res in zip(recs, results):
+                        if not res["ok"]:
+                            f.write(json.dumps({**r, "why": res["why"], "tail": res.get("tail", "")}) + "\n")
             fails = [(r["kind"], r["leaf"], res["why"], res.get("tail", "")[-300:]) for r, res in zip(recs, results) if not res["ok"]][:20]
             json.dump({"stats": stats, "sample_failures": fails}, open(os.path.join(OUT, name + ".stats.json"), "w"), indent=1)
             for k, v in stats.items():
