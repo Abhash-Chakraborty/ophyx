@@ -8,6 +8,8 @@ output or the HF backup), trains until its budget, saves and exits. This script:
   - stops, with a phone notification, when the run has finished, hit a NaN, or failed twice in a row;
   - otherwise pushes the next session.
 
+A chain with "after": "<run>" waits until that run's HF status says finished (SFT after pretraining).
+
 State lives next to the checkpoint backup on HF: <run>/status.json (written by the trainer) and
 <run>/chain_state.json (written here). Needs KAGGLE_API_TOKEN, HF_TOKEN and NTFY_TOPIC in the environment.
 """
@@ -105,6 +107,9 @@ def check(chain_path):
     state = hf.read("chain_state.json") or {"last": None, "failures": 0, "sessions": 0, "stopped": False}
     if state.get("stopped"):
         print(f"{name}: stopped ({state.get('why')})")
+        return
+    if chain.get("after") and not (HF(chain["config"]["hf_ckpt_repo"], chain["after"]).read("status.json") or {}).get("finished"):
+        print(f"{name}: waiting for {chain['after']} to finish")  # e.g. SFT on a base run that is still training
         return
     statuses = {k: kernel_status(k) for k in chain["kernels"]}
     print(f"{name}: {statuses}, state {state}")

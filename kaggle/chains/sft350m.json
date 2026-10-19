@@ -1,0 +1,92 @@
+{
+ "enabled": true,
+ "after": "base350m-v1",
+ "script": "train/pretrain.py",
+ "accel": "tpu",
+ "timeout": 32400,
+ "kernels": [
+  "pycoder-train-sft350m-a",
+  "pycoder-train-sft350m-b"
+ ],
+ "datasets": [
+  "pycoder-keys"
+ ],
+ "config": {
+  "vocab": 32768,
+  "seq": 2048,
+  "eos_id": 0,
+  "optimizer": "muon",
+  "attention": "xla",
+  "remat": "full",
+  "loss_chunk": 512,
+  "decay_frac": 0.9,
+  "min_lr_frac": 0.1,
+  "budget_s": 30600,
+  "margin_s": 1500,
+  "ckpt_every_s": 3600,
+  "log_every": 50,
+  "eval_every": 200,
+  "export_hf": true,
+  "wandb": null,
+  "hf_ckpt_repo": "abhash-chakraborty/pycoder-runs",
+  "model": "base",
+  "micro_batch": 8,
+  "batch_tokens": 262144,
+  "total_tokens": 600000000,
+  "lr": 0.0004,
+  "warmup_tokens": 30000000,
+  "run_name": "base350m-sft-v1",
+  "session_name": "sft350m",
+  "init_from": "hf://abhash-chakraborty/pycoder-runs/base350m-v1/latest",
+  "hf_data": {
+   "repo": "abhash-chakraborty/pycoder-data",
+   "dir": "/kaggle/tmp/hf_data",
+   "patterns": [
+    "v1/sft/*/tokens/*/*.bin",
+    "v1/sft/*/mask/*/*.bin"
+   ]
+  },
+  "data": {
+   "buckets": {
+    "sft_stage1": {
+     "glob": "/kaggle/tmp/hf_data/v1/sft/stage1/tokens/train/*.bin",
+     "mask_glob": "/kaggle/tmp/hf_data/v1/sft/stage1/mask/train/*.bin",
+     "aligned": true,
+     "weight": 1.0
+    },
+    "sft_stage2": {
+     "glob": "/kaggle/tmp/hf_data/v1/sft/stage2/tokens/train/*.bin",
+     "mask_glob": "/kaggle/tmp/hf_data/v1/sft/stage2/mask/train/*.bin",
+     "aligned": true,
+     "weight": 0.0
+    },
+    "sft_synth": {
+     "glob": "/kaggle/tmp/hf_data/v1/sft/synth/tokens/train/*.bin",
+     "mask_glob": "/kaggle/tmp/hf_data/v1/sft/synth/mask/train/*.bin",
+     "aligned": true,
+     "weight": 0.0
+    }
+   },
+   "val_glob": "/kaggle/tmp/hf_data/v1/sft/*/tokens/val/*.bin",
+   "val_mask_glob": "/kaggle/tmp/hf_data/v1/sft/*/mask/val/*.bin",
+   "phases": [
+    {
+     "until": 0.65,
+     "weights": {
+      "sft_stage1": 1.0,
+      "sft_stage2": 0.0,
+      "sft_synth": 0.0
+     }
+    },
+    {
+     "until": 1.0,
+     "weights": {
+      "sft_stage1": 0.22,
+      "sft_stage2": 0.73,
+      "sft_synth": 0.05
+     }
+    }
+   ]
+  }
+ }
+}
