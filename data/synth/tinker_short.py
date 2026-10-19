@@ -203,7 +203,7 @@ def main():
         name_for = lambda se: f"t{se[0]:07d}"
     else:
         failed = [json.loads(l) for p in sorted(glob.glob(os.path.join(a.failed, "*.failed.jsonl"))) for l in open(p) if l.strip()]
-        failed = [r for r in failed if r["id"] not in set(state["repaired"]) and r.get("why") == "tests_failed"]
+        failed = [r for r in failed if r["id"] not in set(state["repaired"]) and r.get("why") == "tests_failed" and not r.get("repair_of")]  # one repair round per sample
         work = [(k, min(len(failed), k + a.batch)) for k in range(0, len(failed), a.batch)]
         jobs_for = lambda se: [({k: v for k, v in r.items() if k not in ("code", "tail", "why", "usage")} | {
             "id": r["id"] + "-r1", "repair_of": r["id"], "broken_code": r["code"], "error": r["tail"][-1500:]},
