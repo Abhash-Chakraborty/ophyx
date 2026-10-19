@@ -1,7 +1,9 @@
 """SFT data builder: OpenCoder SFT sets -> one-Python-module responses -> tokens + loss masks. Kaggle CPU.
 
 CONFIG keys:
-  stage       "stage1" (OpenCoder-LLM/opc-sft-stage1, our stage 3a) or "stage2" (opc-sft-stage2, stage 3b)
+  stage       "stage1" (OpenCoder-LLM/opc-sft-stage1, our stage 3a) or "stage2" (opc-sft-stage2, stage 3b), or
+              "synth": our verified short exercises (data/synth/tinker_short.py -> verify.py), read from
+              synth_glob (default: verified batches attached from the pycoder-verify-tinker session)
   shard, nshards   sharding by source file (default 1 shard: exact dedup is then global)
   version     input version for the tokenizer (default v1); out_version: where outputs go (default = version)
   smoke       true: ~smoke_rows rows from the datasets-server rows API, no uploads, outputs under WORK
@@ -96,6 +98,7 @@ T0 = time.time()
 SOURCES = {
     "stage1": ("OpenCoder-LLM/opc-sft-stage1", ["filtered_infinity_instruct", "largescale_diverse_instruct", "realuser_instruct"]),
     "stage2": ("OpenCoder-LLM/opc-sft-stage2", ["educational_instruct", "evol_instruct", "mceval_instruct", "package_instruct"]),
+    "synth": (None, ["tinker_short"]),
 }
 SPECIALS = ["<|end|>", "<|user|>", "<|python|>", "<|fim_prefix|>", "<|fim_middle|>", "<|fim_suffix|>",
             "<|file_sep|>", "<|repo|>", "<|pad|>"]
@@ -987,6 +990,45 @@ def process_part(tag, source, rows, pool, tok, seen, uploader):
     return out, recs
 
 
+def split_task(code):
+    """Module with a task docstring -> (task text, the rest of the module), or None."""
+    try:
+        t = ast.parse(code)
+    except SyntaxError:
+        return None
+    doc = ast.get_docstring(t)
+    if not doc or not t.body[1:]:
+        return None
+    rest = "\n".join(code.split("\n")[t.body[0].end_lineno:]).strip("\n") + "\n"
+    return doc.strip(), rest
+
+
+REPAIR_PROMPT = "This Python module fails its tests.\n\n```python\n{code}\n```\n\npytest output:\n\n```\n{error}\n```\n\nFix it."
+
+
+def synth_rows():
+    """Verified exercises -> rows. Each gives "task -> solution and tests"; a repaired one also gives
+    "broken module + pytest output -> fixed module" (self-repair)."""
+    rows, seen_ids = [], set()
+    paths = sorted(p for p in glob.glob(CONFIG.get("synth_glob", "/kaggle/input/**/verified/batch-*.jsonl"), recursive=True)
+                   if not p.endswith(".failed.jsonl"))
+    for p in paths:
+        for line in open(p):
+            r = json.loads(line)
+            if r["id"] in seen_ids:
+                continue
+            seen_ids.add(r["id"])
+            st = split_task(r["code"])
+            if st:
+                rows.append({"instruction": st[0], "output": st[1], "tag": "task", "seq_id": r["id"]})
+            if r.get("repair_of"):
+                err = "\n".join(r["error"].strip().split("\n")[-25:])
+                rows.append({"instruction": REPAIR_PROMPT.format(code=r["broken_code"].strip("\n"), error=err),
+                             "output": r["code"], "tag": "repair", "seq_id": r["id"]})
+    log(f"synth: {len(seen_ids)} verified samples from {len(paths)} files -> {len(rows)} rows")
+    return rows
+
+
 def chunks_of(path, cols):
     """Exact CHUNK-row slices by absolute row position, independent of Parquet row groups."""
     import pyarrow.parquet as pq
@@ -1069,7 +1111,16 @@ def main():
     log(f"{len(seen):,} example ids from finished parts")
     this_run, samples = {}, []
     with mp.get_context("fork").Pool(PROCS) as pool:
-        if SMOKE:
+        if STAGE == "synth":  # small: one part, also in smoke mode (which then just skips uploads)
+            rows = synth_rows()
+            tag = f"tinker-short-{CONFIG.get('synth_tag', 'v1')}"
+            if f"{PREFIX}/_done/{tag}.json" not in uploader.done:
+                out, recs = process_part(tag, "tinker_short", rows, pool, tok, seen, uploader)
+                this_run[tag] = out
+                if SMOKE:
+                    with open(os.path.join(WORK, "samples.jsonl"), "w") as fh:
+                        fh.writelines(json.dumps(r) + "\n" for r in recs)
+        elif SMOKE:
             n = CONFIG.get("smoke_rows", 200)
             for c in configs:
                 rows = smoke_rows(src_repo, c, -(-n // len(configs)), CONFIG.get("smoke_offset", 0))
