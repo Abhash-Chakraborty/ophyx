@@ -27,9 +27,14 @@ Same script and settings as the baselines above.
 | nano125m-sft-v1, completion prompt | 126M | 2B + 0.6B SFT | 20.7 | 19.5 | 0.0 | 0.0 |
 | nano125m-sft-v1, SFT template | 126M | 2B + 0.6B SFT | 17.1 | 15.2 | 43.1 | 36.8 |
 | nano125m-sft-v1, SFT template + signature prefill | 126M | 2B + 0.6B SFT | 17.7 | 16.5 | 43.1 | 36.8 |
+| base350m-v1 (step 22888, 20 Oct 2026) | 349M | 12B | 32.9 | 31.7 | 49.7 | 42.3 |
 
 nano125m-v1 beats SmolLM2-360M on HumanEval+ (15.9 vs 9.8) and lands just under it on MBPP+ (20.9 vs
 22.2), at a third of the size. Every output parsed as Python.
+
+base350m-v1 is the 350M base model after 12B tokens (about 31 TPU hours over five Kaggle sessions).
+It reaches the 30–40% HumanEval+ target before any SFT: 31.7, ahead of Qwen2.5-Coder-0.5B (22.0) at
+70% of its size. On MBPP+ it is 6 points behind (42.3 vs 48.4). Every output parsed as Python.
 
 nano125m-sft-v1 is nano125m-v1 after 600M tokens of SFT (OpenCoder stage 1 then stage 2, filtered
 to Python and decontaminated; 0.7 h on a v5e-8). MBPP+ goes from 20.9 to 36.8 with the SFT template.
