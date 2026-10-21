@@ -1,5 +1,5 @@
 {
- "enabled": false,
+ "enabled": true,
  "after": "ctx350m-v1",
  "script": "train/pretrain.py",
  "accel": "tpu",
@@ -85,21 +85,21 @@
     {
      "until": 0.5,
      "weights": {
-      "sft_stage1": 0.85,
+      "sft_stage1": 0.94,
       "sft_stage2": 0.0,
       "sft_synth": 0.0,
-      "sft_bank": 0.08,
-      "sft_repair": 0.07
+      "sft_bank": 0.02,
+      "sft_repair": 0.04
      }
     },
     {
      "until": 1.0,
      "weights": {
-      "sft_stage1": 0.18,
-      "sft_stage2": 0.55,
+      "sft_stage1": 0.22,
+      "sft_stage2": 0.64,
       "sft_synth": 0.05,
-      "sft_bank": 0.1,
-      "sft_repair": 0.12
+      "sft_bank": 0.03,
+      "sft_repair": 0.06
      }
     }
    ]

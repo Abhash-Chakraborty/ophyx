@@ -52,7 +52,10 @@ def log(*a):
 
 def sh(cmd, **kw):
     log("$", cmd if isinstance(cmd, str) else " ".join(cmd))
-    return subprocess.run(cmd, shell=isinstance(cmd, str), check=True, text=True, capture_output=True, **kw).stdout
+    r = subprocess.run(cmd, shell=isinstance(cmd, str), text=True, capture_output=True, **kw)
+    if r.returncode != 0:
+        raise SystemExit(f"exit {r.returncode}\nstdout: {r.stdout[-2000:]}\nstderr: {r.stderr[-3000:]}")
+    return r.stdout
 
 
 def main():
@@ -108,7 +111,7 @@ def main():
     for s in SNIPPETS:
         want = tok(s, add_special_tokens=False)["input_ids"]
         out = sh([os.path.join(lc, "build", "bin", "llama-tokenize"), "-m", gg, "-p", s, "--ids", "--log-disable",
-                  "--no-bos", "--parse-special"])
+                  "--no-bos"])  # special tokens are parsed by default
         got = json.loads(out.strip().splitlines()[-1])
         toks.append({"text": s, "match": got == want, "hf": len(want), "gguf": len(got)})
     check["tokens_all_match"] = all(t["match"] for t in toks)
