@@ -3,7 +3,9 @@
 CONFIG keys:
   stage       "stage1" (OpenCoder-LLM/opc-sft-stage1, our stage 3a) or "stage2" (opc-sft-stage2, stage 3b), or
               "synth": our verified short exercises (data/synth/tinker_short.py -> verify.py), read from
-              synth_glob (default: verified batches attached from the pycoder-verify-tinker session)
+              synth_glob (default: verified batches attached from the pycoder-verify-tinker session), or
+              "repair" / "bank": rows prepared by bug_inject.py / verify_bank.py, read from rows_glob
+              (default /kaggle/input/**/sft_rows/<stage>-*.jsonl), parts of `chunk` rows
   shard, nshards   sharding by source file (default 1 shard: exact dedup is then global)
   version     input version for the tokenizer (default v1); out_version: where outputs go (default = version)
   smoke       true: ~smoke_rows rows from the datasets-server rows API, no uploads, outputs under WORK
@@ -99,6 +101,8 @@ SOURCES = {
     "stage1": ("OpenCoder-LLM/opc-sft-stage1", ["filtered_infinity_instruct", "largescale_diverse_instruct", "realuser_instruct"]),
     "stage2": ("OpenCoder-LLM/opc-sft-stage2", ["educational_instruct", "evol_instruct", "mceval_instruct", "package_instruct"]),
     "synth": (None, ["tinker_short"]),
+    "repair": (None, ["repair"]),  # bug-injection repair pairs (data/jobs/bug_inject.py), rows from rows_glob
+    "bank": (None, ["bank"]),  # verified problem-bank solutions (data/jobs/verify_bank.py), rows from rows_glob
 }
 SPECIALS = ["<|end|>", "<|user|>", "<|python|>", "<|fim_prefix|>", "<|fim_middle|>", "<|fim_suffix|>",
             "<|file_sep|>", "<|repo|>", "<|pad|>"]
@@ -258,6 +262,10 @@ def bench_items():
         ("livecodebench", lambda: hf_records("livecodebench/code_generation_lite", lambda f: f.endswith(".jsonl")),
          ["question_content", "starter_code"], "question_id"),
         ("apps_test", lambda: hf_records("codeparrot/apps", lambda f: "test" in f), ["question", "solutions"], "problem_id"),
+        ("code_contests_test", lambda: hf_records("deepmind/code_contests", lambda f: "/test-" in f or "/valid-" in f),
+         ["description"], "name"),
+        ("concept_suite", lambda: hf_records(REPO, lambda f: f == "eval/concept_suite/tasks.jsonl"), ["prompt", "reference"],
+         "task_id"),
     ]
     report = {}
     if SMOKE:
@@ -1029,6 +1037,21 @@ def synth_rows():
     return rows
 
 
+def file_rows():
+    """Rows prepared by another job ({"instruction", "output", "tag", "seq_id"} per line), from rows_glob."""
+    rows, seen_ids = [], set()
+    paths = sorted(glob.glob(CONFIG.get("rows_glob", f"/kaggle/input/**/sft_rows/{STAGE}-*.jsonl"), recursive=True))
+    for p in paths:
+        for line in open(p):
+            r = json.loads(line)
+            if r["seq_id"] in seen_ids:
+                continue
+            seen_ids.add(r["seq_id"])
+            rows.append(r)
+    log(f"{STAGE}: {len(rows)} rows from {len(paths)} files")
+    return rows
+
+
 def chunks_of(path, cols):
     """Exact CHUNK-row slices by absolute row position, independent of Parquet row groups."""
     import pyarrow.parquet as pq
@@ -1120,6 +1143,20 @@ def main():
                 if SMOKE:
                     with open(os.path.join(WORK, "samples.jsonl"), "w") as fh:
                         fh.writelines(json.dumps(r) + "\n" for r in recs)
+        elif STAGE in ("repair", "bank"):
+            rows = file_rows()
+            if SMOKE:
+                rows = rows[:CONFIG.get("smoke_rows", 200)]
+            for k in range(0, len(rows), CHUNK):
+                tag = f"{STAGE}-{CONFIG.get('rows_tag', 'v1')}-c{k // CHUNK:03d}"
+                if f"{PREFIX}/_done/{tag}.json" in uploader.done:
+                    continue
+                out, recs = process_part(tag, STAGE, rows[k:k + CHUNK], pool, tok, seen, uploader)
+                this_run[tag] = out
+                samples += recs[:50]
+            if SMOKE:
+                with open(os.path.join(WORK, "samples.jsonl"), "w") as fh:
+                    fh.writelines(json.dumps(r) + "\n" for r in samples)
         elif SMOKE:
             n = CONFIG.get("smoke_rows", 200)
             for c in configs:
@@ -1168,7 +1205,7 @@ def main():
            f"{out['minutes']:.0f} min", "white_check_mark")
 
 
-if __name__ == "__main__":
+if __name__ == "__main__" and not CONFIG.get("library"):
     try:
         main()
     except Exception as e:
