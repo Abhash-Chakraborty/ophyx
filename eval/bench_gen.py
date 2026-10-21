@@ -17,8 +17,8 @@ Prompt formats, chosen to match how each family is usually reported:
   ours      the pycoder SFT template <|user|>\\n...\\n<|python|>\\n, answer ends at <|end|>;
             the function signature (HumanEval, BigCodeBench) or starter code (LiveCodeBench) is prefilled
 
-Tiny models run two at a time, one per T4, each in its own process (vLLM frees GPU memory reliably
-only on exit). Models with "tp": 2 use both GPUs. A model vLLM can't load falls back to transformers.
+Tiny models run two at a time, one per T4, each in its own forked process (vLLM frees GPU memory
+reliably only on exit). Models with "tp": 2 use both GPUs. A model vLLM can't load falls back to transformers.
 """
 
 import glob
@@ -374,33 +374,54 @@ def setup():
         k = json.load(open(keys[0]))
         if k.get("HF_TOKEN"):
             os.environ["HF_TOKEN"] = k["HF_TOKEN"]
-    if os.path.isdir("/kaggle") and not os.environ.get("BENCH_CHILD"):
+    if os.path.isdir("/kaggle"):
         subprocess.run([sys.executable, "-m", "pip", "install", "-q", "vllm"], check=False)
         # vllm brings its own torch build; the preinstalled torchaudio no longer matches and breaks transformers
         subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "-q", "torchaudio"], check=False)
 
 
-def child_main():
-    spec = json.loads(os.environ["BENCH_CHILD"])
-    run_model(spec)
+def child(spec, gpus, logf):
+    """One model in a forked process: CUDA is first touched here, and all GPU memory goes back on exit."""
+    fd = os.open(logf, os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+    os.dup2(fd, 1)
+    os.dup2(fd, 2)
+    os.environ["CUDA_VISIBLE_DEVICES"] = gpus
+    os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+    try:
+        run_model(spec)
+    except BaseException:
+        import traceback
+        traceback.print_exc()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(1)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
 
 
 def orchestrate():
+    """Kaggle runs a script kernel as a notebook, so there is no file to re-run: fork one process per model.
+    The parent never imports torch or vLLM, so forking is safe."""
+    import multiprocessing as mp
     setup()
-    script = os.path.abspath(sys.argv[0]) if sys.argv and os.path.exists(sys.argv[0]) else None
-    models = CONFIG["models"]
+    ctx = mp.get_context("fork")
+    models = list(CONFIG["models"])
     done = {}
     os.makedirs(os.path.join(OUT, "logs"), exist_ok=True)
 
     def run_child(spec, gpus):
         name = model_name(spec)
         logf = os.path.join(OUT, "logs", f"{name}.log")
-        env = {**os.environ, "BENCH_CHILD": json.dumps(spec), "CUDA_VISIBLE_DEVICES": gpus,
-               "VLLM_WORKER_MULTIPROC_METHOD": "spawn"}
         t = time.time()
-        with open(logf, "w") as lf:
-            rc = subprocess.run([sys.executable, script], env=env, stdout=lf, stderr=subprocess.STDOUT).returncode
-        tail = open(logf).read()[-1500:]
+        p = ctx.Process(target=child, args=(spec, gpus, logf))
+        p.start()
+        p.join(CONFIG.get("model_timeout_s", 3 * 3600))
+        if p.is_alive():
+            p.kill()
+            p.join()
+        rc = p.exitcode
+        tail = open(logf).read()[-1500:] if os.path.exists(logf) else ""
         if not spec["id"].startswith("/"):  # 7B weights are 15 GB each: free the disk for the next model
             hub = os.path.expanduser(os.path.join(os.environ.get("HF_HOME", "~/.cache/huggingface"), "hub"))
             subprocess.run(["rm", "-rf", os.path.join(hub, "models--" + spec["id"].replace("/", "--"))], check=False)
@@ -408,10 +429,6 @@ def orchestrate():
         log(f"{name}: rc {rc} in {time.time() - t:.0f}s" + ("" if rc == 0 else f"\n{tail}"))
         json.dump(done, open(os.path.join(OUT, "gen_status.json"), "w"), indent=1)
 
-    if script is None:  # no file to re-run: one model at a time in this process
-        for spec in models:
-            run_model(spec)
-        return
     single = [m for m in models if m.get("tp", 1) == 1]
     double = [m for m in models if m.get("tp", 1) == 2]
     lock = threading.Lock()
@@ -435,8 +452,4 @@ def orchestrate():
 
 
 if __name__ == "__main__":
-    if os.environ.get("BENCH_CHILD"):
-        setup()
-        child_main()
-    else:
-        orchestrate()
+    orchestrate()
