@@ -18,7 +18,7 @@ Filters, each counted in stats.json: no Python 3 solution that parses, no tests,
 statement, file input/output, statement too short or too long, non-English, decontamination (the
 10-gram rule of stageb.py against HumanEval(+), MBPP(+), LiveCodeBench, CRUXEval, BigCodeBench,
 DS-1000 and the concept suite; APPS test and CodeContests test/valid need a match covering a quarter
-of the statement, see WEAK_BENCH), and duplicates across sources
+of the statement, see WEAK_BENCH in sft_build.py), and duplicates across sources
 (exact normalised statement, then MinHash LSH on word 5-grams, Jaccard >= 0.8). A duplicate group
 keeps the copy with the most tests and pools the distinct solutions.
 
@@ -105,26 +105,6 @@ def cc_level(rating):
     return 1 if rating < 1200 else 2 if rating < 1600 else 3 if rating < 2000 else 4 if rating < 2400 else 5
 
 
-# APPS test and CodeContests test/valid are contest problems in the same style as the bank, so contest
-# boilerplate ("the first line contains an integer t, the number of test cases") gives a few shared
-# 10-grams with problems that are not the same. For those two sets a match must cover at least a
-# quarter of the statement's 10-grams; the first run with the plain rule flagged 1,172 of the 5,000
-# APPS train problems as copies of APPS test, which is a disjoint split.
-WEAK_BENCH = {"apps_test", "code_contests_test"}
-
-
-def bank_contamination(question, solution):
-    hits = collections.Counter(BENCH[g] for g in ngrams(question + "\n" + solution) if g in BENCH)
-    q_grams = max(1, len(ngrams(question)))
-    for pid, n in hits.most_common():
-        if pid.split("/")[0] in WEAK_BENCH:
-            if n >= max(3, 0.25 * q_grams):
-                return pid
-        elif n >= 3:
-            return pid
-    return None
-
-
 def record(source, pid, question, solutions, fn_name, tests, **meta):
     BANK_STATS[f"{source}/rows"] += 1
     if not question or len(question) < 80:
@@ -141,7 +121,7 @@ def record(source, pid, question, solutions, fn_name, tests, **meta):
     tests = pick_tests(tests)
     if not tests:
         return BANK_STATS.update([f"{source}/no_tests"])
-    hit = bank_contamination(question, sols[0])
+    hit, _ = contamination(question + "\n" + sols[0], question)
     if hit:
         BANK_STATS[f"contaminated_by/{hit.split('/')[0]}"] += 1
         return BANK_STATS.update([f"{source}/contaminated"])

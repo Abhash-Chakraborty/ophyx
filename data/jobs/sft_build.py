@@ -5,7 +5,10 @@ CONFIG keys:
               "synth": our verified short exercises (data/synth/tinker_short.py -> verify.py), read from
               synth_glob (default: verified batches attached from the pycoder-verify-tinker session), or
               "repair" / "bank": rows prepared by bug_inject.py / verify_bank.py, read from rows_glob
-              (default /kaggle/input/**/sft_rows/<stage>-*.jsonl), parts of `chunk` rows
+              (default /kaggle/input/**/sft_rows/<stage>-*.jsonl), parts of `chunk` rows, or
+              "expert" / "selfrepair": rows from bank_judge.py (a passing sample of our own model, and the
+              model's failing program plus its error -> a passing sample), handled the same way; their
+              default rows_glob is /kaggle/input/**/judged/*/<stage>-*.jsonl
   shard, nshards   sharding by source file (default 1 shard: exact dedup is then global)
   version     input version for the tokenizer (default v1); out_version: where outputs go (default = version)
   smoke       true: ~smoke_rows rows from the datasets-server rows API, no uploads, outputs under WORK
@@ -34,7 +37,8 @@ Pipeline per example (drop reasons are counted at every step, per source, in the
      `return` outside a function). Secrets and personal data are redacted (as in ingest.py), then
      `ruff format`; a format that breaks compilation is reverted. Modules using a name that is never
      defined (ruff F821) are dropped: they are snippets, not complete modules.
-  4. Decontamination: same 10-gram rule as stageb.py, on prompt + module.
+  4. Decontamination: same 10-gram rule as stageb.py, on prompt + module (weaker for APPS and
+     CodeContests test, see WEAK_BENCH).
   5. Exact dedup on sha1(prompt, module). Parts run in a fixed order and a restart reloads the ids
      of finished parts, so with one shard the result is global and deterministic. With several
      shards, each shard also sees parts other shards finished before it started; every duplicate
@@ -103,7 +107,10 @@ SOURCES = {
     "synth": (None, ["tinker_short"]),
     "repair": (None, ["repair"]),  # bug-injection repair pairs (data/jobs/bug_inject.py), rows from rows_glob
     "bank": (None, ["bank"]),  # verified problem-bank solutions (data/jobs/verify_bank.py), rows from rows_glob
+    "expert": (None, ["expert"]),  # passing samples of our own model (data/jobs/bank_judge.py), rows from rows_glob
+    "selfrepair": (None, ["selfrepair"]),  # the model's failing program + its error -> a passing sample (bank_judge.py)
 }
+ROW_STAGES = ("repair", "bank", "expert", "selfrepair")
 SPECIALS = ["<|end|>", "<|user|>", "<|python|>", "<|fim_prefix|>", "<|fim_middle|>", "<|fim_suffix|>",
             "<|file_sep|>", "<|repo|>", "<|pad|>"]
 
@@ -308,12 +315,26 @@ def build_bench_index():
     return index, items
 
 
-def contamination(text):
+# Competitive-programming statements share boilerplate ("The first line contains an integer n"), so for
+# these benchmarks three shared 10-grams is not evidence: the bank's first run flagged 1,172 of the 5,000
+# APPS train problems as APPS test copies, though the splits are disjoint. A match there has to cover a
+# quarter of `ref`'s 10-grams (the statement, or the whole text).
+WEAK_BENCH = {"apps_test", "code_contests_test"}
+
+
+def contamination(text, ref=None):
     hits = collections.Counter(BENCH[g] for g in ngrams(text) if g in BENCH)
     if not hits:
         return None, 0
-    pid, n = hits.most_common(1)[0]
-    return (pid if n >= 3 else None), n
+    bar = None
+    for pid, n in hits.most_common():
+        if pid.split("/")[0] in WEAK_BENCH:
+            bar = bar or max(3, 0.25 * len(ngrams(text if ref is None else ref)))
+            if n >= bar:
+                return pid, n
+        elif n >= 3:
+            return pid, n
+    return None, hits.most_common(1)[0][1]
 
 
 # ---------------------------------------------------------------- redaction (copied from ingest.py)
@@ -1040,7 +1061,9 @@ def synth_rows():
 def file_rows():
     """Rows prepared by another job ({"instruction", "output", "tag", "seq_id"} per line), from rows_glob."""
     rows, seen_ids = [], set()
-    paths = sorted(glob.glob(CONFIG.get("rows_glob", f"/kaggle/input/**/sft_rows/{STAGE}-*.jsonl"), recursive=True))
+    default = f"/kaggle/input/**/judged/*/{STAGE}-*.jsonl" if STAGE in ("expert", "selfrepair") else \
+        f"/kaggle/input/**/sft_rows/{STAGE}-*.jsonl"
+    paths = sorted(glob.glob(CONFIG.get("rows_glob", default), recursive=True))
     for p in paths:
         for line in open(p):
             r = json.loads(line)
@@ -1143,7 +1166,7 @@ def main():
                 if SMOKE:
                     with open(os.path.join(WORK, "samples.jsonl"), "w") as fh:
                         fh.writelines(json.dumps(r) + "\n" for r in recs)
-        elif STAGE in ("repair", "bank"):
+        elif STAGE in ROW_STAGES:
             rows = file_rows()
             if SMOKE:
                 rows = rows[:CONFIG.get("smoke_rows", 200)]
