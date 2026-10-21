@@ -409,6 +409,56 @@ Conversion rules for every response:
 - Type hints on public functions; `if __name__ == "__main__":` demo where it helps.
 - Check licences of each public dataset, and decontaminate them like everything else.
 
+## Problem bank and repair data
+
+Built 21–22 October 2026 by `data/jobs/problem_bank.py`, `verify_bank.py` and `bug_inject.py`, all on
+Kaggle CPU. Anything that runs solutions or mutants runs offline with no keys attached.
+
+The bank takes the train splits of TACO (Apache-2.0), CodeContests (CC BY 4.0) and APPS (MIT).
+I keep Python 3 solutions only, drop problems with images or file I/O, and keep up to 5
+solutions and 25 tests per problem. Of 43,119 source rows, 19,585 survive those filters. MinHash
+dedup (similarity 0.8 on 5-word shingles) merges 6,941 copies, leaving 12,644 problems: 9,583
+TACO, 2,807 CodeContests and 254 APPS. 2,602 are call-based (a function with JSON arguments) and
+the rest read stdin.
+
+Decontamination uses the same 10-gram index as the SFT builder, plus APPS test, CodeContests
+test/valid and the concept suite. The first run flagged 1,172 of APPS's 5,000 train problems as
+APPS test copies, though the two splits are disjoint: competitive statements share boilerplate
+("The first line contains an integer n"). For those two benchmarks a match now has to cover a
+quarter of the statement's 10-grams. It still removes 8,104 problems, mostly real APPS test
+copies inside TACO and Codeforces problems that APPS test also has.
+
+Verification runs every stored solution against every test in a sandbox (prlimit, 2 GB, 4 s CPU
+per test, empty env). 8,729 problems (69%) keep at least one passing solution: APPS 96%,
+CodeContests 82%, TACO 65%. 66% of the 57,941 solutions pass. Failures are mostly wrong answers
+(16,230), then runtime errors (2,835) and timeouts (303). 600 problems have one solution passing
+and another giving a different answer. Those almost always accept several answers (a special
+judge), so they're flagged `inconsistent`, and anything that trusts the tests to reject wrong
+code should skip them.
+
+Repair data comes from mutating passing programs: the 8,129 consistent bank problems, the 2,586
+verified Tinker exercises and our own problems. There are 14 AST mutations (comparison,
+off-by-one, wrong variable in scope, dropped statement, missing import, swapped arguments and so
+on), balanced so each type ends up with about 1,720 kept rows. A mutant is kept only when it
+really fails, and the prompt shows what the user would see: the traceback trimmed to the
+program's own frames, or the input with expected and actual output, or the failing pytest run.
+20% of mutants turned out to be equivalent and were dropped, and timeouts are capped at 3%. The
+result is 24,099 rows: 16,100 from the bank, 7,744 from Tinker and 255 from our own problems.
+14,076 show a runtime error, 9,857 a wrong answer and 166 a timeout.
+
+Our own problems (`data/own`) are 85 everyday tasks with a reference solution and at least four
+pytest tests: parsing, CSV and JSON wrangling, files, small apps, dates, money. They're separate
+from the concept suite and all pass `build.py --check`.
+
+The SFT builder applies the same weaker rule for the two contest benchmarks. With the plain rule
+it dropped 3,859 repair rows and 3,045 bank rows, almost all of them APPS test boilerplate. Now
+it drops 305 and 75. After its other filters (mostly one- and two-line programs), `sft/repair`
+has 22,246 examples and 25.1M training tokens, of which 8.2M carry loss. `sft/bank` has 7,518
+examples and 5.4M tokens, 1.3M with loss.
+
+On HF, under `v1/`: `problems/raw`, `problems/verified`, `problems/own`, `repair`, and the
+tokenised `sft/bank` and `sft/repair`.
+
 ## Preference data
 
 Built during post-training from the model's own outputs:
