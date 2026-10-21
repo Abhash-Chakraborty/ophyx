@@ -1,0 +1,111 @@
+{
+ "enabled": true,
+ "script": "train/pretrain.py",
+ "accel": "tpu",
+ "timeout": 32400,
+ "kernels": [
+  "pycoder-train-ctx350m-a",
+  "pycoder-train-ctx350m-b"
+ ],
+ "datasets": [
+  "pycoder-keys"
+ ],
+ "config": {
+  "vocab": 32768,
+  "seq": 4096,
+  "eos_id": 0,
+  "optimizer": "muon",
+  "attention": "xla",
+  "remat": "full",
+  "loss_chunk": 512,
+  "decay_frac": 0.5,
+  "min_lr_frac": 0.05,
+  "budget_s": 30600,
+  "margin_s": 1500,
+  "ckpt_every_s": 3600,
+  "log_every": 50,
+  "eval_every": 500,
+  "export_hf": true,
+  "wandb": null,
+  "hf_ckpt_repo": "abhash-chakraborty/pycoder-runs",
+  "model": "base",
+  "micro_batch": 2,
+  "batch_tokens": 524288,
+  "total_tokens": 2000000000,
+  "lr": 0.0006,
+  "warmup_tokens": 50000000,
+  "run_name": "ctx350m-v1",
+  "session_name": "ctx350m",
+  "init_from": "hf://abhash-chakraborty/pycoder-runs/base350m-v1/latest",
+  "hf_data": {
+   "repo": "abhash-chakraborty/pycoder-data",
+   "dir": "/kaggle/tmp/hf_data",
+   "patterns": [
+    "v1/tokens/stack_edu_a/*/*.bin",
+    "v1/tokens/github_a/train/*.bin",
+    "v1/tokens/github_b/train/*s0-*.bin",
+    "v1/tokens/stack_edu_b/train/*-c00[0-4]*.bin",
+    "v1/tokens/oc_synthetic_qa/train/*.bin",
+    "v1/tokens/oc_synthetic_code_snippet/train/*.bin",
+    "v1/tokens/oc_algorithmic_corpus/train/*.bin",
+    "v1/tokens/fineweb_edu/train/*.bin",
+    "v1/tokens/cpython_lib/train/*.bin",
+    "v1/tokens/python_docs/train/*.bin"
+   ]
+  },
+  "data": {
+   "buckets": {
+    "stack_edu_a": {
+     "glob": "/kaggle/tmp/hf_data/v1/tokens/stack_edu_a/train/*.bin",
+     "weight": 0.18
+    },
+    "stack_edu_b": {
+     "glob": "/kaggle/tmp/hf_data/v1/tokens/stack_edu_b/train/*.bin",
+     "weight": 0.12
+    },
+    "github_a": {
+     "glob": "/kaggle/tmp/hf_data/v1/tokens/github_a/train/*.bin",
+     "weight": 0.33
+    },
+    "github_b": {
+     "glob": "/kaggle/tmp/hf_data/v1/tokens/github_b/train/*.bin",
+     "weight": 0.1
+    },
+    "oc_synthetic_qa": {
+     "glob": "/kaggle/tmp/hf_data/v1/tokens/oc_synthetic_qa/train/*.bin",
+     "weight": 0.1
+    },
+    "oc_synthetic_code_snippet": {
+     "glob": "/kaggle/tmp/hf_data/v1/tokens/oc_synthetic_code_snippet/train/*.bin",
+     "weight": 0.06
+    },
+    "oc_algorithmic_corpus": {
+     "glob": "/kaggle/tmp/hf_data/v1/tokens/oc_algorithmic_corpus/train/*.bin",
+     "weight": 0.05
+    },
+    "fineweb_edu": {
+     "glob": "/kaggle/tmp/hf_data/v1/tokens/fineweb_edu/train/*.bin",
+     "weight": 0.05
+    },
+    "cpython_lib": {
+     "glob": "/kaggle/tmp/hf_data/v1/tokens/cpython_lib/train/*.bin",
+     "weight": 0.005
+    },
+    "python_docs": {
+     "glob": "/kaggle/tmp/hf_data/v1/tokens/python_docs/train/*.bin",
+     "weight": 0.005
+    }
+   },
+   "val_glob": "/kaggle/tmp/hf_data/v1/tokens/stack_edu_a/val/*.bin",
+   "fim_rate": 0.5,
+   "fim_buckets": [
+    "stack_edu_a",
+    "stack_edu_b",
+    "github_a",
+    "github_b",
+    "oc_synthetic_code_snippet",
+    "cpython_lib"
+   ]
+  }
+ }
+}
