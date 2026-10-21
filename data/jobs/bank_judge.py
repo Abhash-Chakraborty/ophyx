@@ -39,7 +39,7 @@ def judge_problem(args):
             if not code.strip():
                 cache[code] = {"status": "fail", "first_fail": {"kind": "empty"}}
             else:
-                cache[code] = judge(code, tests, rec["fn_name"], per_test_s=J_PER_TEST)
+                cache[code] = judge(code, tests, rec["fn_name"], per_test_s=J_PER_TEST, guard=True)
         return cache[code]
 
     res = [run(c) for c in s["samples"]]

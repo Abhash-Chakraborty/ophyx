@@ -16,6 +16,7 @@ its input, the expected and actual output, and the traceback.
 
 import json as _json
 import os as _os
+import re as _re
 import shutil as _shutil
 import signal as _signal
 import subprocess as _subprocess
@@ -29,6 +30,7 @@ import io, json, math, os, resource, sys, time, traceback
 if hasattr(sys, "set_int_max_str_digits"):  # contest answers can be huge integers
     sys.set_int_max_str_digits(0)
 P = json.load(open(sys.argv[1]))
+os.remove(sys.argv[1])  # the tests and expected outputs must not be readable by the solution
 code, tests, fn_name = P["code"], P["tests"], P.get("fn_name")
 per = P.get("per_test_s", 4)
 res = {"status": "pass", "n_run": 0, "n_pass": 0, "first_fail": None, "fails": 0}
@@ -61,6 +63,10 @@ def jsonable(x):
 
 
 def child(i, t):
+    args = json.loads(t["input"]) if fn_name is not None else None
+    t = None
+    for k in ("P", "tests", "t", "res"):  # this forked copy only: the solution can't reach the expected outputs
+        globals().pop(k, None)
     resource.setrlimit(resource.RLIMIT_CPU, (per, per + 1))
     os.dup2(os.open(f"in{i}", os.O_RDONLY), 0)
     os.dup2(os.open(f"out{i}", os.O_WRONLY | os.O_CREAT | os.O_TRUNC), 1)
@@ -81,7 +87,7 @@ def child(i, t):
                 if cls is None:
                     raise NameError(f"no function or method named {fn_name!r}")
                 fn = getattr(cls(), fn_name)
-            out = fn(*json.loads(t["input"]))
+            out = fn(*args)
             with open(f"ret{i}", "w") as f:
                 try:
                     json.dump(jsonable(out), f)
@@ -216,7 +222,25 @@ def _sandbox_run(cmd, d, wall_s, cpu_s, mem=2 << 30):
         return p.returncode, out.decode(errors="replace"), True
 
 
-def judge(code, tests, fn_name=None, per_test_s=4, stop_on_fail=True, total_s=None):
+# Ways a program could reach the judge's state instead of solving the task. Expected outputs live in the
+# runner's memory (a forked child can find them through gc or the frame stack) and it writes result.json in
+# the same directory. Reference solutions don't need any of this; sampled programs under RL might find it.
+_FORBIDDEN = _re.compile(r"sys\s*\.\s*modules|_getframe|\bf_back\b|\bf_globals\b|\bf_locals\b|gc\s*\.\s*get_(objects|referrers|referents)"
+                         r"|^\s*(import|from)\s+(inspect|ctypes)\b|getppid|os\s*\.\s*(kill|killpg)\b|/proc/"
+                         r"|result\.json|payload\.json|\bptrace\b|__builtins__\s*\.\s*__dict__", _re.M)
+
+
+def forbidden(code):
+    """The first match of _FORBIDDEN in code, or None."""
+    m = _FORBIDDEN.search(code)
+    return m.group(0) if m else None
+
+
+def judge(code, tests, fn_name=None, per_test_s=4, stop_on_fail=True, total_s=None, guard=False):
+    """guard=True (for model samples): code that reaches into the judge fails as kind "forbidden"."""
+    if guard and forbidden(code):
+        return {"status": "fail", "n_run": 0, "n_pass": 0, "fails": 1,
+                "first_fail": {"i": -1, "kind": "forbidden", "stderr": f"forbidden: {forbidden(code)}"}}
     d = _tempfile.mkdtemp(prefix="jx-")
     try:
         with open(_os.path.join(d, "runner.py"), "w") as f:
@@ -228,6 +252,8 @@ def judge(code, tests, fn_name=None, per_test_s=4, stop_on_fail=True, total_s=No
         rc, out, timed_out = _sandbox_run([_sys.executable, "-I", "runner.py", "payload.json"], d, total,
                                           per_test_s * len(tests) + 20)
         try:
+            if rc != 0 or timed_out:  # a runner that was killed (by the solution, or the clock) proves nothing
+                raise ValueError(f"runner exit {rc}")
             with open(_os.path.join(d, "result.json")) as f:
                 return _json.load(f)
         except (OSError, ValueError):

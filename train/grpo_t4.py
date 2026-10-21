@@ -105,7 +105,7 @@ def g_rewards(recs_by_pid, pids, completions):
             return 0.0
         rec = recs_by_pid[pid]
         tests = sorted(rec["tests"], key=lambda t: len(t["input"]) + len(t["output"]))
-        return 1.0 if judge(code, tests, rec["fn_name"], per_test_s=G_PER_TEST)["status"] == "pass" else 0.0
+        return 1.0 if judge(code, tests, rec["fn_name"], per_test_s=G_PER_TEST, guard=True)["status"] == "pass" else 0.0
 
     with cf.ThreadPoolExecutor(max(2, (_os.cpu_count() or 4))) as ex:
         return list(ex.map(one, zip(pids, completions)))
