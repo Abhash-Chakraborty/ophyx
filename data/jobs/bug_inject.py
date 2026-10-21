@@ -591,7 +591,7 @@ def do_tinker(rec):
             TYPE_COUNTS[kind] += 1
             KIND_COUNTS[failure] += 1
         h = hashlib.sha1(m.encode()).hexdigest()[:16]
-        out.append(("kept", {"pid": "tinker/" + rec["id"], "source": "tinker_short", "mutation": kind, "failure": failure,
+        out.append(("kept", {"pid": "tinker/" + rec["id"], "source": "own" if rec["id"].startswith("own-") else "tinker_short", "mutation": kind, "failure": failure,
                              "broken": m, "fixed": module, "error": {"pytest": clean_pytest(res)}, "id": h,
                              "row": {"instruction": prompt, "output": answer, "tag": f"repair_pytest_{failure}", "seq_id": h}}))
         if sum(1 for o in out if o[0] == "kept") >= PER_EXERCISE:
