@@ -26,7 +26,6 @@ import json
 import os
 import subprocess
 import sys
-import threading
 import time
 
 CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("PYCODER_CONFIG", "{}"))
@@ -276,7 +275,7 @@ class HFEngine:
     def __init__(self, spec, max_len):
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
-        self.torch = torch
+        self.torch, self.max_len = torch, max_len
         self.tok = AutoTokenizer.from_pretrained(spec["id"])
         self.tok.padding_side = "left"
         if self.tok.pad_token is None:
@@ -294,8 +293,13 @@ class HFEngine:
             pad = self.tok.pad_token_id
             x = torch.tensor([[pad] * (L - len(ids[i])) + ids[i] for i in idx], device="cuda")
             att = torch.tensor([[0] * (L - len(ids[i])) + [1] * len(ids[i]) for i in idx], device="cuda")
+            new = min(max(max_tokens[i] for i in idx), self.max_len - L)  # padding counts against the window
+            if new < 1:
+                for i in idx:
+                    res[i] = ("", "too_long")
+                continue
             with torch.no_grad():
-                g = self.model.generate(input_ids=x, attention_mask=att, max_new_tokens=max(max_tokens[i] for i in idx),
+                g = self.model.generate(input_ids=x, attention_mask=att, max_new_tokens=new,
                                         do_sample=False, pad_token_id=pad, eos_token_id=eos or None,
                                         stop_strings=sorted({s for i in idx for s in stops[i]}) or None, tokenizer=self.tok)
             for j, i in enumerate(idx):
@@ -410,17 +414,17 @@ def orchestrate():
     done = {}
     os.makedirs(os.path.join(OUT, "logs"), exist_ok=True)
 
-    def run_child(spec, gpus):
-        name = model_name(spec)
-        logf = os.path.join(OUT, "logs", f"{name}.log")
-        t = time.time()
-        p = ctx.Process(target=child, args=(spec, gpus, logf))
+    def start_child(spec, gpus):
+        p = ctx.Process(target=child, args=(spec, gpus, os.path.join(OUT, "logs", f"{model_name(spec)}.log")))
         p.start()
-        p.join(CONFIG.get("model_timeout_s", 3 * 3600))
+        return p
+
+    def finish_child(p, spec, gpus, t):
         if p.is_alive():
             p.kill()
-            p.join()
-        rc = p.exitcode
+        p.join()
+        name, rc = model_name(spec), p.exitcode
+        logf = os.path.join(OUT, "logs", f"{name}.log")
         tail = open(logf).read()[-1500:] if os.path.exists(logf) else ""
         if not spec["id"].startswith("/"):  # 7B weights are 15 GB each: free the disk for the next model
             hub = os.path.expanduser(os.path.join(os.environ.get("HF_HOME", "~/.cache/huggingface"), "hub"))
@@ -429,25 +433,25 @@ def orchestrate():
         log(f"{name}: rc {rc} in {time.time() - t:.0f}s" + ("" if rc == 0 else f"\n{tail}"))
         json.dump(done, open(os.path.join(OUT, "gen_status.json"), "w"), indent=1)
 
+    # No threads here: forking a multi-threaded parent can deadlock the child (one hung silently in the
+    # smoke run). The main thread starts the children and polls them, one per free GPU.
     single = [m for m in models if m.get("tp", 1) == 1]
     double = [m for m in models if m.get("tp", 1) == 2]
-    lock = threading.Lock()
-
-    def worker(gpu):
-        while True:
-            with lock:
-                if not single:
-                    return
+    running = {}  # gpu -> (process, spec, start)
+    while single or running:
+        for gpu in ("0", "1"):
+            if gpu not in running and single:
                 spec = single.pop(0)
-            run_child(spec, str(gpu))
-
-    threads = [threading.Thread(target=worker, args=(g,)) for g in (0, 1)]
-    for th in threads:
-        th.start()
-    for th in threads:
-        th.join()
+                running[gpu] = (start_child(spec, gpu), spec, time.time())
+        for gpu, (p, spec, t) in list(running.items()):
+            if not p.is_alive() or time.time() - t > CONFIG.get("model_timeout_s", 3 * 3600):
+                finish_child(p, spec, gpu, t)
+                del running[gpu]
+        time.sleep(5)
     for spec in double:
-        run_child(spec, "0,1")
+        p, t = start_child(spec, "0,1"), time.time()
+        p.join(CONFIG.get("model_timeout_s", 3 * 3600))
+        finish_child(p, spec, "0,1", t)
     log("GEN DONE", json.dumps(done))
 
 
