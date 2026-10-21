@@ -58,6 +58,46 @@ def sh(cmd, **kw):
     return r.stdout
 
 
+def logprob_check(lc, gguf_file, tok, model, port=8089, n=24):
+    """Top-5 next-token log-probs from llama-server along its greedy path, against transformers on the same
+    tokens. A correct conversion agrees to about 1e-3; greedy text can still differ at near-ties."""
+    import urllib.request
+
+    import torch
+    srv = subprocess.Popen([os.path.join(lc, "build", "bin", "llama-server"), "-m", gguf_file, "--port", str(port),
+                            "-c", "2048", "--no-warmup"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        for _ in range(120):
+            try:
+                if json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2)).get("status") == "ok":
+                    break
+            except Exception:
+                pass
+            time.sleep(1)
+        worst, ties, steps = 0.0, 0, 0
+        for p in PROMPTS:
+            ids = tok(f"<|user|>\n{p}\n<|python|>\n", add_special_tokens=False)["input_ids"]
+            body = json.dumps({"prompt": ids, "n_predict": n, "n_probs": 5, "temperature": 0, "cache_prompt": False}).encode()
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/completion", body, {"Content-Type": "application/json"})
+            r = json.load(urllib.request.urlopen(req, timeout=300))
+            probs = r["completion_probabilities"]
+            seq = ids + [x["id"] for x in probs]
+            with torch.no_grad():
+                lp = torch.log_softmax(model(torch.tensor([seq])).logits[0].float(), -1)
+            for k, x in enumerate(probs):
+                row = lp[len(ids) - 1 + k]
+                for alt in x["top_logprobs"]:
+                    worst = max(worst, abs(row[alt["id"]].item() - alt["logprob"]))
+                top2 = sorted((a["logprob"] for a in x["top_logprobs"]), reverse=True)[:2]
+                ties += len(top2) == 2 and top2[0] - top2[1] < 0.05
+                steps += 1
+        return {"max_abs_logprob_diff": round(worst, 5), "steps": steps, "near_ties": ties}
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"[:500]}
+    finally:
+        srv.kill()
+
+
 def main():
     keys = glob.glob("/kaggle/input/**/keys.json", recursive=True)
     if keys:
@@ -76,7 +116,7 @@ def main():
     # not llama.cpp's requirements file: it pins torch 2.6 and would replace the image's torch
     sh([sys.executable, "-m", "pip", "install", "-q", "mistral-common>=1.8.3", "sentencepiece", "protobuf"])
     sh(f"cmake -S {lc} -B {lc}/build -DGGML_NATIVE=ON -DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=Release >/dev/null && "
-       f"cmake --build {lc}/build -j {os.cpu_count()} --target llama-tokenize llama-cli llama-quantize >/dev/null")
+       f"cmake --build {lc}/build -j {os.cpu_count()} --target llama-tokenize llama-cli llama-quantize llama-server >/dev/null")
 
     conv = os.path.join(lc, "convert_hf_to_gguf.py")
     src = open(conv).read()
@@ -84,6 +124,12 @@ def main():
     assert hook in src, "convert_hf_to_gguf.py changed: get_vocab_base_pre not found"
     patched = src.replace(hook, hook + "        if getattr(tokenizer, 'convert_tokens_to_ids', None) and "
                           "tokenizer.convert_tokens_to_ids('<|python|>') == 2:\n            return 'smollm'  # pycoder\n", 1)
+    # Newer transformers keeps rope_theta only inside rope_parameters, and AutoConfig(...).to_dict() is what the
+    # converter reads, so the GGUF silently lost our rope base (100k) and llama.cpp fell back to its default.
+    load = '        if "llm_config" in config:\n'
+    assert load in patched, "convert_hf_to_gguf.py changed: load_hparams not found"
+    patched = patched.replace(load, '        if "rope_theta" not in config and "rope_theta" in (config.get("rope_parameters") or {}):\n'
+                              '            config["rope_theta"] = config["rope_parameters"]["rope_theta"]  # pycoder\n' + load, 1)
     open(os.path.join(lc, "convert_pycoder.py"), "w").write(patched)
 
     files = {}
@@ -103,6 +149,16 @@ def main():
         os.remove(base)
         files.pop("f32")
     check = {"model": MODEL, "llama_tag": TAG, "files": {t: os.path.getsize(f) for t, f in files.items()}}
+    sys.path.insert(0, os.path.join(lc, "gguf-py"))
+    from gguf import GGUFReader
+    want_theta = float(json.load(open(os.path.join(mdir, "config.json")))["rope_theta"])
+    for t, f in files.items():
+        fld = GGUFReader(f).fields.get("qwen3.rope.freq_base")
+        got = float(fld.parts[fld.data[0]][0]) if fld else None
+        check[f"rope_freq_base_{t}"] = got
+        if got != want_theta:
+            raise SystemExit(f"{t}: rope freq_base in the GGUF is {got}, the model uses {want_theta}")
+    log("rope freq_base ok:", want_theta)
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
     tok = AutoTokenizer.from_pretrained(mdir)
@@ -115,6 +171,11 @@ def main():
         got = json.loads(out.strip().splitlines()[-1])
         toks.append({"text": s, "match": got == want, "hf": len(want), "gguf": len(got)})
     check["tokens_all_match"] = all(t["match"] for t in toks)
+    # what llama.cpp does by default (llama-cli and llama-server add BOS when the vocab says so)
+    out = sh([os.path.join(lc, "build", "bin", "llama-tokenize"), "-m", gg, "-p", SNIPPETS[-2], "--ids", "--log-disable"])
+    dflt = json.loads(out.strip().splitlines()[-1])
+    check["default_adds_bos"] = dflt[:1] != tok(SNIPPETS[-2], add_special_tokens=False)["input_ids"][:1]
+    check["default_first_ids"] = dflt[:4]
     check["tokens"] = toks
     log("tokens match:", check["tokens_all_match"])
 
@@ -128,14 +189,23 @@ def main():
         with torch.no_grad():
             g = model.generate(ids, max_new_tokens=160, do_sample=False, eos_token_id=end, pad_token_id=end)
         hf_text = tok.decode(g[0, ids.shape[1]:], skip_special_tokens=True)
-        row = {"prompt": p, "hf": hf_text}
+        bos = torch.cat([torch.tensor([[end]]), ids], 1)  # the same prompt behind a BOS (<|end|>, id 0)
+        with torch.no_grad():
+            gb = model.generate(bos, max_new_tokens=160, do_sample=False, eos_token_id=end, pad_token_id=end)
+        row = {"prompt": p, "hf": hf_text, "hf_with_bos": tok.decode(gb[0, bos.shape[1]:], skip_special_tokens=True)}
         for t, f in files.items():
-            out = subprocess.run([os.path.join(lc, "build", "bin", "llama-cli"), "-m", f, "-p", full, "-n", "160",
-                                  "--temp", "0", "--no-warmup", "-no-cnv", "--no-display-prompt", "--log-disable"],
-                                 text=True, capture_output=True, timeout=600, stdin=subprocess.DEVNULL).stdout
-            row[t] = out
+            # no --log-disable: llama-cli prints the generated text through the same logger
+            r = subprocess.run([os.path.join(lc, "build", "bin", "llama-cli"), "-m", f, "-p", full, "-n", "160",
+                                "--temp", "0", "--no-warmup", "-no-cnv", "--no-display-prompt"],
+                               text=True, capture_output=True, timeout=600, stdin=subprocess.DEVNULL)
+            row[t] = r.stdout.replace("[end of text]", "").strip("\n") + "\n"
+            if not r.stdout.strip():
+                row[f"{t}_stderr"] = r.stderr[-1500:]
+            row[f"{t}_log"] = [x for x in r.stderr.splitlines() if "bos" in x.lower() or "add_" in x.lower()][:8]
         texts.append(row)
     check["texts"] = texts
+    check["logprobs"] = {t: logprob_check(lc, f, tok, model) for t, f in files.items()}
+    log("logprob check", json.dumps(check["logprobs"]))
     json.dump(check, open(os.path.join(OUT, "check.json"), "w"), indent=1)
     log("check", json.dumps(check)[:3000])
     if CONFIG.get("out_repo"):
