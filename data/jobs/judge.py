@@ -26,6 +26,8 @@ _PRLIMIT = _shutil.which("prlimit")
 
 JUDGE_RUNNER = r'''
 import io, json, math, os, resource, sys, time, traceback
+if hasattr(sys, "set_int_max_str_digits"):  # contest answers can be huge integers
+    sys.set_int_max_str_digits(0)
 P = json.load(open(sys.argv[1]))
 code, tests, fn_name = P["code"], P["tests"], P.get("fn_name")
 per = P.get("per_test_s", 4)

@@ -1,0 +1,939 @@
+=== dotenv-parser [files]
+--- task
+Write `parse_env(text)` for .env files: KEY=VALUE lines, optional "export " prefix, "#" comments (full-line, or after an unquoted value when preceded by a space), single-quoted values taken literally, double-quoted values with \n and \" escapes, and ${OTHER} references expanded from keys defined earlier in the file (unknown ones become ""). Invalid lines raise ValueError with the line number.
+--- solution
+import re
+
+_LINE = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$")
+_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def parse_env(text):
+    env = {}
+    for n, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = _LINE.match(line)
+        if not m:
+            raise ValueError(f"line {n}: cannot parse {raw!r}")
+        key, value = m.group(1), m.group(2)
+        if value.startswith("'"):
+            if not value.endswith("'") or len(value) < 2:
+                raise ValueError(f"line {n}: unterminated quote")
+            env[key] = value[1:-1]
+            continue
+        if value.startswith('"'):
+            end = value.rfind('"')
+            if end == 0:
+                raise ValueError(f"line {n}: unterminated quote")
+            value = value[1:end].replace("\\n", "\n").replace('\\"', '"')
+        else:
+            value = re.split(r"\s+#", value, maxsplit=1)[0].strip()
+        env[key] = _REF.sub(lambda r: env.get(r.group(1), ""), value)
+    return env
+--- tests
+import pytest
+
+TEXT = """
+# settings
+export HOST=localhost
+PORT = 8080  # web port
+URL=http://${HOST}:${PORT}/
+GREETING="hello\\nworld \\"x\\""
+RAW='${HOST} stays'
+EMPTY=
+"""
+
+
+def test_values():
+    env = parse_env(TEXT)
+    assert env["HOST"] == "localhost" and env["PORT"] == "8080"
+    assert env["EMPTY"] == ""
+
+
+def test_references():
+    assert parse_env(TEXT)["URL"] == "http://localhost:8080/"
+    assert parse_env("A=${NOPE}x")["A"] == "x"
+
+
+def test_quotes():
+    env = parse_env(TEXT)
+    assert env["GREETING"] == 'hello\nworld "x"'
+    assert env["RAW"] == "${HOST} stays"
+
+
+def test_hash_inside_value():
+    assert parse_env("COLOR=#fff")["COLOR"] == "#fff"
+
+
+def test_bad_line():
+    with pytest.raises(ValueError, match="line 2"):
+        parse_env("A=1\nthis is wrong")
+
+=== requirements-parser [files]
+--- task
+Write `parse_requirements(text)` that reads a requirements.txt and returns a list of dicts {"name", "extras", "specifier", "marker"}: the name normalised (lowercase, runs of "-", "_", "." turned into "-"), extras as a sorted list, the version specifier string without spaces (e.g. ">=1.2,<2"), and the environment marker after ";" stripped (or None). Comments, blank lines and option lines starting with "-" are skipped; "\" line continuations are joined.
+--- solution
+import re
+
+_REQ = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[([^\]]*)\])?\s*([^;]*?)\s*(?:;\s*(.*))?$")
+
+
+def parse_requirements(text):
+    text = re.sub(r"\\\n", " ", text)
+    out = []
+    for raw in text.splitlines():
+        line = raw.split(" #", 1)[0].strip()
+        if not line or line.startswith("#") or line.startswith("-"):
+            continue
+        m = _REQ.match(line)
+        if not m:
+            raise ValueError(f"bad requirement: {raw!r}")
+        name = re.sub(r"[-_.]+", "-", m.group(1)).lower()
+        extras = sorted(e.strip() for e in (m.group(2) or "").split(",") if e.strip())
+        spec = m.group(3).replace(" ", "")
+        marker = m.group(4).strip() if m.group(4) else None
+        out.append({"name": name, "extras": extras, "specifier": spec, "marker": marker})
+    return out
+--- tests
+TEXT = """
+# web stack
+Django>=4.2, <5
+requests[socks, security] ==2.31.0
+-r other.txt
+typing_extensions ; python_version < "3.11"
+Zope.Interface
+numpy>=1.26 \\
+    ,<2  # pinned below 2
+"""
+
+
+def test_count_and_names():
+    reqs = parse_requirements(TEXT)
+    assert [r["name"] for r in reqs] == ["django", "requests", "typing-extensions", "zope-interface", "numpy"]
+
+
+def test_specifiers():
+    reqs = {r["name"]: r for r in parse_requirements(TEXT)}
+    assert reqs["django"]["specifier"] == ">=4.2,<5"
+    assert reqs["numpy"]["specifier"] == ">=1.26,<2"
+    assert reqs["zope-interface"]["specifier"] == ""
+
+
+def test_extras():
+    reqs = {r["name"]: r for r in parse_requirements(TEXT)}
+    assert reqs["requests"]["extras"] == ["security", "socks"]
+
+
+def test_marker():
+    reqs = {r["name"]: r for r in parse_requirements(TEXT)}
+    assert reqs["typing-extensions"]["marker"] == 'python_version < "3.11"'
+    assert reqs["django"]["marker"] is None
+
+
+def test_empty():
+    assert parse_requirements("# nothing\n\n") == []
+
+=== ini-config [files]
+--- task
+Write `load_config(path, defaults=None)` that reads an INI file with configparser and returns a dict of sections, each a dict of options converted to int, float or bool ("true"/"false"/"yes"/"no"/"on"/"off") when they look like one, otherwise strings. `defaults` is a nested dict merged underneath (file values win). A missing file raises FileNotFoundError with the path in the message.
+--- solution
+import configparser
+import os
+import re
+
+_BOOLS = {"true": True, "yes": True, "on": True, "false": False, "no": False, "off": False}
+
+
+def _convert(v):
+    low = v.strip().lower()
+    if low in _BOOLS:
+        return _BOOLS[low]
+    if re.fullmatch(r"[+-]?\d+", low):
+        return int(low)
+    if re.fullmatch(r"[+-]?(\d+\.\d*|\.\d+|\d+(\.\d*)?e[+-]?\d+)", low):
+        return float(low)
+    return v
+
+
+def load_config(path, defaults=None):
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"config file not found: {path}")
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.read(path, encoding="utf-8")
+    out = {s: dict(v) for s, v in (defaults or {}).items()}
+    for section in parser.sections():
+        out.setdefault(section, {})
+        for key, value in parser.items(section):
+            out[section][key] = _convert(value)
+    return out
+--- tests
+import pytest
+
+
+def write(tmp_path, text):
+    p = tmp_path / "app.ini"
+    p.write_text(text)
+    return p
+
+
+def test_types(tmp_path):
+    p = write(tmp_path, "[server]\nport = 8080\nratio = 0.5\ndebug = yes\nname = api\n")
+    assert load_config(p) == {"server": {"port": 8080, "ratio": 0.5, "debug": True, "name": "api"}}
+
+
+def test_defaults(tmp_path):
+    p = write(tmp_path, "[db]\nhost = prod\n")
+    cfg = load_config(p, defaults={"db": {"host": "localhost", "port": 5432}, "log": {"level": "info"}})
+    assert cfg == {"db": {"host": "prod", "port": 5432}, "log": {"level": "info"}}
+
+
+def test_percent_not_interpolated(tmp_path):
+    p = write(tmp_path, "[fmt]\npattern = %(asctime)s 100%\n")
+    assert load_config(p)["fmt"]["pattern"] == "%(asctime)s 100%"
+
+
+def test_missing(tmp_path):
+    with pytest.raises(FileNotFoundError, match="nope.ini"):
+        load_config(tmp_path / "nope.ini")
+
+
+def test_version_string_stays_string(tmp_path):
+    p = write(tmp_path, "[a]\nversion = 1.2.3\nzip = 007\n")
+    assert load_config(p)["a"] == {"version": "1.2.3", "zip": 7}
+
+=== find-duplicate-files [files]
+--- task
+Write `find_duplicates(root)` that walks a directory tree and returns groups of files with identical contents: a list of lists of paths relative to root (as POSIX strings), each group sorted, groups sorted by their first path. Files are first grouped by size and only same-size files are hashed (SHA-256, read in chunks). Empty files are ignored.
+--- solution
+import hashlib
+import os
+from collections import defaultdict
+from pathlib import Path
+
+
+def _digest(path, chunk=1 << 16):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            block = f.read(chunk)
+            if not block:
+                break
+            h.update(block)
+    return h.hexdigest()
+
+
+def find_duplicates(root):
+    root = Path(root)
+    by_size = defaultdict(list)
+    for dirpath, _, files in os.walk(root):
+        for name in files:
+            p = Path(dirpath) / name
+            if p.is_file() and not p.is_symlink():
+                size = p.stat().st_size
+                if size:
+                    by_size[size].append(p)
+    groups = []
+    for paths in by_size.values():
+        if len(paths) < 2:
+            continue
+        by_hash = defaultdict(list)
+        for p in paths:
+            by_hash[_digest(p)].append(p.relative_to(root).as_posix())
+        groups += [sorted(g) for g in by_hash.values() if len(g) > 1]
+    return sorted(groups)
+--- tests
+def make(tmp_path, files):
+    for rel, data in files.items():
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data)
+
+
+def test_groups(tmp_path):
+    make(tmp_path, {"a.txt": b"hello", "sub/b.txt": b"hello", "c.txt": b"other", "sub/deep/d.bin": b"other",
+                    "e.txt": b"hellp"})
+    assert find_duplicates(tmp_path) == [["a.txt", "sub/b.txt"], ["c.txt", "sub/deep/d.bin"]]
+
+
+def test_no_duplicates(tmp_path):
+    make(tmp_path, {"a": b"1", "b": b"22"})
+    assert find_duplicates(tmp_path) == []
+
+
+def test_empty_files_ignored(tmp_path):
+    make(tmp_path, {"a": b"", "b": b""})
+    assert find_duplicates(tmp_path) == []
+
+
+def test_three_way(tmp_path):
+    make(tmp_path, {"x/1": b"z" * 70000, "y/2": b"z" * 70000, "3": b"z" * 70000})
+    assert find_duplicates(tmp_path) == [["3", "x/1", "y/2"]]
+
+
+def test_same_size_different_content(tmp_path):
+    make(tmp_path, {"a": b"ab", "b": b"ba"})
+    assert find_duplicates(tmp_path) == []
+
+=== bulk-rename [files]
+--- task
+Write `plan_renames(directory, pattern, template)` that matches file names in one directory (not recursive) against a regex `pattern` and builds new names from `template` using {name} groups and {n} (1-based counter in sorted order of the original names, zero-padded with {n:03d} style formats). Return a list of (old, new) pairs. Raise ValueError if two files would get the same name or a new name collides with an existing file that is not itself being renamed. Write `apply_renames(directory, plan)` that performs it safely (via temporary names, so swaps work).
+--- solution
+import os
+import re
+import uuid
+
+
+def plan_renames(directory, pattern, template):
+    rx = re.compile(pattern)
+    names = sorted(n for n in os.listdir(directory) if os.path.isfile(os.path.join(directory, n)))
+    plan, n = [], 0
+    for name in names:
+        m = rx.fullmatch(name)
+        if not m:
+            continue
+        n += 1
+        new = template.format(n=n, **m.groupdict())
+        if new != name:
+            plan.append((name, new))
+    targets = [new for _, new in plan]
+    if len(set(targets)) != len(targets):
+        raise ValueError("two files would get the same name")
+    moving = {old for old, _ in plan}
+    for t in targets:
+        if t in names and t not in moving:
+            raise ValueError(f"{t} already exists")
+    return plan
+
+
+def apply_renames(directory, plan):
+    tmp = []
+    for old, new in plan:
+        t = f".rename-{uuid.uuid4().hex}"
+        os.rename(os.path.join(directory, old), os.path.join(directory, t))
+        tmp.append((t, new))
+    for t, new in tmp:
+        os.rename(os.path.join(directory, t), os.path.join(directory, new))
+--- tests
+import pytest
+
+
+def touch(d, *names):
+    for n in names:
+        (d / n).write_text(n)
+
+
+def test_plan(tmp_path):
+    touch(tmp_path, "IMG_9.jpg", "IMG_10.jpg", "notes.txt")
+    plan = plan_renames(tmp_path, r"IMG_(?P<num>\d+)\.jpg", "photo-{n:03d}-{num}.jpg")
+    assert plan == [("IMG_10.jpg", "photo-001-10.jpg"), ("IMG_9.jpg", "photo-002-9.jpg")]
+
+
+def test_apply(tmp_path):
+    touch(tmp_path, "a.txt", "b.txt")
+    plan = plan_renames(tmp_path, r"(?P<stem>\w)\.txt", "{stem}.md")
+    apply_renames(tmp_path, plan)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.md", "b.md"]
+    assert (tmp_path / "a.md").read_text() == "a.txt"
+
+
+def test_swap(tmp_path):
+    touch(tmp_path, "1.txt", "2.txt")
+    plan = [("1.txt", "2.txt"), ("2.txt", "1.txt")]
+    apply_renames(tmp_path, plan)
+    assert (tmp_path / "1.txt").read_text() == "2.txt"
+
+
+def test_collision_between_targets(tmp_path):
+    touch(tmp_path, "a1.txt", "a2.txt")
+    with pytest.raises(ValueError):
+        plan_renames(tmp_path, r"a\d\.txt", "same.txt")
+
+
+def test_collision_with_existing(tmp_path):
+    touch(tmp_path, "a.txt", "b.md")
+    with pytest.raises(ValueError):
+        plan_renames(tmp_path, r"a\.txt", "b.md")
+
+=== count-code-lines [files]
+--- task
+Write `count_lines(root, extensions=(".py",))` that walks a project and returns {"files", "code", "comment", "blank"} totals for files with the given extensions, skipping directories named .git, __pycache__, node_modules and any starting with ".venv" or "venv". A comment line is one whose first non-space character is "#". Lines inside triple-quoted docstrings count as code (keep it simple).
+--- solution
+import os
+
+SKIP = {".git", "__pycache__", "node_modules"}
+
+
+def count_lines(root, extensions=(".py",)):
+    totals = {"files": 0, "code": 0, "comment": 0, "blank": 0}
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in SKIP and not d.startswith((".venv", "venv"))]
+        for name in filenames:
+            if not name.endswith(tuple(extensions)):
+                continue
+            totals["files"] += 1
+            with open(os.path.join(dirpath, name), encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    s = line.strip()
+                    if not s:
+                        totals["blank"] += 1
+                    elif s.startswith("#"):
+                        totals["comment"] += 1
+                    else:
+                        totals["code"] += 1
+    return totals
+--- tests
+def write(p, text):
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text)
+
+
+def test_counts(tmp_path):
+    write(tmp_path / "a.py", "# header\nimport os\n\nx = 1  # trailing\n")
+    write(tmp_path / "pkg" / "b.py", '"""doc"""\n\n\ndef f():\n    # inner\n    return 1\n')
+    assert count_lines(tmp_path) == {"files": 2, "code": 5, "comment": 2, "blank": 3}
+
+
+def test_skips(tmp_path):
+    write(tmp_path / ".venv" / "x.py", "a = 1\n")
+    write(tmp_path / "venv39" / "x.py", "a = 1\n")
+    write(tmp_path / "__pycache__" / "x.py", "a = 1\n")
+    write(tmp_path / "src" / "ok.py", "a = 1\n")
+    assert count_lines(tmp_path)["files"] == 1
+
+
+def test_extensions(tmp_path):
+    write(tmp_path / "a.py", "x\n")
+    write(tmp_path / "b.pyi", "y\n")
+    write(tmp_path / "c.txt", "z\n")
+    assert count_lines(tmp_path, (".py", ".pyi"))["files"] == 2
+
+
+def test_empty_dir(tmp_path):
+    assert count_lines(tmp_path) == {"files": 0, "code": 0, "comment": 0, "blank": 0}
+
+
+def test_no_trailing_newline(tmp_path):
+    write(tmp_path / "a.py", "x = 1")
+    assert count_lines(tmp_path)["code"] == 1
+
+=== log-level-report [files]
+--- task
+Write `log_report(lines)` for log lines like "2024-05-01 12:00:03,123 ERROR [db] connection lost". Return {"levels": count per level, "by_logger": {logger: {level: count}}, "first_error": the timestamp string of the first ERROR or CRITICAL line or None, "unparsed": number of lines that don't match}. Lines that start with whitespace are continuation lines (e.g. tracebacks) and are neither counted nor unparsed.
+--- solution
+import re
+from collections import Counter, defaultdict
+
+_LINE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) (DEBUG|INFO|WARNING|ERROR|CRITICAL) \[([^\]]+)\] ")
+
+
+def log_report(lines):
+    levels = Counter()
+    by_logger = defaultdict(Counter)
+    first_error, unparsed = None, 0
+    for line in lines:
+        if not line.strip() or line[0].isspace():
+            continue
+        m = _LINE.match(line)
+        if not m:
+            unparsed += 1
+            continue
+        ts, level, logger = m.groups()
+        levels[level] += 1
+        by_logger[logger][level] += 1
+        if first_error is None and level in ("ERROR", "CRITICAL"):
+            first_error = ts
+    return {"levels": dict(levels), "by_logger": {k: dict(v) for k, v in by_logger.items()},
+            "first_error": first_error, "unparsed": unparsed}
+--- tests
+LOG = """2024-05-01 12:00:00,001 INFO [web] started
+2024-05-01 12:00:03,123 ERROR [db] connection lost
+Traceback (most recent call last):
+  File "x.py", line 1
+2024-05-01 12:00:04,000 WARNING [db] retrying
+2024-05-01 12:00:05,500 CRITICAL [web] giving up
+garbage line
+""".splitlines()
+
+
+def test_levels():
+    assert log_report(LOG)["levels"] == {"INFO": 1, "ERROR": 1, "WARNING": 1, "CRITICAL": 1}
+
+
+def test_by_logger():
+    assert log_report(LOG)["by_logger"] == {"web": {"INFO": 1, "CRITICAL": 1}, "db": {"ERROR": 1, "WARNING": 1}}
+
+
+def test_first_error():
+    assert log_report(LOG)["first_error"] == "2024-05-01 12:00:03,123"
+
+
+def test_unparsed():
+    assert log_report(LOG)["unparsed"] == 2
+
+
+def test_no_errors():
+    out = log_report(["2024-05-01 12:00:00,001 DEBUG [x] hi"])
+    assert out["first_error"] is None and out["unparsed"] == 0
+
+=== access-log-stats [files]
+--- task
+Write `access_stats(lines)` for web server logs in the Common Log Format, e.g. '127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /a.gif HTTP/1.0" 200 2326'. Return {"requests": n, "status": count per status class like "2xx", "top_paths": the 3 most requested paths without query strings as (path, count) with ties alphabetical, "bytes": total bytes (a "-" size counts as 0), "unique_ips": number of distinct client IPs}. Malformed lines are skipped.
+--- solution
+import re
+from collections import Counter
+
+_CLF = re.compile(r'^(\S+) \S+ \S+ \[[^\]]+\] "(\S+) (\S+)[^"]*" (\d{3}) (\d+|-)')
+
+
+def access_stats(lines):
+    n, status, paths, total, ips = 0, Counter(), Counter(), 0, set()
+    for line in lines:
+        m = _CLF.match(line)
+        if not m:
+            continue
+        ip, _, path, code, size = m.groups()
+        n += 1
+        status[code[0] + "xx"] += 1
+        paths[path.split("?", 1)[0]] += 1
+        total += 0 if size == "-" else int(size)
+        ips.add(ip)
+    top = sorted(paths.items(), key=lambda kv: (-kv[1], kv[0]))[:3]
+    return {"requests": n, "status": dict(status), "top_paths": top, "bytes": total, "unique_ips": len(ips)}
+--- tests
+LINES = [
+    '1.1.1.1 - - [10/Oct/2000:13:55:36 -0700] "GET /index.html HTTP/1.1" 200 1000',
+    '1.1.1.1 - - [10/Oct/2000:13:55:37 -0700] "GET /index.html?x=1 HTTP/1.1" 304 -',
+    '2.2.2.2 - bob [10/Oct/2000:13:55:38 -0700] "POST /api/login HTTP/1.1" 401 52',
+    '3.3.3.3 - - [10/Oct/2000:13:55:39 -0700] "GET /about HTTP/1.1" 200 300',
+    '3.3.3.3 - - [10/Oct/2000:13:55:40 -0700] "GET /api/login HTTP/1.1" 500 10',
+    "not a log line",
+]
+
+
+def test_counts():
+    out = access_stats(LINES)
+    assert out["requests"] == 5 and out["unique_ips"] == 3
+
+
+def test_status_classes():
+    assert access_stats(LINES)["status"] == {"2xx": 2, "3xx": 1, "4xx": 1, "5xx": 1}
+
+
+def test_top_paths():
+    assert access_stats(LINES)["top_paths"] == [("/api/login", 2), ("/index.html", 2), ("/about", 1)]
+
+
+def test_bytes():
+    assert access_stats(LINES)["bytes"] == 1362
+
+
+def test_empty():
+    assert access_stats([]) == {"requests": 0, "status": {}, "top_paths": [], "bytes": 0, "unique_ips": 0}
+
+=== tail-file [files]
+--- task
+Write `tail(path, n=10)` that returns the last n lines of a text file (without their newline characters) by reading blocks backwards from the end, so it stays fast on huge files. It must handle files with or without a trailing newline, files shorter than n lines, empty files and n = 0.
+--- solution
+import os
+
+
+def tail(path, n=10, block=4096):
+    if n <= 0:
+        return []
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        pos = f.tell()
+        data = b""
+        while pos > 0 and data.count(b"\n") <= n:
+            step = min(block, pos)
+            pos -= step
+            f.seek(pos)
+            data = f.read(step) + data
+    text = data.decode("utf-8", errors="replace")
+    if text.endswith("\n"):
+        text = text[:-1]
+    if not text and pos == 0:
+        return []
+    return text.split("\n")[-n:]
+--- tests
+def write(tmp_path, text):
+    p = tmp_path / "f.txt"
+    p.write_text(text)
+    return p
+
+
+def test_last_lines(tmp_path):
+    p = write(tmp_path, "".join(f"line {i}\n" for i in range(100)))
+    assert tail(p, 3) == ["line 97", "line 98", "line 99"]
+
+
+def test_no_trailing_newline(tmp_path):
+    assert tail(write(tmp_path, "a\nb\nc"), 2) == ["b", "c"]
+
+
+def test_short_file(tmp_path):
+    assert tail(write(tmp_path, "only\n"), 5) == ["only"]
+
+
+def test_empty_and_zero(tmp_path):
+    assert tail(write(tmp_path, ""), 3) == []
+    assert tail(write(tmp_path, "x\n"), 0) == []
+
+
+def test_small_blocks(tmp_path):
+    p = write(tmp_path, "".join(f"{i}\n" for i in range(50)))
+    assert tail(p, 4, block=3) == ["46", "47", "48", "49"]
+
+=== rotate-backups [files]
+--- task
+Write `prune_backups(directory, keep_daily=7, keep_weekly=4)` for files named like "backup-2024-05-31.tar.gz". Keep the newest file of each of the last keep_daily distinct days that have backups, plus the newest file of each of the last keep_weekly ISO weeks (counting weeks that have backups, newest first). Delete every other matching file and return the sorted list of deleted names. Files that don't match the pattern are never touched.
+--- solution
+import datetime
+import os
+import re
+
+_NAME = re.compile(r"^backup-(\d{4}-\d{2}-\d{2})\.tar\.gz$")
+
+
+def prune_backups(directory, keep_daily=7, keep_weekly=4):
+    dated = []
+    for name in os.listdir(directory):
+        m = _NAME.match(name)
+        if m:
+            try:
+                dated.append((datetime.date.fromisoformat(m.group(1)), name))
+            except ValueError:
+                continue
+    dated.sort(reverse=True)
+    keep = set()
+    days, weeks = [], []
+    for d, name in dated:
+        if d not in days and len(days) < keep_daily:
+            days.append(d)
+            keep.add(name)
+        week = d.isocalendar()[:2]
+        if week not in weeks and len(weeks) < keep_weekly:
+            weeks.append(week)
+            keep.add(name)
+    deleted = sorted(name for _, name in dated if name not in keep)
+    for name in deleted:
+        os.remove(os.path.join(directory, name))
+    return deleted
+--- tests
+import datetime
+
+
+def make(tmp_path, dates):
+    for d in dates:
+        (tmp_path / f"backup-{d}.tar.gz").write_text("x")
+
+
+def test_daily_only(tmp_path):
+    days = [(datetime.date(2024, 5, 31) - datetime.timedelta(days=i)).isoformat() for i in range(10)]
+    make(tmp_path, days)
+    deleted = prune_backups(tmp_path, keep_daily=7, keep_weekly=0)
+    assert deleted == ["backup-2024-05-22.tar.gz", "backup-2024-05-23.tar.gz", "backup-2024-05-24.tar.gz"]
+
+
+def test_weekly_keeps_older(tmp_path):
+    make(tmp_path, ["2024-05-31", "2024-05-24", "2024-05-17", "2024-05-10", "2024-05-03"])
+    deleted = prune_backups(tmp_path, keep_daily=1, keep_weekly=3)
+    assert deleted == ["backup-2024-05-03.tar.gz", "backup-2024-05-10.tar.gz"]
+
+
+def test_other_files_untouched(tmp_path):
+    (tmp_path / "notes.txt").write_text("keep me")
+    make(tmp_path, ["2024-01-01", "2023-01-01"])
+    prune_backups(tmp_path, keep_daily=1, keep_weekly=0)
+    assert (tmp_path / "notes.txt").exists()
+    assert not (tmp_path / "backup-2023-01-01.tar.gz").exists()
+
+
+def test_nothing_to_delete(tmp_path):
+    make(tmp_path, ["2024-01-01"])
+    assert prune_backups(tmp_path) == []
+
+
+def test_bad_date_ignored(tmp_path):
+    (tmp_path / "backup-2024-13-01.tar.gz").write_text("x")
+    assert prune_backups(tmp_path, keep_daily=0, keep_weekly=0) == []
+
+=== safe-json-write [files]
+--- task
+Write `save_json(path, data)` that writes JSON atomically: dump to a temporary file in the same directory, flush and fsync it, then os.replace it over the target, so a crash never leaves a half-written file; on any error the temporary file is removed and the original file stays untouched. Write `load_json(path, default)` that returns default when the file does not exist.
+--- solution
+import json
+import os
+import tempfile
+
+
+def save_json(path, data):
+    directory = os.path.dirname(os.path.abspath(path))
+    fd, tmp = tempfile.mkstemp(prefix=".tmp-", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def load_json(path, default):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return default
+--- tests
+import os
+
+import pytest
+
+
+def test_round_trip(tmp_path):
+    p = tmp_path / "state.json"
+    save_json(p, {"b": 1, "a": [1, 2]})
+    assert load_json(p, None) == {"a": [1, 2], "b": 1}
+
+
+def test_default(tmp_path):
+    assert load_json(tmp_path / "missing.json", {"x": 0}) == {"x": 0}
+
+
+def test_overwrite(tmp_path):
+    p = tmp_path / "s.json"
+    save_json(p, {"v": 1})
+    save_json(p, {"v": 2})
+    assert load_json(p, None) == {"v": 2}
+
+
+def test_failure_keeps_original_and_no_temp(tmp_path):
+    p = tmp_path / "s.json"
+    save_json(p, {"v": 1})
+    with pytest.raises(TypeError):
+        save_json(p, {"bad": object()})
+    assert load_json(p, None) == {"v": 1}
+    assert os.listdir(tmp_path) == ["s.json"]
+
+
+def test_sorted_keys(tmp_path):
+    p = tmp_path / "s.json"
+    save_json(p, {"z": 1, "a": 2})
+    assert p.read_text().index('"a"') < p.read_text().index('"z"')
+
+=== directory-tree [files]
+--- task
+Write `tree(root, max_depth=None)` that returns a text drawing of a directory like the `tree` command: the root name on the first line, then entries with "├── " / "└── " branches and "│   " / "    " indents, directories first then files, each group sorted case-insensitively, directories shown with a trailing "/". max_depth limits how many levels below the root are shown.
+--- solution
+from pathlib import Path
+
+
+def tree(root, max_depth=None):
+    root = Path(root)
+    lines = [root.name + "/"]
+
+    def walk(d, prefix, depth):
+        if max_depth is not None and depth > max_depth:
+            return
+        entries = sorted(d.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+        for i, p in enumerate(entries):
+            last = i == len(entries) - 1
+            lines.append(prefix + ("└── " if last else "├── ") + p.name + ("/" if p.is_dir() else ""))
+            if p.is_dir():
+                walk(p, prefix + ("    " if last else "│   "), depth + 1)
+
+    walk(root, "", 1)
+    return "\n".join(lines)
+--- tests
+def build(tmp_path):
+    root = tmp_path / "proj"
+    (root / "src" / "pkg").mkdir(parents=True)
+    (root / "src" / "pkg" / "mod.py").write_text("")
+    (root / "src" / "main.py").write_text("")
+    (root / "README.md").write_text("")
+    (root / "docs").mkdir()
+    return root
+
+
+def test_full(tmp_path):
+    expected = "\n".join([
+        "proj/",
+        "├── docs/",
+        "├── src/",
+        "│   ├── pkg/",
+        "│   │   └── mod.py",
+        "│   └── main.py",
+        "└── README.md",
+    ])
+    assert tree(build(tmp_path)) == expected
+
+
+def test_depth(tmp_path):
+    assert tree(build(tmp_path), max_depth=1) == "proj/\n├── docs/\n├── src/\n└── README.md"
+
+
+def test_empty(tmp_path):
+    (tmp_path / "e").mkdir()
+    assert tree(tmp_path / "e") == "e/"
+
+
+def test_case_insensitive_sort(tmp_path):
+    root = tmp_path / "r"
+    root.mkdir()
+    for n in ["b.txt", "A.txt", "c.txt"]:
+        (root / n).write_text("")
+    assert tree(root).splitlines()[1:] == ["├── A.txt", "├── b.txt", "└── c.txt"]
+
+
+def test_depth_zero(tmp_path):
+    assert tree(build(tmp_path), max_depth=0) == "proj/"
+
+=== cli-word-count [files]
+--- task
+Write `main(argv=None)` for a command-line tool like wc: it takes file paths and the flags -l, -w, -c (lines, words, bytes; default all three), prints one line per file with right-aligned counts (width 7 each) followed by the name, plus a "total" line when there is more than one file, and returns 0. A missing file prints "wc: <name>: No such file or directory" to stderr, continues, and makes the return code 1. Use argparse.
+--- solution
+import argparse
+import sys
+
+
+def _counts(data):
+    return {"l": data.count(b"\n"), "w": len(data.split()), "c": len(data)}
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="wc")
+    ap.add_argument("-l", action="store_true")
+    ap.add_argument("-w", action="store_true")
+    ap.add_argument("-c", action="store_true")
+    ap.add_argument("files", nargs="+")
+    a = ap.parse_args(argv)
+    keys = [k for k in "lwc" if getattr(a, k)] or ["l", "w", "c"]
+    total = {k: 0 for k in "lwc"}
+    rc, shown = 0, 0
+    for name in a.files:
+        try:
+            with open(name, "rb") as f:
+                c = _counts(f.read())
+        except FileNotFoundError:
+            print(f"wc: {name}: No such file or directory", file=sys.stderr)
+            rc = 1
+            continue
+        shown += 1
+        for k in "lwc":
+            total[k] += c[k]
+        print("".join(f"{c[k]:>7}" for k in keys) + f" {name}")
+    if len(a.files) > 1:
+        print("".join(f"{total[k]:>7}" for k in keys) + " total")
+    return rc
+--- tests
+def test_single(tmp_path, capsys):
+    p = tmp_path / "a.txt"
+    p.write_text("one two\nthree\n")
+    assert main([str(p)]) == 0
+    assert capsys.readouterr().out == f"      2      3     14 {p}\n"
+
+
+def test_flags(tmp_path, capsys):
+    p = tmp_path / "a.txt"
+    p.write_text("a b c\n")
+    main(["-w", str(p)])
+    assert capsys.readouterr().out == f"      3 {p}\n"
+
+
+def test_total(tmp_path, capsys):
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.write_text("x\n")
+    b.write_text("y\nz\n")
+    main(["-l", str(a), str(b)])
+    assert capsys.readouterr().out.splitlines()[-1] == "      3 total"
+
+
+def test_missing(tmp_path, capsys):
+    p = tmp_path / "a"
+    p.write_text("x")
+    assert main([str(p), str(tmp_path / "nope")]) == 1
+    captured = capsys.readouterr()
+    assert "No such file or directory" in captured.err
+
+
+def test_bytes_not_chars(tmp_path, capsys):
+    p = tmp_path / "u"
+    p.write_text("é\n", encoding="utf-8")
+    main(["-c", str(p)])
+    assert capsys.readouterr().out.startswith("      3")
+
+=== csv-merge-files [files]
+--- task
+Write `merge_csv(paths, out_path)` that concatenates CSV files with possibly different columns into one file whose header is the union of all columns in order of first appearance; missing cells are empty. Add a "source" column (the file's base name) as the first column. Return the number of data rows written. Files are read with the csv module (quoted fields with commas must survive).
+--- solution
+import csv
+import os
+
+
+def merge_csv(paths, out_path):
+    columns, rows = [], []
+    for p in paths:
+        with open(p, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for c in reader.fieldnames or []:
+                if c not in columns:
+                    columns.append(c)
+            for r in reader:
+                rows.append({"source": os.path.basename(p), **r})
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=["source"] + columns, restval="")
+        w.writeheader()
+        w.writerows(rows)
+    return len(rows)
+--- tests
+import csv
+
+
+def write(p, text):
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
+def read(p):
+    with open(p, newline="") as f:
+        return list(csv.reader(f))
+
+
+def test_union_columns(tmp_path):
+    a = write(tmp_path / "a.csv", "id,name\n1,ann\n")
+    b = write(tmp_path / "b.csv", "id,email\n2,b@x.org\n")
+    n = merge_csv([a, b], tmp_path / "out.csv")
+    assert n == 2
+    assert read(tmp_path / "out.csv") == [["source", "id", "name", "email"], ["a.csv", "1", "ann", ""],
+                                          ["b.csv", "2", "", "b@x.org"]]
+
+
+def test_quoted(tmp_path):
+    a = write(tmp_path / "a.csv", 'city\n"Paris, France"\n')
+    merge_csv([a], tmp_path / "o.csv")
+    assert read(tmp_path / "o.csv")[1] == ["a.csv", "Paris, France"]
+
+
+def test_header_only(tmp_path):
+    a = write(tmp_path / "a.csv", "x,y\n")
+    assert merge_csv([a], tmp_path / "o.csv") == 0
+    assert read(tmp_path / "o.csv") == [["source", "x", "y"]]
+
+
+def test_order_of_first_appearance(tmp_path):
+    a = write(tmp_path / "a.csv", "b,a\n1,2\n")
+    b = write(tmp_path / "b.csv", "c,a\n3,4\n")
+    merge_csv([a, b], tmp_path / "o.csv")
+    assert read(tmp_path / "o.csv")[0] == ["source", "b", "a", "c"]
+
+
+def test_empty_list(tmp_path):
+    assert merge_csv([], tmp_path / "o.csv") == 0

@@ -1,0 +1,954 @@
+=== snake-camel-case [text]
+--- task
+Write `to_snake(name)` that turns camelCase or PascalCase identifiers into snake_case (keeping runs of capitals such as "HTTPServer" together as "http_server"), and `to_camel(name)` that turns snake_case into camelCase. Leading and trailing underscores are dropped.
+--- solution
+import re
+
+
+def to_snake(name):
+    name = name.strip("_")
+    s = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", name)
+    s = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s)
+    return s.replace("-", "_").lower()
+
+
+def to_camel(name):
+    parts = [p for p in name.strip("_").split("_") if p]
+    if not parts:
+        return ""
+    return parts[0].lower() + "".join(p[:1].upper() + p[1:].lower() for p in parts[1:])
+--- tests
+def test_snake_simple():
+    assert to_snake("userName") == "user_name"
+    assert to_snake("UserName") == "user_name"
+
+
+def test_snake_acronym():
+    assert to_snake("HTTPServer") == "http_server"
+    assert to_snake("parseJSONData") == "parse_json_data"
+
+
+def test_snake_digits_and_underscores():
+    assert to_snake("_version2Id_") == "version2_id"
+
+
+def test_camel():
+    assert to_camel("user_name") == "userName"
+    assert to_camel("__max_retry_count") == "maxRetryCount"
+    assert to_camel("") == ""
+
+
+def test_round_trip():
+    assert to_camel(to_snake("totalAmountDue")) == "totalAmountDue"
+
+=== human-bytes [text]
+--- task
+Write `human_bytes(n)` that formats a byte count with binary units: "512 B", "1.0 KiB", "1.5 MiB", up to "TiB", with one decimal place above bytes. Negative numbers raise ValueError. Also write `parse_bytes(text)` that reads strings like "10 KiB", "2.5MiB", "7 B" or "300" (bytes) back into an int, rounding down.
+--- solution
+UNITS = ["B", "KiB", "MiB", "GiB", "TiB"]
+
+
+def human_bytes(n):
+    if n < 0:
+        raise ValueError("negative size")
+    if n < 1024:
+        return f"{n} B"
+    value = float(n)
+    for unit in UNITS[1:]:
+        value /= 1024
+        if value < 1024 or unit == UNITS[-1]:
+            return f"{value:.1f} {unit}"
+
+
+def parse_bytes(text):
+    text = text.strip()
+    for i, unit in reversed(list(enumerate(UNITS))):
+        if text.endswith(unit):
+            number = text[: -len(unit)].strip()
+            return int(float(number) * 1024**i)
+    return int(text)
+--- tests
+import pytest
+
+
+def test_small():
+    assert human_bytes(0) == "0 B"
+    assert human_bytes(512) == "512 B"
+
+
+def test_units():
+    assert human_bytes(1024) == "1.0 KiB"
+    assert human_bytes(1536 * 1024) == "1.5 MiB"
+    assert human_bytes(5 * 1024**4) == "5.0 TiB"
+
+
+def test_huge_stays_tib():
+    assert human_bytes(2048 * 1024**4) == "2048.0 TiB"
+
+
+def test_negative():
+    with pytest.raises(ValueError):
+        human_bytes(-1)
+
+
+def test_parse():
+    assert parse_bytes("10 KiB") == 10240
+    assert parse_bytes("2.5MiB") == int(2.5 * 1024**2)
+    assert parse_bytes("7 B") == 7
+    assert parse_bytes("300") == 300
+
+=== parse-duration [text]
+--- task
+Write `parse_duration(text)` that converts strings such as "1h30m", "45s", "2d 4h", "1h 5m 10s" or "90" (plain seconds) into a number of seconds (int). Units are d, h, m and s; each may appear at most once and in that order. Anything else raises ValueError.
+--- solution
+import re
+
+_PART = re.compile(r"\s*(\d+)\s*([dhms])")
+_ORDER = "dhms"
+_SECONDS = {"d": 86400, "h": 3600, "m": 60, "s": 1}
+
+
+def parse_duration(text):
+    text = text.strip()
+    if text.isdigit():
+        return int(text)
+    pos, total, last = 0, 0, -1
+    if not text:
+        raise ValueError("empty duration")
+    while pos < len(text):
+        m = _PART.match(text, pos)
+        if not m:
+            raise ValueError(f"bad duration: {text!r}")
+        idx = _ORDER.index(m.group(2))
+        if idx <= last:
+            raise ValueError(f"units out of order or repeated: {text!r}")
+        last = idx
+        total += int(m.group(1)) * _SECONDS[m.group(2)]
+        pos = m.end()
+    return total
+--- tests
+import pytest
+
+
+def test_examples():
+    assert parse_duration("1h30m") == 5400
+    assert parse_duration("45s") == 45
+    assert parse_duration("2d 4h") == 2 * 86400 + 4 * 3600
+
+
+def test_spaces_and_plain():
+    assert parse_duration(" 1h 5m 10s ") == 3910
+    assert parse_duration("90") == 90
+
+
+@pytest.mark.parametrize("bad", ["", "1x", "5m1h", "1h1h", "h", "1.5h"])
+def test_bad(bad):
+    with pytest.raises(ValueError):
+        parse_duration(bad)
+
+
+def test_zero():
+    assert parse_duration("0s") == 0
+
+
+def test_days_only():
+    assert parse_duration("3d") == 259200
+
+=== word-frequencies [text]
+--- task
+Write `top_words(text, n, stopwords=())` that returns the n most common words as (word, count) pairs. Words are runs of letters and apostrophes, compared case-insensitively; stopwords are ignored (also case-insensitively). Ties are broken alphabetically.
+--- solution
+import re
+from collections import Counter
+
+
+def top_words(text, n, stopwords=()):
+    stop = {w.lower() for w in stopwords}
+    words = [w.lower().strip("'") for w in re.findall(r"[A-Za-z']+", text)]
+    counts = Counter(w for w in words if w and w not in stop)
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:n]
+--- tests
+def test_basic():
+    assert top_words("the cat and the hat", 2) == [("the", 2), ("and", 1)]
+
+
+def test_case_insensitive():
+    assert top_words("Go go GO stop", 1) == [("go", 3)]
+
+
+def test_stopwords():
+    text = "The dog and the cat and the bird"
+    assert top_words(text, 2, stopwords=["THE", "and"]) == [("bird", 1), ("cat", 1)]
+
+
+def test_apostrophes():
+    assert top_words("don't stop, don't 'quote'", 2) == [("don't", 2), ("quote", 1)]
+
+
+def test_more_than_available():
+    assert top_words("a b", 10) == [("a", 1), ("b", 1)]
+
+
+def test_empty():
+    assert top_words("", 3) == []
+
+=== wrap-paragraphs [text]
+--- task
+Write `wrap(text, width)` that re-wraps text into lines of at most `width` characters, keeping paragraphs (separated by blank lines) apart with a single blank line. Words longer than `width` go on their own line unbroken. Return the result as one string without a trailing newline.
+--- solution
+def wrap(text, width):
+    if width < 1:
+        raise ValueError("width must be positive")
+    paragraphs = [p.split() for p in text.replace("\r\n", "\n").split("\n\n")]
+    out = []
+    for words in paragraphs:
+        if not words:
+            continue
+        lines, line = [], ""
+        for w in words:
+            if not line:
+                line = w
+            elif len(line) + 1 + len(w) <= width:
+                line += " " + w
+            else:
+                lines.append(line)
+                line = w
+        lines.append(line)
+        out.append("\n".join(lines))
+    return "\n\n".join(out)
+--- tests
+import pytest
+
+
+def test_simple():
+    assert wrap("one two three four", 9) == "one two\nthree\nfour"
+
+
+def test_exact_fit():
+    assert wrap("aaa bbb", 7) == "aaa bbb"
+
+
+def test_paragraphs():
+    text = "first para\nstill first\n\n\nsecond   para"
+    assert wrap(text, 20) == "first para still\nfirst\n\nsecond para"
+
+
+def test_long_word():
+    assert wrap("a supercalifragilistic b", 5) == "a\nsupercalifragilistic\nb"
+
+
+def test_bad_width():
+    with pytest.raises(ValueError):
+        wrap("x", 0)
+
+
+def test_empty():
+    assert wrap("   ", 10) == ""
+
+=== mask-card [text]
+--- task
+Write `luhn_valid(number)` that checks a card number with the Luhn algorithm (spaces and dashes allowed, at least 12 digits, otherwise False), and `mask_card(number)` that returns the digits with all but the last four replaced by "*", grouped in fours from the left with spaces, e.g. "**** **** **** 1111". mask_card raises ValueError for an invalid number.
+--- solution
+def _digits(number):
+    return number.replace(" ", "").replace("-", "")
+
+
+def luhn_valid(number):
+    d = _digits(number)
+    if not d.isdigit() or len(d) < 12:
+        return False
+    total = 0
+    for i, ch in enumerate(reversed(d)):
+        n = int(ch)
+        if i % 2 == 1:
+            n *= 2
+            if n > 9:
+                n -= 9
+        total += n
+    return total % 10 == 0
+
+
+def mask_card(number):
+    if not luhn_valid(number):
+        raise ValueError("invalid card number")
+    d = _digits(number)
+    masked = "*" * (len(d) - 4) + d[-4:]
+    return " ".join(masked[i:i + 4] for i in range(0, len(masked), 4))
+--- tests
+import pytest
+
+
+def test_valid_numbers():
+    assert luhn_valid("4111 1111 1111 1111")
+    assert luhn_valid("5500-0000-0000-0004")
+
+
+def test_invalid_numbers():
+    assert not luhn_valid("4111 1111 1111 1112")
+    assert not luhn_valid("1234")
+    assert not luhn_valid("4111 1111 1111 111a")
+
+
+def test_mask():
+    assert mask_card("4111 1111 1111 1111") == "**** **** **** 1111"
+
+
+def test_mask_amex_length():
+    assert mask_card("378282246310005") == "**** **** ***0 005"
+
+
+def test_mask_invalid():
+    with pytest.raises(ValueError):
+        mask_card("4111 1111 1111 1112")
+
+=== extract-mentions [text]
+--- task
+Write `extract(post)` that returns a dict with three lists, in order of first appearance and without duplicates: "hashtags" (words after "#", lowercased), "mentions" (names after "@", made of letters, digits and underscores) and "urls" (http or https URLs up to the next whitespace, with trailing punctuation .,!?) removed). An email address such as a@b.com is not a mention.
+--- solution
+import re
+
+_URL = re.compile(r"https?://\S+")
+_TAG = re.compile(r"(?<![\w&])#(\w+)")
+_MENTION = re.compile(r"(?<![\w.])@(\w+)")
+
+
+def _unique(items):
+    seen, out = set(), []
+    for x in items:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
+def extract(post):
+    urls = [u.rstrip(".,!?)") for u in _URL.findall(post)]
+    rest = _URL.sub(" ", post)
+    return {
+        "hashtags": _unique(t.lower() for t in _TAG.findall(rest)),
+        "mentions": _unique(_MENTION.findall(rest)),
+        "urls": _unique(urls),
+    }
+--- tests
+def test_all_kinds():
+    out = extract("Hi @ann_1, see https://ex.com/a?b=1. #Python #python #dev")
+    assert out == {"hashtags": ["python", "dev"], "mentions": ["ann_1"], "urls": ["https://ex.com/a?b=1"]}
+
+
+def test_email_is_not_mention():
+    assert extract("mail me: bob@example.com")["mentions"] == []
+
+
+def test_url_fragment_not_hashtag():
+    out = extract("docs at http://x.org/page#section (read it)")
+    assert out["hashtags"] == []
+    assert out["urls"] == ["http://x.org/page#section"]
+
+
+def test_order_and_duplicates():
+    assert extract("@b @a @b")["mentions"] == ["b", "a"]
+
+
+def test_nothing():
+    assert extract("plain text") == {"hashtags": [], "mentions": [], "urls": []}
+
+=== render-template [text]
+--- task
+Write `render(template, values)` for a tiny template language: "{{ name }}" is replaced by values["name"] (spaces inside the braces optional), dotted names such as "{{ user.email }}" look up nested dicts, "{{ name | upper }}" and "| lower" and "| title" apply a filter, and "{{{{" renders a literal "{{". A missing name raises KeyError naming it.
+--- solution
+import re
+
+_FIELD = re.compile(r"\{\{\s*([\w.]+)\s*(?:\|\s*(\w+)\s*)?\}\}")
+_FILTERS = {"upper": str.upper, "lower": str.lower, "title": str.title}
+
+
+def _lookup(values, dotted):
+    cur = values
+    for part in dotted.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            raise KeyError(dotted)
+        cur = cur[part]
+    return cur
+
+
+def render(template, values):
+    marker = "\x00"
+    template = template.replace("{{{{", marker)
+
+    def sub(m):
+        value = str(_lookup(values, m.group(1)))
+        if m.group(2):
+            if m.group(2) not in _FILTERS:
+                raise ValueError(f"unknown filter {m.group(2)}")
+            value = _FILTERS[m.group(2)](value)
+        return value
+
+    return _FIELD.sub(sub, template).replace(marker, "{{")
+--- tests
+import pytest
+
+
+def test_simple():
+    assert render("Hello {{name}}!", {"name": "Ada"}) == "Hello Ada!"
+
+
+def test_spaces_and_numbers():
+    assert render("{{ n }} items", {"n": 3}) == "3 items"
+
+
+def test_nested():
+    assert render("{{ user.email }}", {"user": {"email": "a@b.c"}}) == "a@b.c"
+
+
+def test_filters():
+    assert render("{{ x | upper }}-{{x|title}}", {"x": "big cat"}) == "BIG CAT-Big Cat"
+
+
+def test_missing():
+    with pytest.raises(KeyError, match="user.name"):
+        render("{{ user.name }}", {"user": {}})
+
+
+def test_escape():
+    assert render("{{{{ literal }} {{a}}", {"a": 1}) == "{{ literal }} 1"
+
+=== run-length [text]
+--- task
+Write `rle_encode(s)` that run-length encodes a string as count+char pairs ("aaab" -> "3a1b") and `rle_decode(s)` that reverses it (counts may have several digits). Decoding malformed input (a missing count or a trailing count) raises ValueError. The input strings to encode contain no digits.
+--- solution
+import re
+
+
+def rle_encode(s):
+    if not s:
+        return ""
+    out, prev, count = [], s[0], 1
+    for ch in s[1:]:
+        if ch == prev:
+            count += 1
+        else:
+            out.append(f"{count}{prev}")
+            prev, count = ch, 1
+    out.append(f"{count}{prev}")
+    return "".join(out)
+
+
+def rle_decode(s):
+    if not re.fullmatch(r"(\d+\D)*", s):
+        raise ValueError(f"malformed run-length string: {s!r}")
+    return "".join(ch * int(n) for n, ch in re.findall(r"(\d+)(\D)", s))
+--- tests
+import pytest
+
+
+def test_encode():
+    assert rle_encode("aaab") == "3a1b"
+    assert rle_encode("abc") == "1a1b1c"
+    assert rle_encode("") == ""
+
+
+def test_decode():
+    assert rle_decode("3a1b") == "aaab"
+    assert rle_decode("12x") == "x" * 12
+
+
+def test_round_trip():
+    s = "wwwwwwwwwwwwbbbccd  e"
+    assert rle_decode(rle_encode(s)) == s
+
+
+@pytest.mark.parametrize("bad", ["a3", "3", "3ab"])
+def test_malformed(bad):
+    with pytest.raises(ValueError):
+        rle_decode(bad)
+
+
+def test_spaces():
+    assert rle_encode("  ") == "2 "
+
+=== caesar-vigenere [text]
+--- task
+Write `caesar(text, shift)` that shifts letters by `shift` positions (wrapping, keeping case, leaving other characters alone; negative shifts decode) and `vigenere(text, key, decrypt=False)` that applies a Vigenere cipher with an alphabetic key, advancing the key only on letters. An empty or non-alphabetic key raises ValueError.
+--- solution
+def _shift(ch, k):
+    if ch.isupper():
+        return chr((ord(ch) - 65 + k) % 26 + 65)
+    if ch.islower():
+        return chr((ord(ch) - 97 + k) % 26 + 97)
+    return ch
+
+
+def caesar(text, shift):
+    return "".join(_shift(ch, shift) for ch in text)
+
+
+def vigenere(text, key, decrypt=False):
+    if not key or not key.isalpha():
+        raise ValueError("key must be letters")
+    shifts = [ord(c) - 97 for c in key.lower()]
+    out, i = [], 0
+    for ch in text:
+        if ch.isalpha() and ch.isascii():
+            k = shifts[i % len(shifts)]
+            out.append(_shift(ch, -k if decrypt else k))
+            i += 1
+        else:
+            out.append(ch)
+    return "".join(out)
+--- tests
+import pytest
+
+
+def test_caesar():
+    assert caesar("Hello, World!", 3) == "Khoor, Zruog!"
+    assert caesar("xyz", 3) == "abc"
+
+
+def test_caesar_decode():
+    assert caesar(caesar("Secret 42", 11), -11) == "Secret 42"
+
+
+def test_vigenere_known():
+    assert vigenere("ATTACK AT DAWN", "lemon") == "LXFOPV EF RNHR"
+
+
+def test_vigenere_round_trip():
+    msg = "Meet me at 10pm, by the old oak."
+    assert vigenere(vigenere(msg, "Key"), "Key", decrypt=True) == msg
+
+
+def test_bad_key():
+    with pytest.raises(ValueError):
+        vigenere("x", "k3y")
+    with pytest.raises(ValueError):
+        vigenere("x", "")
+
+=== anagram-groups [text]
+--- task
+Write `group_anagrams(words)` that groups words that are anagrams of each other, ignoring case and spaces. Return a list of groups; each group keeps the words in input order, and groups are ordered by the position of their first word. Duplicate words (same text) appear only once.
+--- solution
+def group_anagrams(words):
+    groups = {}
+    for w in words:
+        key = "".join(sorted(w.lower().replace(" ", "")))
+        group = groups.setdefault(key, [])
+        if w not in group:
+            group.append(w)
+    return list(groups.values())
+--- tests
+def test_basic():
+    assert group_anagrams(["eat", "tea", "tan", "ate", "nat", "bat"]) == [["eat", "tea", "ate"], ["tan", "nat"], ["bat"]]
+
+
+def test_case_and_spaces():
+    assert group_anagrams(["Dormitory", "dirty room", "x"]) == [["Dormitory", "dirty room"], ["x"]]
+
+
+def test_duplicates():
+    assert group_anagrams(["ab", "ba", "ab"]) == [["ab", "ba"]]
+
+
+def test_empty():
+    assert group_anagrams([]) == []
+
+
+def test_empty_string_word():
+    assert group_anagrams(["", " "]) == [["", " "]]
+
+=== balanced-brackets [text]
+--- task
+Write `check_brackets(text)` that returns None when every (), [] and {} in the text is balanced, or the 0-based index of the first offending character otherwise: an unexpected closer, or for an unclosed opener, the index of the earliest one still open at the end. Brackets inside single or double quoted strings are ignored (quotes do not nest; a backslash escapes the next character inside a string).
+--- solution
+PAIRS = {")": "(", "]": "[", "}": "{"}
+
+
+def check_brackets(text):
+    stack = []
+    quote = None
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in "'\"":
+            quote = ch
+        elif ch in "([{":
+            stack.append((ch, i))
+        elif ch in PAIRS:
+            if not stack or stack[-1][0] != PAIRS[ch]:
+                return i
+            stack.pop()
+        i += 1
+    return stack[0][1] if stack else None
+--- tests
+def test_balanced():
+    assert check_brackets("f(a[1], {b: (2)})") is None
+    assert check_brackets("") is None
+
+
+def test_unexpected_closer():
+    assert check_brackets("(a]") == 2
+    assert check_brackets("x)") == 1
+
+
+def test_unclosed():
+    assert check_brackets("a(b[c]") == 1
+    assert check_brackets("{[") == 0
+
+
+def test_strings_ignored():
+    assert check_brackets("print(')')") is None
+    assert check_brackets('s = "\\" ]"') is None
+
+
+def test_mismatch_inside():
+    assert check_brackets("{(})") == 2
+
+=== levenshtein-suggest [text]
+--- task
+Write `edit_distance(a, b)` (Levenshtein: insertions, deletions, substitutions cost 1) and `suggest(word, vocabulary, max_distance=2, limit=3)` that returns up to `limit` vocabulary words within `max_distance` of `word` (case-insensitive), closest first, ties alphabetical. An exact match returns just that word.
+--- solution
+def edit_distance(a, b):
+    if len(a) < len(b):
+        a, b = b, a
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def suggest(word, vocabulary, max_distance=2, limit=3):
+    w = word.lower()
+    scored = []
+    for v in vocabulary:
+        d = edit_distance(w, v.lower())
+        if d == 0:
+            return [v]
+        if d <= max_distance:
+            scored.append((d, v.lower(), v))
+    return [v for _, _, v in sorted(scored)[:limit]]
+--- tests
+def test_distance():
+    assert edit_distance("kitten", "sitting") == 3
+    assert edit_distance("", "abc") == 3
+    assert edit_distance("same", "same") == 0
+
+
+def test_symmetry():
+    assert edit_distance("flaw", "lawn") == edit_distance("lawn", "flaw") == 2
+
+
+def test_suggest():
+    vocab = ["apple", "apply", "ample", "maple", "angle"]
+    assert suggest("appel", vocab) == ["apple", "apply"]
+    assert suggest("appel", vocab, max_distance=3, limit=4) == ["apple", "apply", "ample", "maple"]
+
+
+def test_exact():
+    assert suggest("Apple", ["apple", "apply"]) == ["apple"]
+
+
+def test_nothing_close():
+    assert suggest("zzz", ["apple"]) == []
+
+=== markdown-toc [text]
+--- task
+Write `toc(markdown)` that builds a table of contents from ATX headings ("#" to "###") as nested bullet lines: two spaces of indent per level below the top level found, each item a link "[Title](#slug)". The slug is lowercase, with spaces turned into "-" and characters other than letters, digits, "-" and "_" removed; repeated slugs get "-1", "-2" suffixes. Headings inside ``` fenced code blocks are ignored.
+--- solution
+import re
+
+
+def _slug(title):
+    s = re.sub(r"[^\w\- ]", "", title.strip().lower())
+    return s.replace(" ", "-")
+
+
+def toc(markdown):
+    lines, in_code, seen = [], False, {}
+    heads = []
+    for line in markdown.splitlines():
+        if line.lstrip().startswith("```"):
+            in_code = not in_code
+            continue
+        m = re.match(r"^(#{1,3})\s+(.+?)\s*#*\s*$", line)
+        if m and not in_code:
+            heads.append((len(m.group(1)), m.group(2)))
+    if not heads:
+        return ""
+    top = min(level for level, _ in heads)
+    for level, title in heads:
+        slug = _slug(title)
+        n = seen.get(slug, 0)
+        seen[slug] = n + 1
+        if n:
+            slug = f"{slug}-{n}"
+        lines.append("  " * (level - top) + f"- [{title}](#{slug})")
+    return "\n".join(lines)
+--- tests
+def test_nested():
+    md = "# Intro\ntext\n## Install it\n### On Linux\n## Usage"
+    assert toc(md) == ("- [Intro](#intro)\n  - [Install it](#install-it)\n    - [On Linux](#on-linux)\n"
+                       "  - [Usage](#usage)")
+
+
+def test_top_level_is_relative():
+    assert toc("## A\n### B") == "- [A](#a)\n  - [B](#b)"
+
+
+def test_punctuation_and_duplicates():
+    assert toc("# What's new?\n# What's new?") == "- [What's new?](#whats-new)\n- [What's new?](#whats-new-1)"
+
+
+def test_code_block_ignored():
+    assert toc("# Real\n```\n# not a heading\n```") == "- [Real](#real)"
+
+
+def test_none():
+    assert toc("no headings here") == ""
+
+=== strip-html [text]
+--- task
+Write `html_to_text(html)` that removes tags, drops the contents of <script> and <style> elements entirely, turns <br> and the end of <p>, <div>, <li> and <h1>-<h6> into newlines, unescapes HTML entities, collapses runs of spaces within a line and strips each line, and removes blank lines.
+--- solution
+import html as _html
+import re
+
+
+def html_to_text(html):
+    s = re.sub(r"(?is)<(script|style)\b.*?</\1\s*>", "", html)
+    s = re.sub(r"(?i)<br\s*/?>", "\n", s)
+    s = re.sub(r"(?i)</(p|div|li|h[1-6])\s*>", "\n", s)
+    s = re.sub(r"<[^>]+>", "", s)
+    s = _html.unescape(s)
+    lines = [re.sub(r"[ \t\xa0]+", " ", line).strip() for line in s.split("\n")]
+    return "\n".join(line for line in lines if line)
+--- tests
+def test_paragraphs():
+    assert html_to_text("<p>Hello <b>world</b></p><p>Bye</p>") == "Hello world\nBye"
+
+
+def test_script_style_removed():
+    html = "<style>p{color:red}</style><p>x</p><script>alert('<p>')</script>"
+    assert html_to_text(html) == "x"
+
+
+def test_entities_and_br():
+    assert html_to_text("Fish &amp; chips<br/>5 &lt; 6&nbsp;&nbsp;ok") == "Fish & chips\n5 < 6 ok"
+
+
+def test_list():
+    assert html_to_text("<ul><li>one</li><li> two </li></ul>") == "one\ntwo"
+
+
+def test_case_insensitive():
+    assert html_to_text("<SCRIPT>x</SCRIPT><DIV>y</DIV>") == "y"
+
+=== sentence-split [text]
+--- task
+Write `sentences(text)` that splits text into sentences ending in ".", "!" or "?" (possibly followed by closing quotes or brackets), when followed by whitespace and an uppercase letter, digit or quote, or by the end of the text. It must not split after common abbreviations (Mr., Mrs., Dr., e.g., i.e., etc., vs.) or after single capital initials such as "J.". Return stripped sentences; a trailing fragment without punctuation is kept.
+--- solution
+import re
+
+ABBREV = {"mr.", "mrs.", "ms.", "dr.", "e.g.", "i.e.", "etc.", "vs.", "prof.", "st."}
+
+
+def sentences(text):
+    out, start = [], 0
+    for m in re.finditer(r"[.!?]+['\")\]]*(?=\s+['\"(A-Z0-9]|\s*$)", text):
+        end = m.end()
+        last_word = text[start:m.start() + 1].split()[-1].lower() if text[start:m.start() + 1].split() else ""
+        if m.group().startswith(".") and (last_word in ABBREV or re.fullmatch(r"[a-z]\.", last_word)):
+            continue
+        piece = text[start:end].strip()
+        if piece:
+            out.append(piece)
+        start = end
+    rest = text[start:].strip()
+    if rest:
+        out.append(rest)
+    return out
+--- tests
+def test_basic():
+    assert sentences("Hi there. How are you? Fine!") == ["Hi there.", "How are you?", "Fine!"]
+
+
+def test_abbreviations():
+    assert sentences("Dr. Smith met Mr. Jones. They talked.") == ["Dr. Smith met Mr. Jones.", "They talked."]
+
+
+def test_initials_and_eg():
+    assert sentences("J. R. Tolkien wrote books, e.g. The Hobbit. Read it.") == [
+        "J. R. Tolkien wrote books, e.g. The Hobbit.", "Read it."]
+
+
+def test_quotes_and_fragment():
+    assert sentences('He said "Stop!" Then left. and more') == ['He said "Stop!"', "Then left. and more"]
+
+
+def test_numbers_and_ellipsis():
+    assert sentences("Wait... 3 people came. Done") == ["Wait...", "3 people came.", "Done"]
+
+=== normalize-phone [text]
+--- task
+Write `normalize_phone(raw, default_country="1")` that turns phone numbers written in common ways ("(555) 123-4567", "555.123.4567", "+44 20 7946 0958", "0044 20 7946 0958", "1-555-123-4567") into E.164 form "+<country><number>". A number without a country prefix gets default_country. The result must have 8 to 15 digits after "+", otherwise ValueError; letters also raise ValueError.
+--- solution
+import re
+
+
+def normalize_phone(raw, default_country="1"):
+    s = raw.strip()
+    if re.search(r"[A-Za-z]", s):
+        raise ValueError(f"letters in phone number: {raw!r}")
+    plus = s.startswith("+")
+    digits = re.sub(r"\D", "", s)
+    if plus:
+        full = digits
+    elif digits.startswith("00"):
+        full = digits[2:]
+    elif default_country == "1" and len(digits) == 11 and digits.startswith("1"):
+        full = digits
+    else:
+        full = default_country + digits
+    if not 8 <= len(full) <= 15:
+        raise ValueError(f"bad phone number length: {raw!r}")
+    return "+" + full
+--- tests
+import pytest
+
+
+def test_us_formats():
+    for raw in ["(555) 123-4567", "555.123.4567", "1-555-123-4567", "+1 555 123 4567"]:
+        assert normalize_phone(raw) == "+15551234567"
+
+
+def test_international():
+    assert normalize_phone("+44 20 7946 0958") == "+442079460958"
+    assert normalize_phone("0044 20 7946 0958") == "+442079460958"
+
+
+def test_default_country():
+    assert normalize_phone("030 1234567", default_country="49") == "+490301234567"
+
+
+def test_too_short():
+    with pytest.raises(ValueError):
+        normalize_phone("123")
+
+
+def test_letters():
+    with pytest.raises(ValueError):
+        normalize_phone("1-800-FLOWERS")
+
+=== justify-text [text]
+--- task
+Write `justify(words, width)` that lays words out in fully justified lines of exactly `width` characters: extra spaces are spread as evenly as possible, with the leftmost gaps getting more. A line with one word, and the last line, are left-aligned and padded with spaces on the right. A word longer than width raises ValueError.
+--- solution
+def justify(words, width):
+    if any(len(w) > width for w in words):
+        raise ValueError("word longer than width")
+    lines, cur, length = [], [], 0
+    for w in words:
+        if cur and length + len(cur) + len(w) > width:
+            lines.append(cur)
+            cur, length = [], 0
+        cur.append(w)
+        length += len(w)
+    if cur:
+        lines.append(cur)
+    out = []
+    for i, line in enumerate(lines):
+        if i == len(lines) - 1 or len(line) == 1:
+            out.append(" ".join(line).ljust(width))
+            continue
+        spaces = width - sum(len(w) for w in line)
+        gaps = len(line) - 1
+        q, r = divmod(spaces, gaps)
+        s = ""
+        for j, w in enumerate(line[:-1]):
+            s += w + " " * (q + (1 if j < r else 0))
+        out.append(s + line[-1])
+    return out
+--- tests
+import pytest
+
+
+def test_example():
+    words = "This is an example of text justification.".split()
+    assert justify(words, 16) == ["This    is    an", "example  of text", "justification.  "]
+
+
+def test_uneven_gaps_go_left():
+    assert justify(["a", "b", "c", "dddd"], 7) == ["a  b  c", "dddd   "]
+
+
+def test_single_word_line():
+    assert justify(["hello", "world"], 6) == ["hello ", "world "]
+
+
+def test_too_long():
+    with pytest.raises(ValueError):
+        justify(["abcdefg"], 5)
+
+
+def test_empty():
+    assert justify([], 5) == []
+
+=== csv-table-markdown [text]
+--- task
+Write `markdown_table(rows, headers, align=None)` that renders a list of rows (lists of values) as a GitHub Markdown table with columns padded to equal width. `align` is an optional list of "l", "r" or "c" per column, shown in the separator row as ":---", "---:" or ":---:" and applied to the padding. Values are converted with str(); a "|" inside a value is escaped with a backslash. Rows with the wrong number of cells raise ValueError.
+--- solution
+def markdown_table(rows, headers, align=None):
+    ncol = len(headers)
+    align = align or ["l"] * ncol
+    if len(align) != ncol or any(a not in "lrc" for a in align):
+        raise ValueError("bad align")
+    cells = [[str(h).replace("|", "\\|") for h in headers]]
+    for r in rows:
+        if len(r) != ncol:
+            raise ValueError(f"row has {len(r)} cells, expected {ncol}")
+        cells.append([str(v).replace("|", "\\|") for v in r])
+    widths = [max(3, max(len(row[i]) for row in cells)) for i in range(ncol)]
+
+    def pad(text, w, a):
+        return text.rjust(w) if a == "r" else text.center(w) if a == "c" else text.ljust(w)
+
+    def line(row):
+        return "| " + " | ".join(pad(t, w, a) for t, w, a in zip(row, widths, align)) + " |"
+
+    seps = []
+    for w, a in zip(widths, align):
+        dash = "-" * w
+        seps.append(":" + dash[1:] if a == "l" else dash[:-1] + ":" if a == "r" else ":" + dash[2:] + ":")
+    return "\n".join([line(cells[0]), "| " + " | ".join(seps) + " |"] + [line(r) for r in cells[1:]])
+--- tests
+import pytest
+
+
+def test_basic():
+    out = markdown_table([["apple", 3], ["kiwi", 12]], ["fruit", "n"], align=["l", "r"])
+    assert out == "| fruit |   n |\n| :---- | --: |\n| apple |   3 |\n| kiwi  |  12 |"
+
+
+def test_default_left():
+    assert markdown_table([[1]], ["x"]) == "| x   |\n| :-- |\n| 1   |"
+
+
+def test_center():
+    out = markdown_table([["ab"]], ["title"], align=["c"])
+    assert out.splitlines()[1] == "| :---: |"
+
+
+def test_escape_pipe():
+    assert "a\\|b" in markdown_table([["a|b"]], ["h"])
+
+
+def test_bad_row():
+    with pytest.raises(ValueError):
+        markdown_table([[1, 2]], ["only"])

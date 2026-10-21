@@ -1,0 +1,1026 @@
+=== flatten-dict [data]
+--- task
+Write `flatten(d, sep=".")` that turns a nested dict into a flat dict with joined keys ({"a": {"b": 1}} -> {"a.b": 1}); lists are kept as values and empty dicts become an empty-dict value at their key. Write `unflatten(flat, sep=".")` for the reverse; it raises ValueError when a key is both a value and a parent (e.g. "a" and "a.b").
+--- solution
+def flatten(d, sep="."):
+    out = {}
+
+    def walk(prefix, value):
+        if isinstance(value, dict) and value:
+            for k, v in value.items():
+                walk(f"{prefix}{sep}{k}" if prefix else str(k), v)
+        else:
+            out[prefix] = value
+
+    for k, v in d.items():
+        walk(str(k), v)
+    return out
+
+
+def unflatten(flat, sep="."):
+    root = {}
+    for key in sorted(flat, key=lambda k: k.count(sep)):
+        parts = key.split(sep)
+        cur = root
+        for p in parts[:-1]:
+            nxt = cur.setdefault(p, {})
+            if not isinstance(nxt, dict):
+                raise ValueError(f"{key!r} conflicts with a value at {p!r}")
+            cur = nxt
+        if parts[-1] in cur and isinstance(cur[parts[-1]], dict) and cur[parts[-1]]:
+            raise ValueError(f"{key!r} is also a parent")
+        cur[parts[-1]] = flat[key]
+    return root
+--- tests
+import pytest
+
+
+def test_flatten():
+    assert flatten({"a": {"b": 1, "c": {"d": [1, 2]}}, "e": 3}) == {"a.b": 1, "a.c.d": [1, 2], "e": 3}
+
+
+def test_empty_dict_value():
+    assert flatten({"a": {}}) == {"a": {}}
+
+
+def test_custom_sep():
+    assert flatten({"x": {"y": 1}}, sep="/") == {"x/y": 1}
+
+
+def test_round_trip():
+    d = {"db": {"host": "h", "port": 5432}, "debug": False, "tags": ["a"]}
+    assert unflatten(flatten(d)) == d
+
+
+def test_conflict():
+    with pytest.raises(ValueError):
+        unflatten({"a": 1, "a.b": 2})
+
+=== deep-merge [data]
+--- task
+Write `deep_merge(base, override)` that returns a new dict: keys from override replace those in base, except that when both values are dicts they are merged recursively. Neither input may be modified. A value of None in override deletes the key from the result.
+--- solution
+import copy
+
+
+def deep_merge(base, override):
+    out = copy.deepcopy(base)
+    for k, v in override.items():
+        if v is None:
+            out.pop(k, None)
+        elif isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = deep_merge(out[k], v)
+        else:
+            out[k] = copy.deepcopy(v)
+    return out
+--- tests
+def test_nested():
+    base = {"db": {"host": "localhost", "port": 5432}, "debug": False}
+    over = {"db": {"host": "prod"}, "debug": True}
+    assert deep_merge(base, over) == {"db": {"host": "prod", "port": 5432}, "debug": True}
+
+
+def test_inputs_unchanged():
+    base = {"a": {"b": [1]}}
+    over = {"a": {"c": 2}}
+    out = deep_merge(base, over)
+    out["a"]["b"].append(9)
+    assert base == {"a": {"b": [1]}} and over == {"a": {"c": 2}}
+
+
+def test_none_deletes():
+    assert deep_merge({"a": 1, "b": 2}, {"a": None}) == {"b": 2}
+
+
+def test_dict_replaces_scalar():
+    assert deep_merge({"a": 1}, {"a": {"x": 1}}) == {"a": {"x": 1}}
+
+
+def test_lists_replaced_not_merged():
+    assert deep_merge({"a": [1, 2]}, {"a": [3]}) == {"a": [3]}
+
+=== dotted-path [data]
+--- task
+Write `get_path(obj, path, default=None)` that reads values from nested dicts and lists with paths like "users[0].name" or "a.b[2][1]" and returns default when any step is missing (missing key, index out of range, wrong type). Write `set_path(obj, path, value)` that sets the value in place, creating dicts for missing keys; list indices must already exist (IndexError otherwise).
+--- solution
+import re
+
+_TOKEN = re.compile(r"([^.\[\]]+)|\[(-?\d+)\]")
+
+
+def _steps(path):
+    steps, pos = [], 0
+    for m in _TOKEN.finditer(path):
+        steps.append(m.group(1) if m.group(1) is not None else int(m.group(2)))
+    if not steps:
+        raise ValueError(f"empty path: {path!r}")
+    return steps
+
+
+def get_path(obj, path, default=None):
+    cur = obj
+    for s in _steps(path):
+        try:
+            if isinstance(s, int):
+                if not isinstance(cur, list):
+                    return default
+                cur = cur[s]
+            else:
+                if not isinstance(cur, dict) or s not in cur:
+                    return default
+                cur = cur[s]
+        except IndexError:
+            return default
+    return cur
+
+
+def set_path(obj, path, value):
+    steps = _steps(path)
+    cur = obj
+    for s, nxt in zip(steps, steps[1:]):
+        if isinstance(s, int):
+            cur = cur[s]
+        else:
+            if s not in cur:
+                cur[s] = [] if isinstance(nxt, int) else {}
+            cur = cur[s]
+    last = steps[-1]
+    if isinstance(last, int):
+        cur[last] = value
+    else:
+        cur[last] = value
+--- tests
+import pytest
+
+DATA = {"users": [{"name": "ann", "tags": ["a", "b"]}, {"name": "bob"}], "meta": {"count": 2}}
+
+
+def test_get():
+    assert get_path(DATA, "users[0].name") == "ann"
+    assert get_path(DATA, "users[0].tags[1]") == "b"
+    assert get_path(DATA, "meta.count") == 2
+    assert get_path(DATA, "users[-1].name") == "bob"
+
+
+def test_missing():
+    assert get_path(DATA, "users[5].name", "?") == "?"
+    assert get_path(DATA, "meta.count.x") is None
+    assert get_path(DATA, "users.name", 0) == 0
+
+
+def test_set_creates_dicts():
+    d = {}
+    set_path(d, "a.b.c", 1)
+    assert d == {"a": {"b": {"c": 1}}}
+
+
+def test_set_list_item():
+    d = {"xs": [1, 2, 3]}
+    set_path(d, "xs[1]", 20)
+    assert d == {"xs": [1, 20, 3]}
+
+
+def test_set_bad_index():
+    with pytest.raises(IndexError):
+        set_path({"xs": []}, "xs[0]", 1)
+
+=== group-aggregate [data]
+--- task
+Write `summarize(records, by, field)` that groups a list of dicts by the value of key `by` and returns a dict mapping each group to {"count", "sum", "min", "max", "mean"} of `field` (mean rounded to 2 places). Records missing `field` or with a None value are counted in "missing" for their group and left out of the numbers; a group with no numeric values has None for sum, min, max and mean. Groups appear in order of first appearance.
+--- solution
+def summarize(records, by, field):
+    groups = {}
+    for r in records:
+        g = groups.setdefault(r.get(by), {"values": [], "missing": 0})
+        v = r.get(field)
+        if v is None:
+            g["missing"] += 1
+        else:
+            g["values"].append(v)
+    out = {}
+    for key, g in groups.items():
+        vs = g["values"]
+        out[key] = {
+            "count": len(vs),
+            "sum": sum(vs) if vs else None,
+            "min": min(vs) if vs else None,
+            "max": max(vs) if vs else None,
+            "mean": round(sum(vs) / len(vs), 2) if vs else None,
+            "missing": g["missing"],
+        }
+    return out
+--- tests
+SALES = [
+    {"region": "north", "amount": 10},
+    {"region": "south", "amount": 5},
+    {"region": "north", "amount": 30},
+    {"region": "south"},
+    {"region": "east", "amount": None},
+]
+
+
+def test_numbers():
+    out = summarize(SALES, "region", "amount")
+    assert out["north"] == {"count": 2, "sum": 40, "min": 10, "max": 30, "mean": 20.0, "missing": 0}
+
+
+def test_missing_counted():
+    assert summarize(SALES, "region", "amount")["south"]["missing"] == 1
+
+
+def test_all_missing():
+    assert summarize(SALES, "region", "amount")["east"] == {
+        "count": 0, "sum": None, "min": None, "max": None, "mean": None, "missing": 1}
+
+
+def test_order():
+    assert list(summarize(SALES, "region", "amount")) == ["north", "south", "east"]
+
+
+def test_rounding():
+    out = summarize([{"k": 1, "v": 1}, {"k": 1, "v": 2}, {"k": 1, "v": 2}], "k", "v")
+    assert out[1]["mean"] == 1.67
+
+=== record-diff [data]
+--- task
+Write `diff_records(old, new, key="id")` that compares two lists of dicts identified by `key` and returns {"added": [...], "removed": [...], "changed": [...]}: added and removed are the full records (in the order of the list they come from), and changed is a list of {"key": k, "changes": {field: (old_value, new_value)}} for records whose other fields differ, including fields that appear or disappear (shown as None). Duplicate keys within one list raise ValueError.
+--- solution
+def _index(rows, key):
+    out = {}
+    for r in rows:
+        k = r[key]
+        if k in out:
+            raise ValueError(f"duplicate key {k!r}")
+        out[k] = r
+    return out
+
+
+def diff_records(old, new, key="id"):
+    a, b = _index(old, key), _index(new, key)
+    added = [r for r in new if r[key] not in a]
+    removed = [r for r in old if r[key] not in b]
+    changed = []
+    for r in new:
+        k = r[key]
+        if k not in a:
+            continue
+        before = a[k]
+        fields = [f for f in list(before) + [f for f in r if f not in before] if f != key]
+        changes = {f: (before.get(f), r.get(f)) for f in fields if before.get(f) != r.get(f) or (f in before) != (f in r)}
+        if changes:
+            changed.append({"key": k, "changes": changes})
+    return {"added": added, "removed": removed, "changed": changed}
+--- tests
+import pytest
+
+OLD = [{"id": 1, "name": "ann", "age": 30}, {"id": 2, "name": "bob"}, {"id": 3, "name": "cy"}]
+NEW = [{"id": 2, "name": "bob", "age": 41}, {"id": 1, "name": "ann", "age": 31}, {"id": 4, "name": "dee"}]
+
+
+def test_added_removed():
+    out = diff_records(OLD, NEW)
+    assert out["added"] == [{"id": 4, "name": "dee"}]
+    assert out["removed"] == [{"id": 3, "name": "cy"}]
+
+
+def test_changed():
+    out = diff_records(OLD, NEW)
+    assert out["changed"] == [
+        {"key": 2, "changes": {"age": (None, 41)}},
+        {"key": 1, "changes": {"age": (30, 31)}},
+    ]
+
+
+def test_identical():
+    assert diff_records(OLD, OLD) == {"added": [], "removed": [], "changed": []}
+
+
+def test_custom_key():
+    out = diff_records([{"sku": "a", "q": 1}], [{"sku": "a", "q": 2}], key="sku")
+    assert out["changed"] == [{"key": "a", "changes": {"q": (1, 2)}}]
+
+
+def test_duplicates():
+    with pytest.raises(ValueError):
+        diff_records([{"id": 1}, {"id": 1}], [])
+
+=== pivot-sales [data]
+--- task
+Write `pivot(rows, row_key, col_key, value_key)` that builds a pivot table from a list of dicts: a dict of dicts summing value_key for each (row, column) pair, with every row containing every column seen anywhere (0 where there is no data), plus a "total" column per row and a "total" row with column sums. Rows and columns are sorted.
+--- solution
+def pivot(rows, row_key, col_key, value_key):
+    cols = sorted({r[col_key] for r in rows})
+    names = sorted({r[row_key] for r in rows})
+    table = {n: {c: 0 for c in cols} for n in names}
+    for r in rows:
+        table[r[row_key]][r[col_key]] += r[value_key]
+    for n in names:
+        table[n]["total"] = sum(table[n][c] for c in cols)
+    total = {c: sum(table[n][c] for n in names) for c in cols}
+    total["total"] = sum(total.values())
+    table["total"] = total
+    return table
+--- tests
+ROWS = [
+    {"rep": "bea", "month": "feb", "sales": 5},
+    {"rep": "al", "month": "jan", "sales": 10},
+    {"rep": "al", "month": "feb", "sales": 3},
+    {"rep": "al", "month": "jan", "sales": 2},
+]
+
+
+def test_cells():
+    t = pivot(ROWS, "rep", "month", "sales")
+    assert t["al"] == {"feb": 3, "jan": 12, "total": 15}
+    assert t["bea"] == {"feb": 5, "jan": 0, "total": 5}
+
+
+def test_total_row():
+    assert pivot(ROWS, "rep", "month", "sales")["total"] == {"feb": 8, "jan": 12, "total": 20}
+
+
+def test_sorted_rows():
+    assert list(pivot(ROWS, "rep", "month", "sales")) == ["al", "bea", "total"]
+
+
+def test_empty():
+    assert pivot([], "a", "b", "c") == {"total": {"total": 0}}
+
+
+def test_floats():
+    t = pivot([{"r": "x", "c": "y", "v": 0.5}, {"r": "x", "c": "y", "v": 0.25}], "r", "c", "v")
+    assert t["x"]["y"] == 0.75
+
+=== chunk-batch [data]
+--- task
+Write `chunked(iterable, size)` that yields lists of up to `size` items from any iterable (lazily: it must work on an infinite generator), `windowed(seq, n, step=1)` that returns overlapping tuples of length n advancing by step (no partial windows), and `dedupe(iterable, key=None)` that yields items in order, skipping ones whose key was seen. size, n and step must be positive (ValueError).
+--- solution
+from itertools import islice
+
+
+def chunked(iterable, size):
+    if size < 1:
+        raise ValueError("size must be positive")
+    it = iter(iterable)
+    while True:
+        batch = list(islice(it, size))
+        if not batch:
+            return
+        yield batch
+
+
+def windowed(seq, n, step=1):
+    if n < 1 or step < 1:
+        raise ValueError("n and step must be positive")
+    items = list(seq)
+    return [tuple(items[i:i + n]) for i in range(0, len(items) - n + 1, step)]
+
+
+def dedupe(iterable, key=None):
+    seen = set()
+    for x in iterable:
+        k = key(x) if key else x
+        if k not in seen:
+            seen.add(k)
+            yield x
+--- tests
+import itertools
+
+import pytest
+
+
+def test_chunked():
+    assert list(chunked(range(7), 3)) == [[0, 1, 2], [3, 4, 5], [6]]
+    assert list(chunked([], 2)) == []
+
+
+def test_chunked_lazy():
+    first = next(chunked(itertools.count(), 4))
+    assert first == [0, 1, 2, 3]
+
+
+def test_windowed():
+    assert windowed([1, 2, 3, 4, 5], 3) == [(1, 2, 3), (2, 3, 4), (3, 4, 5)]
+    assert windowed("abcdef", 2, step=2) == [("a", "b"), ("c", "d"), ("e", "f")]
+    assert windowed([1, 2], 3) == []
+
+
+def test_dedupe():
+    assert list(dedupe([3, 1, 3, 2, 1])) == [3, 1, 2]
+    assert list(dedupe(["a", "A", "b"], key=str.lower)) == ["a", "b"]
+
+
+def test_bad_sizes():
+    with pytest.raises(ValueError):
+        list(chunked([1], 0))
+    with pytest.raises(ValueError):
+        windowed([1], 1, step=0)
+
+=== csv-typed-reader [data]
+--- task
+Write `read_typed_csv(text, schema)` that parses CSV text with a header row into a list of dicts, converting columns named in `schema` with the given type name: "int", "float", "bool" (true/false/yes/no/1/0, any case) or "date" (YYYY-MM-DD, to datetime.date). Empty cells become None. Columns not in the schema stay strings. A bad value raises ValueError mentioning the line number (header is line 1) and the column.
+--- solution
+import csv
+import datetime
+import io
+
+_BOOL = {"true": True, "yes": True, "1": True, "false": False, "no": False, "0": False}
+
+
+def _convert(kind, raw):
+    if kind == "int":
+        return int(raw)
+    if kind == "float":
+        return float(raw)
+    if kind == "bool":
+        if raw.strip().lower() not in _BOOL:
+            raise ValueError(raw)
+        return _BOOL[raw.strip().lower()]
+    if kind == "date":
+        return datetime.date.fromisoformat(raw.strip())
+    raise ValueError(f"unknown type {kind}")
+
+
+def read_typed_csv(text, schema):
+    reader = csv.DictReader(io.StringIO(text))
+    out = []
+    for line_no, row in enumerate(reader, start=2):
+        rec = {}
+        for col, raw in row.items():
+            if raw is None or raw == "":
+                rec[col] = None
+            elif col in schema:
+                try:
+                    rec[col] = _convert(schema[col], raw)
+                except ValueError:
+                    raise ValueError(f"line {line_no}, column {col!r}: bad {schema[col]} {raw!r}") from None
+            else:
+                rec[col] = raw
+        out.append(rec)
+    return out
+--- tests
+import datetime
+
+import pytest
+
+CSV = "name,age,score,active,joined\nann,31,9.5,Yes,2024-01-05\nbob,,7,no,\n"
+SCHEMA = {"age": "int", "score": "float", "active": "bool", "joined": "date"}
+
+
+def test_types():
+    rows = read_typed_csv(CSV, SCHEMA)
+    assert rows[0] == {"name": "ann", "age": 31, "score": 9.5, "active": True, "joined": datetime.date(2024, 1, 5)}
+
+
+def test_empty_cells():
+    assert read_typed_csv(CSV, SCHEMA)[1] == {"name": "bob", "age": None, "score": 7.0, "active": False, "joined": None}
+
+
+def test_bad_value_line():
+    with pytest.raises(ValueError, match="line 3.*'age'"):
+        read_typed_csv("name,age\nann,1\nbob,old\n", {"age": "int"})
+
+
+def test_quoted():
+    rows = read_typed_csv('a,b\n"x, y",2\n', {"b": "int"})
+    assert rows == [{"a": "x, y", "b": 2}]
+
+
+def test_bad_bool():
+    with pytest.raises(ValueError):
+        read_typed_csv("f\nmaybe\n", {"f": "bool"})
+
+=== json-lines-stats [data]
+--- task
+Write `jsonl_stats(lines)` that reads JSON Lines (an iterable of strings) and returns {"records": n, "bad_lines": [line numbers starting at 1], "fields": {field: count of records having it}} for top-level object fields. Blank lines are skipped; lines that are not valid JSON objects are bad.
+--- solution
+import json
+from collections import Counter
+
+
+def jsonl_stats(lines):
+    n, bad, fields = 0, [], Counter()
+    for i, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            bad.append(i)
+            continue
+        if not isinstance(obj, dict):
+            bad.append(i)
+            continue
+        n += 1
+        fields.update(obj.keys())
+    return {"records": n, "bad_lines": bad, "fields": dict(fields)}
+--- tests
+def test_counts():
+    lines = ['{"a": 1, "b": 2}', '{"a": 3}', "", "not json", "[1, 2]", '{"b": null}']
+    assert jsonl_stats(lines) == {"records": 3, "bad_lines": [4, 5], "fields": {"a": 2, "b": 2}}
+
+
+def test_empty():
+    assert jsonl_stats([]) == {"records": 0, "bad_lines": [], "fields": {}}
+
+
+def test_file_like(tmp_path):
+    p = tmp_path / "x.jsonl"
+    p.write_text('{"k": 1}\n{"k": 2}\n')
+    with open(p) as f:
+        assert jsonl_stats(f)["records"] == 2
+
+
+def test_whitespace_lines():
+    assert jsonl_stats(["   ", "\t"])["records"] == 0
+
+
+def test_nested_fields_not_counted():
+    assert jsonl_stats(['{"a": {"b": 1}}'])["fields"] == {"a": 1}
+
+=== running-balance [data]
+--- task
+Write `statement(opening, transactions)` where transactions are (date string, description, amount) tuples with positive deposits and negative withdrawals. Return a list of dicts in date order (stable for equal dates) with "date", "description", "amount" and "balance" after each one, using Decimal amounts rounded to cents. Also write `overdrafts(rows)` returning the dates on which the balance first went below zero (each dip counted once until it recovers to zero or above).
+--- solution
+from decimal import ROUND_HALF_UP, Decimal
+
+
+def _money(x):
+    return Decimal(str(x)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def statement(opening, transactions):
+    balance = _money(opening)
+    rows = []
+    for date, desc, amount in sorted(transactions, key=lambda t: t[0]):
+        amt = _money(amount)
+        balance += amt
+        rows.append({"date": date, "description": desc, "amount": amt, "balance": balance})
+    return rows
+
+
+def overdrafts(rows):
+    dates, below = [], False
+    for r in rows:
+        if r["balance"] < 0 and not below:
+            dates.append(r["date"])
+            below = True
+        elif r["balance"] >= 0:
+            below = False
+    return dates
+--- tests
+from decimal import Decimal
+
+TX = [
+    ("2024-03-02", "rent", -800),
+    ("2024-03-01", "salary", 1000.10),
+    ("2024-03-05", "groceries", -250.555),
+    ("2024-03-06", "refund", 100),
+    ("2024-03-07", "car", -200),
+]
+
+
+def test_order_and_balance():
+    rows = statement(100, TX)
+    assert [r["description"] for r in rows] == ["salary", "rent", "groceries", "refund", "car"]
+    assert rows[0]["balance"] == Decimal("1100.10")
+
+
+def test_rounding():
+    rows = statement(0, [("2024-01-01", "x", 0.005), ("2024-01-02", "y", 2.675)])
+    assert rows[0]["amount"] == Decimal("0.01") and rows[1]["balance"] == Decimal("2.69")
+
+
+def test_overdrafts():
+    rows = statement(100, TX)
+    assert [str(r["balance"]) for r in rows] == ["1100.10", "300.10", "49.54", "149.54", "-50.46"]
+    assert overdrafts(rows) == ["2024-03-07"]
+
+
+def test_repeated_dips():
+    rows = statement(0, [("1", "a", -1), ("2", "b", -1), ("3", "c", 5), ("4", "d", -9)])
+    assert overdrafts(rows) == ["1", "4"]
+
+
+def test_empty():
+    assert statement(5, []) == [] and overdrafts([]) == []
+
+=== settle-debts [data]
+--- task
+Write `settle(expenses)` for splitting group costs: each expense is (payer, amount, participants) and is shared equally by its participants. Return a list of (debtor, creditor, amount) payments, amounts rounded to cents, that settles everyone, using a greedy match of the largest debtor with the largest creditor (names break ties alphabetically). Write `balances(expenses)` too, returning each person's net balance (positive means they are owed).
+--- solution
+from collections import defaultdict
+
+
+def balances(expenses):
+    net = defaultdict(float)
+    for payer, amount, people in expenses:
+        share = amount / len(people)
+        net[payer] += amount
+        for p in people:
+            net[p] -= share
+    return {k: round(v, 2) for k, v in sorted(net.items())}
+
+
+def settle(expenses):
+    net = balances(expenses)
+    debtors = [[-v, k] for k, v in net.items() if v < -0.005]
+    creditors = [[v, k] for k, v in net.items() if v > 0.005]
+    out = []
+    while debtors and creditors:
+        debtors.sort(key=lambda x: (-x[0], x[1]))
+        creditors.sort(key=lambda x: (-x[0], x[1]))
+        d, c = debtors[0], creditors[0]
+        pay = round(min(d[0], c[0]), 2)
+        out.append((d[1], c[1], pay))
+        d[0] = round(d[0] - pay, 2)
+        c[0] = round(c[0] - pay, 2)
+        if d[0] <= 0.005:
+            debtors.pop(0)
+        if c[0] <= 0.005:
+            creditors.pop(0)
+    return out
+--- tests
+EXP = [("ann", 90, ["ann", "bob", "cy"]), ("bob", 30, ["ann", "bob", "cy"])]
+
+
+def test_balances():
+    assert balances(EXP) == {"ann": 50.0, "bob": -10.0, "cy": -40.0}
+
+
+def test_settle():
+    assert settle(EXP) == [("cy", "ann", 40.0), ("bob", "ann", 10.0)]
+
+
+def test_already_even():
+    assert settle([("a", 10, ["a"])]) == []
+
+
+def test_sum_zero():
+    exp = [("a", 100, ["a", "b", "c"]), ("b", 50, ["b", "c"]), ("c", 10, ["a"])]
+    total = {}
+    for d, c, amt in settle(exp):
+        total[d] = total.get(d, 0) - amt
+        total[c] = total.get(c, 0) + amt
+    expected = {k: v for k, v in balances(exp).items() if v}
+    assert set(total) == set(expected)
+    assert all(abs(total[k] - expected[k]) <= 0.02 for k in expected)  # cents lost to rounding at most
+
+
+def test_thirds():
+    out = settle([("a", 10, ["a", "b", "c"])])
+    assert out == [("b", "a", 3.33), ("c", "a", 3.33)]
+
+=== timesheet-hours [data]
+--- task
+Write `hours_by_week(entries)` where entries are (date "YYYY-MM-DD", start "HH:MM", end "HH:MM") work periods. A period whose end is earlier than its start runs past midnight and counts for its start date. Return a dict mapping ISO week labels like "2024-W05" to total hours rounded to 2 places, sorted by week. Overlapping periods on the same date are counted once (merge them first). Bad times raise ValueError.
+--- solution
+import datetime
+
+
+def _minutes(hhmm):
+    h, m = hhmm.split(":")
+    h, m = int(h), int(m)
+    if not (0 <= h < 24 and 0 <= m < 60):
+        raise ValueError(f"bad time {hhmm!r}")
+    return h * 60 + m
+
+
+def hours_by_week(entries):
+    by_date = {}
+    for day, start, end in entries:
+        s, e = _minutes(start), _minutes(end)
+        if e <= s:
+            e += 24 * 60
+        by_date.setdefault(day, []).append((s, e))
+    weeks = {}
+    for day, spans in by_date.items():
+        spans.sort()
+        total, cur_s, cur_e = 0, None, None
+        for s, e in spans:
+            if cur_e is None or s > cur_e:
+                if cur_e is not None:
+                    total += cur_e - cur_s
+                cur_s, cur_e = s, e
+            else:
+                cur_e = max(cur_e, e)
+        total += cur_e - cur_s
+        y, w, _ = datetime.date.fromisoformat(day).isocalendar()
+        label = f"{y}-W{w:02d}"
+        weeks[label] = weeks.get(label, 0) + total
+    return {k: round(v / 60, 2) for k, v in sorted(weeks.items())}
+--- tests
+import pytest
+
+
+def test_simple_week():
+    entries = [("2024-01-29", "09:00", "17:30"), ("2024-01-30", "09:00", "12:15")]
+    assert hours_by_week(entries) == {"2024-W05": 11.75}
+
+
+def test_overnight():
+    assert hours_by_week([("2024-02-02", "22:00", "02:00")]) == {"2024-W05": 4.0}
+
+
+def test_overlap_merged():
+    entries = [("2024-02-05", "09:00", "12:00"), ("2024-02-05", "11:00", "13:00"), ("2024-02-05", "14:00", "15:00")]
+    assert hours_by_week(entries) == {"2024-W06": 5.0}
+
+
+def test_year_boundary():
+    assert hours_by_week([("2024-12-30", "08:00", "09:00")]) == {"2025-W01": 1.0}
+
+
+def test_bad_time():
+    with pytest.raises(ValueError):
+        hours_by_week([("2024-01-01", "25:00", "26:00")])
+
+=== free-slots [data]
+--- task
+Write `free_slots(busy, day_start, day_end, min_minutes=30)` that takes busy intervals as ("HH:MM", "HH:MM") pairs (unsorted, possibly overlapping or extending outside the day) and returns the free intervals within [day_start, day_end] that are at least min_minutes long, as "HH:MM" pairs in order.
+--- solution
+def _m(t):
+    h, m = map(int, t.split(":"))
+    return h * 60 + m
+
+
+def _t(m):
+    return f"{m // 60:02d}:{m % 60:02d}"
+
+
+def free_slots(busy, day_start, day_end, min_minutes=30):
+    start, end = _m(day_start), _m(day_end)
+    spans = sorted((max(_m(a), start), min(_m(b), end)) for a, b in busy)
+    out, cur = [], start
+    for a, b in spans:
+        if b <= cur:
+            continue
+        if a - cur >= min_minutes:
+            out.append((_t(cur), _t(a)))
+        cur = max(cur, b)
+    if end - cur >= min_minutes:
+        out.append((_t(cur), _t(end)))
+    return out
+--- tests
+def test_basic():
+    busy = [("10:00", "11:00"), ("09:00", "09:30"), ("13:00", "14:30")]
+    assert free_slots(busy, "09:00", "17:00") == [("09:30", "10:00"), ("11:00", "13:00"), ("14:30", "17:00")]
+
+
+def test_overlapping_busy():
+    busy = [("10:00", "12:00"), ("11:00", "13:00")]
+    assert free_slots(busy, "10:00", "14:00") == [("13:00", "14:00")]
+
+
+def test_short_gaps_dropped():
+    busy = [("09:00", "09:50"), ("10:00", "17:00")]
+    assert free_slots(busy, "09:00", "17:00") == []
+    assert free_slots(busy, "09:00", "17:00", min_minutes=10) == [("09:50", "10:00")]
+
+
+def test_outside_day():
+    assert free_slots([("07:00", "09:30"), ("16:00", "20:00")], "09:00", "17:00") == [("09:30", "16:00")]
+
+
+def test_no_busy():
+    assert free_slots([], "08:00", "09:00") == [("08:00", "09:00")]
+
+=== business-days [data]
+--- task
+Write `business_days(start, end, holidays=())` counting weekdays (Mon-Fri) from start to end inclusive, skipping the given holiday dates; if end is before start the count is negative (the same days counted backwards). Write `add_business_days(start, n, holidays=())` that returns the date n business days after start (n may be negative; n = 0 returns start, or the next business day if start is not one). Dates are datetime.date objects.
+--- solution
+import datetime
+
+ONE = datetime.timedelta(days=1)
+
+
+def _is_bday(d, hol):
+    return d.weekday() < 5 and d not in hol
+
+
+def business_days(start, end, holidays=()):
+    hol = set(holidays)
+    if end < start:
+        return -business_days(end, start, hol)
+    n, d = 0, start
+    while d <= end:
+        n += _is_bday(d, hol)
+        d += ONE
+    return n
+
+
+def add_business_days(start, n, holidays=()):
+    hol = set(holidays)
+    d = start
+    if n == 0:
+        while not _is_bday(d, hol):
+            d += ONE
+        return d
+    step = ONE if n > 0 else -ONE
+    left = abs(n)
+    while left:
+        d += step
+        if _is_bday(d, hol):
+            left -= 1
+    return d
+--- tests
+from datetime import date
+
+
+def test_one_week():
+    assert business_days(date(2024, 3, 4), date(2024, 3, 10)) == 5
+
+
+def test_holiday():
+    assert business_days(date(2024, 12, 23), date(2024, 12, 27), [date(2024, 12, 25), date(2024, 12, 26)]) == 3
+
+
+def test_reverse():
+    assert business_days(date(2024, 3, 8), date(2024, 3, 4)) == -5
+
+
+def test_add():
+    assert add_business_days(date(2024, 3, 8), 1) == date(2024, 3, 11)
+    assert add_business_days(date(2024, 3, 11), -1) == date(2024, 3, 8)
+    assert add_business_days(date(2024, 3, 9), 0) == date(2024, 3, 11)
+
+
+def test_add_with_holidays():
+    assert add_business_days(date(2024, 12, 24), 1, [date(2024, 12, 25), date(2024, 12, 26)]) == date(2024, 12, 27)
+
+=== resample-series [data]
+--- task
+Write `resample(points, minutes, how="mean")` that groups (datetime, value) points into consecutive buckets of `minutes` length aligned to midnight, and returns (bucket_start, aggregate) pairs for every bucket from the first to the last point, in order. `how` is "mean", "sum", "max" or "last" (the latest point in time). Empty buckets in between get None. Unsorted input is allowed.
+--- solution
+import datetime
+
+
+def resample(points, minutes, how="mean"):
+    if not points:
+        return []
+    width = datetime.timedelta(minutes=minutes)
+
+    def floor(t):
+        midnight = t.replace(hour=0, minute=0, second=0, microsecond=0)
+        return midnight + ((t - midnight) // width) * width
+
+    buckets = {}
+    for t, v in sorted(points, key=lambda p: p[0]):
+        buckets.setdefault(floor(t), []).append(v)
+    agg = {"mean": lambda vs: sum(vs) / len(vs), "sum": sum, "max": max, "last": lambda vs: vs[-1]}[how]
+    out, cur, last = [], min(buckets), max(buckets)
+    while cur <= last:
+        vs = buckets.get(cur)
+        out.append((cur, agg(vs) if vs else None))
+        cur += width
+    return out
+--- tests
+from datetime import datetime as dt
+
+
+PTS = [(dt(2024, 1, 1, 10, 5), 4), (dt(2024, 1, 1, 10, 0), 2), (dt(2024, 1, 1, 10, 40), 10), (dt(2024, 1, 1, 9, 59), 1)]
+
+
+def test_mean_15():
+    out = resample(PTS, 15)
+    assert out == [(dt(2024, 1, 1, 9, 45), 1.0), (dt(2024, 1, 1, 10, 0), 3.0), (dt(2024, 1, 1, 10, 15), None),
+                   (dt(2024, 1, 1, 10, 30), 10.0)]
+
+
+def test_sum_hour():
+    assert resample(PTS, 60, "sum") == [(dt(2024, 1, 1, 9), 1), (dt(2024, 1, 1, 10), 16)]
+
+
+def test_last_is_latest_in_time():
+    assert resample(PTS, 60, "last")[1] == (dt(2024, 1, 1, 10), 10)
+
+
+def test_max():
+    assert resample(PTS, 30, "max")[1] == (dt(2024, 1, 1, 10), 4)
+
+
+def test_empty():
+    assert resample([], 5) == []
+
+=== fill-missing-dates [data]
+--- task
+Write `fill_dates(rows, fill="previous")` where rows are (date string "YYYY-MM-DD", value) pairs, possibly unsorted and with gaps. Return a sorted list covering every day from the first to the last date. Missing days get the previous known value when fill is "previous", 0 when fill is "zero", or a linear interpolation between neighbours (rounded to 2 places) when fill is "linear". Duplicate dates raise ValueError.
+--- solution
+import datetime
+
+
+def fill_dates(rows, fill="previous"):
+    known = {}
+    for d, v in rows:
+        day = datetime.date.fromisoformat(d)
+        if day in known:
+            raise ValueError(f"duplicate date {d}")
+        known[day] = v
+    if not known:
+        return []
+    days = sorted(known)
+    out = []
+    d = days[0]
+    while d <= days[-1]:
+        if d in known:
+            out.append((d.isoformat(), known[d]))
+        elif fill == "zero":
+            out.append((d.isoformat(), 0))
+        elif fill == "previous":
+            out.append((d.isoformat(), out[-1][1]))
+        elif fill == "linear":
+            before = max(k for k in days if k < d)
+            after = min(k for k in days if k > d)
+            frac = (d - before).days / (after - before).days
+            out.append((d.isoformat(), round(known[before] + frac * (known[after] - known[before]), 2)))
+        else:
+            raise ValueError(f"unknown fill {fill!r}")
+        d += datetime.timedelta(days=1)
+    return out
+--- tests
+import pytest
+
+ROWS = [("2024-01-04", 40), ("2024-01-01", 10)]
+
+
+def test_previous():
+    assert fill_dates(ROWS) == [("2024-01-01", 10), ("2024-01-02", 10), ("2024-01-03", 10), ("2024-01-04", 40)]
+
+
+def test_zero():
+    assert [v for _, v in fill_dates(ROWS, "zero")] == [10, 0, 0, 40]
+
+
+def test_linear():
+    assert [v for _, v in fill_dates(ROWS, "linear")] == [10, 20.0, 30.0, 40]
+
+
+def test_month_boundary():
+    out = fill_dates([("2024-02-28", 1), ("2024-03-01", 3)])
+    assert [d for d, _ in out] == ["2024-02-28", "2024-02-29", "2024-03-01"]
+
+
+def test_duplicate():
+    with pytest.raises(ValueError):
+        fill_dates([("2024-01-01", 1), ("2024-01-01", 2)])
+
+=== percentile-summary [data]
+--- task
+Write `percentile(values, p)` using linear interpolation between closest ranks (the same as numpy's default), for p from 0 to 100, raising ValueError on an empty list or p out of range. Write `describe(values)` returning {"n", "min", "p25", "median", "p75", "max", "iqr_outliers"} where outliers are values outside 1.5 IQR from the quartiles, sorted.
+--- solution
+def percentile(values, p):
+    if not values:
+        raise ValueError("no values")
+    if not 0 <= p <= 100:
+        raise ValueError("p must be between 0 and 100")
+    xs = sorted(values)
+    k = (len(xs) - 1) * p / 100
+    lo = int(k)
+    hi = min(lo + 1, len(xs) - 1)
+    return xs[lo] + (xs[hi] - xs[lo]) * (k - lo)
+
+
+def describe(values):
+    q1, q3 = percentile(values, 25), percentile(values, 75)
+    iqr = q3 - q1
+    lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+    return {
+        "n": len(values),
+        "min": min(values),
+        "p25": q1,
+        "median": percentile(values, 50),
+        "p75": q3,
+        "max": max(values),
+        "iqr_outliers": sorted(v for v in values if v < lo or v > hi),
+    }
+--- tests
+import pytest
+
+
+def test_percentiles():
+    xs = [15, 20, 35, 40, 50]
+    assert percentile(xs, 0) == 15
+    assert percentile(xs, 100) == 50
+    assert percentile(xs, 50) == 35
+    assert percentile(xs, 40) == 29.0
+
+
+def test_unsorted_input():
+    assert percentile([3, 1, 2], 50) == 2
+
+
+def test_describe():
+    d = describe([1, 2, 3, 4, 5, 6, 7, 8, 100])
+    assert d["median"] == 5 and d["p25"] == 3 and d["p75"] == 7
+    assert d["iqr_outliers"] == [100]
+
+
+def test_errors():
+    with pytest.raises(ValueError):
+        percentile([], 50)
+    with pytest.raises(ValueError):
+        percentile([1], 101)
+
+
+def test_single():
+    assert describe([4])["iqr_outliers"] == []

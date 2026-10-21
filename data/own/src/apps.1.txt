@@ -1,0 +1,1182 @@
+=== inventory-restock [apps]
+--- task
+Write a class `Inventory` with `add(sku, qty)`, `remove(sku, qty)` (ValueError if not enough stock, leaving stock unchanged), `set_reorder(sku, level, amount)` and `restock_report()` returning a list of (sku, on_hand, order_amount) for every sku at or below its reorder level, sorted by sku. Quantities must be positive integers (ValueError otherwise). Unknown skus have 0 on hand.
+--- solution
+class Inventory:
+    def __init__(self):
+        self._stock = {}
+        self._reorder = {}
+
+    @staticmethod
+    def _check(qty):
+        if not isinstance(qty, int) or isinstance(qty, bool) or qty <= 0:
+            raise ValueError("quantity must be a positive integer")
+
+    def on_hand(self, sku):
+        return self._stock.get(sku, 0)
+
+    def add(self, sku, qty):
+        self._check(qty)
+        self._stock[sku] = self.on_hand(sku) + qty
+
+    def remove(self, sku, qty):
+        self._check(qty)
+        if self.on_hand(sku) < qty:
+            raise ValueError(f"not enough {sku}: have {self.on_hand(sku)}, need {qty}")
+        self._stock[sku] -= qty
+
+    def set_reorder(self, sku, level, amount):
+        self._check(amount)
+        self._reorder[sku] = (level, amount)
+
+    def restock_report(self):
+        return sorted((sku, self.on_hand(sku), amount) for sku, (level, amount) in self._reorder.items()
+                      if self.on_hand(sku) <= level)
+--- tests
+import pytest
+
+
+def test_add_remove():
+    inv = Inventory()
+    inv.add("apple", 5)
+    inv.remove("apple", 2)
+    assert inv.on_hand("apple") == 3
+
+
+def test_not_enough():
+    inv = Inventory()
+    inv.add("pear", 1)
+    with pytest.raises(ValueError):
+        inv.remove("pear", 2)
+    assert inv.on_hand("pear") == 1
+
+
+def test_bad_qty():
+    inv = Inventory()
+    for bad in (0, -1, 1.5, True):
+        with pytest.raises(ValueError):
+            inv.add("x", bad)
+
+
+def test_report():
+    inv = Inventory()
+    inv.add("b", 10)
+    inv.add("a", 2)
+    inv.set_reorder("a", 5, 20)
+    inv.set_reorder("b", 5, 10)
+    inv.set_reorder("c", 0, 3)
+    assert inv.restock_report() == [("a", 2, 20), ("c", 0, 3)]
+
+
+def test_report_at_level():
+    inv = Inventory()
+    inv.add("a", 5)
+    inv.set_reorder("a", 5, 1)
+    assert inv.restock_report() == [("a", 5, 1)]
+
+=== coupon-cart [apps]
+--- task
+Write `checkout(items, coupons=())` where items are (name, unit_price, qty) and coupons are strings: "PCT10" (10% off the subtotal, any number of percent), "OFF5" (5 off, after percentage coupons, never below zero) and "BOGO:<name>" (every second unit of that item free). Apply BOGO first, then percentages (only the largest one counts), then fixed amounts. Return a dict {"subtotal", "discount", "total"} as Decimals rounded to cents. Unknown coupons raise ValueError.
+--- solution
+import re
+from decimal import ROUND_HALF_UP, Decimal
+
+CENT = Decimal("0.01")
+
+
+def checkout(items, coupons=()):
+    subtotal = sum(Decimal(str(price)) * qty for _, price, qty in items)
+    bogo, pct, off = set(), Decimal(0), Decimal(0)
+    for c in coupons:
+        if m := re.fullmatch(r"PCT(\d+)", c):
+            pct = max(pct, Decimal(m.group(1)))
+        elif m := re.fullmatch(r"OFF(\d+(?:\.\d+)?)", c):
+            off += Decimal(m.group(1))
+        elif c.startswith("BOGO:"):
+            bogo.add(c[5:])
+        else:
+            raise ValueError(f"unknown coupon {c!r}")
+    after = subtotal
+    for name, price, qty in items:
+        if name in bogo:
+            after -= Decimal(str(price)) * (qty // 2)
+    after -= after * pct / 100
+    after = max(Decimal(0), after - off)
+    total = after.quantize(CENT, rounding=ROUND_HALF_UP)
+    subtotal = subtotal.quantize(CENT, rounding=ROUND_HALF_UP)
+    return {"subtotal": subtotal, "discount": subtotal - total, "total": total}
+--- tests
+from decimal import Decimal
+
+import pytest
+
+ITEMS = [("tea", 4.50, 3), ("mug", 12, 1)]
+
+
+def test_no_coupons():
+    assert checkout(ITEMS) == {"subtotal": Decimal("25.50"), "discount": Decimal("0.00"), "total": Decimal("25.50")}
+
+
+def test_percent_largest_only():
+    assert checkout(ITEMS, ["PCT10", "PCT20"])["total"] == Decimal("20.40")
+
+
+def test_order_bogo_pct_off():
+    out = checkout(ITEMS, ["OFF5", "BOGO:tea", "PCT10"])
+    assert out["total"] == Decimal("13.90")
+    assert out["discount"] == Decimal("11.60")
+
+
+def test_never_negative():
+    assert checkout([("x", 1, 1)], ["OFF5"])["total"] == Decimal("0.00")
+
+
+def test_unknown():
+    with pytest.raises(ValueError):
+        checkout(ITEMS, ["FREE"])
+
+=== grade-book [apps]
+--- task
+Write `final_grades(scores, weights)` where scores maps student -> {category: list of scores out of 100} and weights maps category -> weight (weights must sum to 1, else ValueError). Each category average drops the lowest score when there are at least 3. A missing category counts as 0. Return student -> (percentage rounded to 1 place, letter) with A >= 90, B >= 80, C >= 70, D >= 60, else F.
+--- solution
+import math
+
+
+def _letter(p):
+    for cut, letter in ((90, "A"), (80, "B"), (70, "C"), (60, "D")):
+        if p >= cut:
+            return letter
+    return "F"
+
+
+def final_grades(scores, weights):
+    if not math.isclose(sum(weights.values()), 1.0, abs_tol=1e-9):
+        raise ValueError("weights must sum to 1")
+    out = {}
+    for student, cats in scores.items():
+        total = 0.0
+        for cat, w in weights.items():
+            xs = sorted(cats.get(cat, []))
+            if len(xs) >= 3:
+                xs = xs[1:]
+            avg = sum(xs) / len(xs) if xs else 0.0
+            total += w * avg
+        pct = round(total, 1)
+        out[student] = (pct, _letter(pct))
+    return out
+--- tests
+import pytest
+
+W = {"homework": 0.3, "exams": 0.7}
+
+
+def test_basic():
+    out = final_grades({"ann": {"homework": [100, 90], "exams": [90]}}, W)
+    assert out == {"ann": (91.5, "A")}
+
+
+def test_drop_lowest():
+    out = final_grades({"bob": {"homework": [0, 80, 100], "exams": [80]}}, W)
+    assert out["bob"] == (83.0, "B")
+
+
+def test_missing_category():
+    assert final_grades({"cy": {"homework": [100]}}, W)["cy"] == (30.0, "F")
+
+
+def test_boundary():
+    assert final_grades({"d": {"homework": [60], "exams": [60]}}, W)["d"] == (60.0, "D")
+
+
+def test_bad_weights():
+    with pytest.raises(ValueError):
+        final_grades({}, {"a": 0.5, "b": 0.4})
+
+=== loan-schedule [apps]
+--- task
+Write `amortization(principal, annual_rate, months)` returning the monthly payment and a schedule list of dicts {"month", "payment", "interest", "principal", "balance"} as Decimals rounded to cents. The payment uses the standard annuity formula (zero rate means principal / months); the last payment is adjusted so the balance ends at exactly 0.00.
+--- solution
+from decimal import ROUND_HALF_UP, Decimal
+
+CENT = Decimal("0.01")
+
+
+def _c(x):
+    return Decimal(x).quantize(CENT, rounding=ROUND_HALF_UP)
+
+
+def amortization(principal, annual_rate, months):
+    if months <= 0:
+        raise ValueError("months must be positive")
+    p = Decimal(str(principal))
+    r = Decimal(str(annual_rate)) / 12
+    if r == 0:
+        payment = _c(p / months)
+    else:
+        payment = _c(p * r / (1 - (1 + r) ** -months))
+    balance, rows = p, []
+    for m in range(1, months + 1):
+        interest = _c(balance * r)
+        if m == months:
+            pay = balance + interest
+        else:
+            pay = payment
+        princ = pay - interest
+        balance = balance - princ
+        rows.append({"month": m, "payment": _c(pay), "interest": interest, "principal": _c(princ), "balance": _c(balance)})
+    return payment, rows
+--- tests
+from decimal import Decimal
+
+import pytest
+
+
+def test_payment():
+    payment, _ = amortization(10000, 0.06, 12)
+    assert payment == Decimal("860.66")
+
+
+def test_ends_at_zero():
+    _, rows = amortization(10000, 0.06, 12)
+    assert rows[-1]["balance"] == Decimal("0.00")
+    assert len(rows) == 12
+
+
+def test_first_row():
+    _, rows = amortization(10000, 0.06, 12)
+    assert rows[0] == {"month": 1, "payment": Decimal("860.66"), "interest": Decimal("50.00"),
+                       "principal": Decimal("810.66"), "balance": Decimal("9189.34")}
+
+
+def test_zero_rate():
+    payment, rows = amortization(1000, 0, 3)
+    assert payment == Decimal("333.33")
+    assert rows[-1]["payment"] == Decimal("333.34") and rows[-1]["balance"] == Decimal("0.00")
+
+
+def test_bad_months():
+    with pytest.raises(ValueError):
+        amortization(100, 0.1, 0)
+
+=== vending-machine [apps]
+--- task
+Write a class `VendingMachine(prices, coins=(200, 100, 50, 20, 10, 5))` with prices in cents per product. `insert(coin)` accepts only known coins (ValueError otherwise) and adds to the credit; `select(product)` returns (product, change) where change is a list of coins (greedy, largest first) and resets the credit, or raises ValueError("insufficient credit") / KeyError for unknown products; `cancel()` returns the inserted credit as coins and resets it.
+--- solution
+class VendingMachine:
+    def __init__(self, prices, coins=(200, 100, 50, 20, 10, 5)):
+        self.prices = dict(prices)
+        self.coins = sorted(coins, reverse=True)
+        self.credit = 0
+
+    def insert(self, coin):
+        if coin not in self.coins:
+            raise ValueError(f"coin {coin} not accepted")
+        self.credit += coin
+        return self.credit
+
+    def _change(self, amount):
+        out = []
+        for c in self.coins:
+            while amount >= c:
+                out.append(c)
+                amount -= c
+        return out
+
+    def select(self, product):
+        price = self.prices[product]
+        if self.credit < price:
+            raise ValueError("insufficient credit")
+        change = self._change(self.credit - price)
+        self.credit = 0
+        return product, change
+
+    def cancel(self):
+        coins = self._change(self.credit)
+        self.credit = 0
+        return coins
+--- tests
+import pytest
+
+
+def machine():
+    return VendingMachine({"cola": 150, "chips": 85})
+
+
+def test_exact():
+    m = machine()
+    m.insert(100)
+    m.insert(50)
+    assert m.select("cola") == ("cola", [])
+
+
+def test_change():
+    m = machine()
+    m.insert(200)
+    assert m.select("chips") == ("chips", [100, 10, 5])
+    assert m.credit == 0
+
+
+def test_insufficient():
+    m = machine()
+    m.insert(50)
+    with pytest.raises(ValueError, match="insufficient"):
+        m.select("cola")
+    assert m.credit == 50
+
+
+def test_bad_coin_and_product():
+    m = machine()
+    with pytest.raises(ValueError):
+        m.insert(3)
+    with pytest.raises(KeyError):
+        m.select("gum")
+
+
+def test_cancel():
+    m = machine()
+    m.insert(20)
+    m.insert(20)
+    m.insert(5)
+    assert m.cancel() == [20, 20, 5] and m.credit == 0
+
+=== parking-fees [apps]
+--- task
+Write `parking_fee(entry, exit)` for datetime pairs: the first 30 minutes are free; after that each started hour costs 2.50, with a daily cap of 15.00 per calendar day of the stay (a stay over several days is charged per day, each day capped, the free 30 minutes only once at the start). An exit before entry raises ValueError. Return a Decimal.
+--- solution
+import datetime
+import math
+from decimal import Decimal
+
+RATE, CAP = Decimal("2.50"), Decimal("15.00")
+
+
+def parking_fee(entry, exit):
+    if exit < entry:
+        raise ValueError("exit before entry")
+    start = entry + datetime.timedelta(minutes=30)
+    if exit <= start:
+        return Decimal("0.00")
+    total, cur = Decimal("0.00"), start
+    while cur < exit:
+        midnight = datetime.datetime.combine(cur.date() + datetime.timedelta(days=1), datetime.time())
+        end = min(exit, midnight)
+        hours = math.ceil((end - cur).total_seconds() / 3600)
+        total += min(CAP, RATE * hours)
+        cur = end
+    return total
+--- tests
+from datetime import datetime as dt
+from decimal import Decimal
+
+import pytest
+
+
+def test_free():
+    assert parking_fee(dt(2024, 1, 1, 10, 0), dt(2024, 1, 1, 10, 30)) == Decimal("0.00")
+
+
+def test_started_hours():
+    assert parking_fee(dt(2024, 1, 1, 10, 0), dt(2024, 1, 1, 10, 31)) == Decimal("2.50")
+    assert parking_fee(dt(2024, 1, 1, 10, 0), dt(2024, 1, 1, 12, 45)) == Decimal("7.50")
+
+
+def test_daily_cap():
+    assert parking_fee(dt(2024, 1, 1, 8, 0), dt(2024, 1, 1, 20, 0)) == Decimal("15.00")
+
+
+def test_multi_day():
+    assert parking_fee(dt(2024, 1, 1, 22, 0), dt(2024, 1, 3, 1, 0)) == Decimal("5.00") + Decimal("15.00") + Decimal("2.50")
+
+
+def test_bad_order():
+    with pytest.raises(ValueError):
+        parking_fee(dt(2024, 1, 2), dt(2024, 1, 1))
+
+=== library-loans [apps]
+--- task
+Write a class `Library` with `add_book(isbn, title, copies=1)`, `checkout(isbn, member, today)` (ValueError if no copy is free or the member already has 3 books or any overdue book), `return_book(isbn, member, today)` returning the late fee (0.25 per day after the 14-day loan period, as a float rounded to 2 places), and `overdue(today)` listing (member, isbn, days_late) sorted by days late descending then member. Dates are datetime.date.
+--- solution
+import datetime
+
+LOAN_DAYS = 14
+
+
+class Library:
+    def __init__(self):
+        self.books = {}
+        self.loans = []  # (member, isbn, due)
+
+    def add_book(self, isbn, title, copies=1):
+        title0, n = self.books.get(isbn, (title, 0))
+        self.books[isbn] = (title0, n + copies)
+
+    def _out(self, isbn):
+        return sum(1 for _, i, _ in self.loans if i == isbn)
+
+    def checkout(self, isbn, member, today):
+        if isbn not in self.books:
+            raise KeyError(isbn)
+        mine = [l for l in self.loans if l[0] == member]
+        if len(mine) >= 3:
+            raise ValueError("loan limit reached")
+        if any(due < today for _, _, due in mine):
+            raise ValueError("member has overdue books")
+        if self._out(isbn) >= self.books[isbn][1]:
+            raise ValueError("no copy available")
+        due = today + datetime.timedelta(days=LOAN_DAYS)
+        self.loans.append((member, isbn, due))
+        return due
+
+    def return_book(self, isbn, member, today):
+        for k, (m, i, due) in enumerate(self.loans):
+            if m == member and i == isbn:
+                del self.loans[k]
+                return round(max(0, (today - due).days) * 0.25, 2)
+        raise ValueError("no such loan")
+
+    def overdue(self, today):
+        rows = [(m, i, (today - due).days) for m, i, due in self.loans if due < today]
+        return sorted(rows, key=lambda r: (-r[2], r[0]))
+--- tests
+from datetime import date, timedelta
+
+import pytest
+
+D = date(2024, 3, 1)
+
+
+def lib():
+    l = Library()
+    l.add_book("111", "Dune", copies=2)
+    l.add_book("222", "Emma")
+    return l
+
+
+def test_checkout_and_due():
+    l = lib()
+    assert l.checkout("111", "ann", D) == D + timedelta(days=14)
+
+
+def test_no_copies():
+    l = lib()
+    l.checkout("222", "ann", D)
+    with pytest.raises(ValueError, match="no copy"):
+        l.checkout("222", "bob", D)
+
+
+def test_limit_and_overdue_block():
+    l = lib()
+    l.add_book("333", "X", 5)
+    for _ in range(3):
+        l.checkout("333", "ann", D)
+    with pytest.raises(ValueError, match="limit"):
+        l.checkout("111", "ann", D)
+    l.checkout("111", "bob", D)
+    with pytest.raises(ValueError, match="overdue"):
+        l.checkout("222", "bob", D + timedelta(days=20))
+
+
+def test_fee():
+    l = lib()
+    l.checkout("111", "ann", D)
+    assert l.return_book("111", "ann", D + timedelta(days=20)) == 1.5
+    l.checkout("111", "ann", D)
+    assert l.return_book("111", "ann", D + timedelta(days=3)) == 0
+
+
+def test_overdue_list():
+    l = lib()
+    l.checkout("111", "bob", D)
+    l.checkout("222", "ann", D + timedelta(days=2))
+    assert l.overdue(D + timedelta(days=17)) == [("bob", "111", 3), ("ann", "222", 1)]
+
+=== event-calendar [apps]
+--- task
+Write a class `Calendar` storing events (title, start, end datetimes). `add(title, start, end)` raises ValueError if end <= start or the event overlaps an existing one (touching ends are fine) unless allow_overlap=True. `on(day)` returns titles of events touching that date, sorted by start. `next_free(after, minutes)` returns the earliest datetime at or after `after` where a slot of that length is free.
+--- solution
+import datetime
+
+
+class Calendar:
+    def __init__(self):
+        self.events = []
+
+    def add(self, title, start, end, allow_overlap=False):
+        if end <= start:
+            raise ValueError("end must be after start")
+        if not allow_overlap:
+            for t, s, e in self.events:
+                if start < e and s < end:
+                    raise ValueError(f"overlaps {t!r}")
+        self.events.append((title, start, end))
+        self.events.sort(key=lambda ev: ev[1])
+
+    def on(self, day):
+        lo = datetime.datetime.combine(day, datetime.time())
+        hi = lo + datetime.timedelta(days=1)
+        return [t for t, s, e in self.events if s < hi and e > lo]
+
+    def next_free(self, after, minutes):
+        need = datetime.timedelta(minutes=minutes)
+        cur = after
+        for _, s, e in self.events:
+            if e <= cur:
+                continue
+            if s - cur >= need:
+                return cur
+            cur = max(cur, e)
+        return cur
+--- tests
+from datetime import date, datetime as dt
+
+import pytest
+
+
+def cal():
+    c = Calendar()
+    c.add("standup", dt(2024, 5, 6, 9, 0), dt(2024, 5, 6, 9, 15))
+    c.add("review", dt(2024, 5, 6, 10, 0), dt(2024, 5, 6, 11, 0))
+    return c
+
+
+def test_overlap_rejected():
+    c = cal()
+    with pytest.raises(ValueError, match="review"):
+        c.add("x", dt(2024, 5, 6, 10, 30), dt(2024, 5, 6, 12, 0))
+
+
+def test_touching_ok():
+    c = cal()
+    c.add("lunch", dt(2024, 5, 6, 11, 0), dt(2024, 5, 6, 12, 0))
+    assert c.on(date(2024, 5, 6)) == ["standup", "review", "lunch"]
+
+
+def test_bad_times():
+    with pytest.raises(ValueError):
+        cal().add("x", dt(2024, 5, 6, 9), dt(2024, 5, 6, 9))
+
+
+def test_next_free():
+    c = cal()
+    assert c.next_free(dt(2024, 5, 6, 9, 0), 30) == dt(2024, 5, 6, 9, 15)
+    assert c.next_free(dt(2024, 5, 6, 9, 0), 60) == dt(2024, 5, 6, 11, 0)
+
+
+def test_multi_day_event():
+    c = Calendar()
+    c.add("trip", dt(2024, 5, 6, 20), dt(2024, 5, 8, 8))
+    assert c.on(date(2024, 5, 7)) == ["trip"] and c.on(date(2024, 5, 9)) == []
+
+=== tic-tac-toe [apps]
+--- task
+Write `winner(board)` for a 3x3 tic-tac-toe board given as 3 strings of "X", "O" or "." and return "X", "O", "draw" (full board, no winner) or None (game still going). Raise ValueError for impossible boards: wrong size or characters, counts where O has more marks than X or X has more than one extra, or both players winning, or a winner whose mark count is inconsistent with having just moved.
+--- solution
+LINES = [[(r, c) for c in range(3)] for r in range(3)] + [[(r, c) for r in range(3)] for c in range(3)] + \
+    [[(i, i) for i in range(3)], [(i, 2 - i) for i in range(3)]]
+
+
+def winner(board):
+    if len(board) != 3 or any(len(row) != 3 or set(row) - set("XO.") for row in board):
+        raise ValueError("bad board")
+    x = sum(row.count("X") for row in board)
+    o = sum(row.count("O") for row in board)
+    if not (x == o or x == o + 1):
+        raise ValueError("impossible move counts")
+    wins = {p for p in "XO" for line in LINES if all(board[r][c] == p for r, c in line)}
+    if len(wins) == 2:
+        raise ValueError("both players win")
+    if "X" in wins and x != o + 1:
+        raise ValueError("X won but O moved after")
+    if "O" in wins and x != o:
+        raise ValueError("O won but X moved after")
+    if wins:
+        return wins.pop()
+    return "draw" if x + o == 9 else None
+--- tests
+import pytest
+
+
+def test_row_and_diagonal():
+    assert winner(["XXX", "OO.", "..."]) == "X"
+    assert winner(["OX.", "XO.", "X.O"]) == "O"
+
+
+def test_draw_and_open():
+    assert winner(["XOX", "XOO", "OXX"]) == "draw"
+    assert winner(["X..", "...", "..."]) is None
+
+
+def test_bad_counts():
+    with pytest.raises(ValueError):
+        winner(["OO.", "...", "..."])
+
+
+def test_both_win():
+    with pytest.raises(ValueError):
+        winner(["XXX", "OOO", "..."])
+
+
+def test_bad_shape():
+    with pytest.raises(ValueError):
+        winner(["XX", "...", "..."])
+
+=== sudoku-check [apps]
+--- task
+Write `sudoku_errors(grid)` for a 9x9 grid (lists of ints, 0 = empty) returning a sorted list of (row, col) cells that conflict with another cell in the same row, column or 3x3 box (both cells of each conflict are listed). Write `is_solved(grid)`: True only for a full grid with no conflicts. A grid of the wrong shape or with values outside 0-9 raises ValueError.
+--- solution
+def _check(grid):
+    if len(grid) != 9 or any(len(r) != 9 for r in grid):
+        raise ValueError("grid must be 9x9")
+    if any(not isinstance(v, int) or not 0 <= v <= 9 for r in grid for v in r):
+        raise ValueError("values must be 0-9")
+
+
+def sudoku_errors(grid):
+    _check(grid)
+    bad = set()
+    groups = [[(r, c) for c in range(9)] for r in range(9)] + [[(r, c) for r in range(9)] for c in range(9)]
+    groups += [[(br + r, bc + c) for r in range(3) for c in range(3)] for br in (0, 3, 6) for bc in (0, 3, 6)]
+    for g in groups:
+        seen = {}
+        for r, c in g:
+            v = grid[r][c]
+            if v:
+                seen.setdefault(v, []).append((r, c))
+        for cells in seen.values():
+            if len(cells) > 1:
+                bad.update(cells)
+    return sorted(bad)
+
+
+def is_solved(grid):
+    return not sudoku_errors(grid) and all(v for r in grid for v in r)
+--- tests
+import copy
+
+import pytest
+
+SOLVED = [
+    [5, 3, 4, 6, 7, 8, 9, 1, 2], [6, 7, 2, 1, 9, 5, 3, 4, 8], [1, 9, 8, 3, 4, 2, 5, 6, 7],
+    [8, 5, 9, 7, 6, 1, 4, 2, 3], [4, 2, 6, 8, 5, 3, 7, 9, 1], [7, 1, 3, 9, 2, 4, 8, 5, 6],
+    [9, 6, 1, 5, 3, 7, 2, 8, 4], [2, 8, 7, 4, 1, 9, 6, 3, 5], [3, 4, 5, 2, 8, 6, 1, 7, 9],
+]
+
+
+def test_solved():
+    assert is_solved(SOLVED) and sudoku_errors(SOLVED) == []
+
+
+def test_empty_cell_not_solved():
+    g = copy.deepcopy(SOLVED)
+    g[0][0] = 0
+    assert sudoku_errors(g) == [] and not is_solved(g)
+
+
+def test_row_conflict():
+    g = [[0] * 9 for _ in range(9)]
+    g[0][0] = g[0][8] = 4
+    assert sudoku_errors(g) == [(0, 0), (0, 8)]
+
+
+def test_box_conflict():
+    g = [[0] * 9 for _ in range(9)]
+    g[3][3] = g[5][5] = 7
+    assert sudoku_errors(g) == [(3, 3), (5, 5)]
+
+
+def test_bad_grid():
+    with pytest.raises(ValueError):
+        sudoku_errors([[0] * 9] * 8)
+    with pytest.raises(ValueError):
+        sudoku_errors([[10] + [0] * 8] + [[0] * 9] * 8)
+
+=== game-of-life [apps]
+--- task
+Write `step(live)` for Conway's Game of Life on an unbounded grid, where `live` is a set of (row, col) cells; return the next generation's set. Write `run(live, n)` applying n steps and `bounds(live)` returning (min_row, min_col, max_row, max_col) or None for an empty set.
+--- solution
+from collections import Counter
+
+
+def step(live):
+    counts = Counter((r + dr, c + dc) for r, c in live for dr in (-1, 0, 1) for dc in (-1, 0, 1) if dr or dc)
+    return {cell for cell, n in counts.items() if n == 3 or (n == 2 and cell in live)}
+
+
+def run(live, n):
+    for _ in range(n):
+        live = step(live)
+    return live
+
+
+def bounds(live):
+    if not live:
+        return None
+    rows = [r for r, _ in live]
+    cols = [c for _, c in live]
+    return min(rows), min(cols), max(rows), max(cols)
+--- tests
+BLINKER = {(1, 0), (1, 1), (1, 2)}
+GLIDER = {(0, 1), (1, 2), (2, 0), (2, 1), (2, 2)}
+
+
+def test_blinker():
+    assert step(BLINKER) == {(0, 1), (1, 1), (2, 1)}
+    assert run(BLINKER, 2) == BLINKER
+
+
+def test_block_still():
+    block = {(0, 0), (0, 1), (1, 0), (1, 1)}
+    assert step(block) == block
+
+
+def test_glider_moves():
+    assert run(GLIDER, 4) == {(r + 1, c + 1) for r, c in GLIDER}
+
+
+def test_dies():
+    assert step({(0, 0)}) == set()
+
+
+def test_bounds():
+    assert bounds(GLIDER) == (0, 0, 2, 2)
+    assert bounds(set()) is None
+
+=== maze-solver [apps]
+--- task
+Write `solve_maze(lines)` for a maze given as strings with "#" walls, "." open cells, one "S" start and one "E" exit. Return the shortest path as a list of (row, col) from S to E inclusive using up/down/left/right moves, or None if there is none. Write `draw_path(lines, path)` returning the maze with path cells (other than S and E) marked "*". Missing or repeated S or E raises ValueError.
+--- solution
+from collections import deque
+
+
+def _find(lines, ch):
+    hits = [(r, c) for r, line in enumerate(lines) for c, x in enumerate(line) if x == ch]
+    if len(hits) != 1:
+        raise ValueError(f"need exactly one {ch}")
+    return hits[0]
+
+
+def solve_maze(lines):
+    start, end = _find(lines, "S"), _find(lines, "E")
+    prev = {start: None}
+    q = deque([start])
+    while q:
+        cur = q.popleft()
+        if cur == end:
+            path = []
+            while cur is not None:
+                path.append(cur)
+                cur = prev[cur]
+            return path[::-1]
+        r, c = cur
+        for nr, nc in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
+            if 0 <= nr < len(lines) and 0 <= nc < len(lines[nr]) and lines[nr][nc] != "#" and (nr, nc) not in prev:
+                prev[(nr, nc)] = cur
+                q.append((nr, nc))
+    return None
+
+
+def draw_path(lines, path):
+    grid = [list(line) for line in lines]
+    for r, c in path or []:
+        if grid[r][c] == ".":
+            grid[r][c] = "*"
+    return ["".join(row) for row in grid]
+--- tests
+import pytest
+
+MAZE = [
+    "S.#.....",
+    ".##.###.",
+    "....#..E",
+    ".##...#.",
+]
+
+
+def test_shortest_length():
+    path = solve_maze(MAZE)
+    assert path[0] == (0, 0) and path[-1] == (2, 7)
+    assert len(path) == 12
+
+
+def test_moves_are_adjacent():
+    path = solve_maze(MAZE)
+    assert all(abs(a[0] - b[0]) + abs(a[1] - b[1]) == 1 for a, b in zip(path, path[1:]))
+
+
+def test_no_path():
+    assert solve_maze(["S#E"]) is None
+
+
+def test_draw():
+    assert draw_path(["S.E"], solve_maze(["S.E"])) == ["S*E"]
+
+
+def test_bad_maze():
+    with pytest.raises(ValueError):
+        solve_maze(["S.."])
+
+=== task-order [apps]
+--- task
+Write `build_order(tasks)` where tasks maps a task name to the list of tasks it depends on. Return an order in which every task comes after its dependencies; among tasks that are ready at the same time, pick them alphabetically. Dependencies that are not keys are tasks with no dependencies of their own. A cycle raises ValueError whose message lists the tasks on the cycle joined by " -> ".
+--- solution
+import heapq
+
+
+def build_order(tasks):
+    deps = {t: set(d) for t, d in tasks.items()}
+    for d in list(deps.values()):
+        for x in d:
+            deps.setdefault(x, set())
+    users = {t: set() for t in deps}
+    for t, ds in deps.items():
+        for d in ds:
+            users[d].add(t)
+    left = {t: len(ds) for t, ds in deps.items()}
+    ready = [t for t, n in left.items() if n == 0]
+    heapq.heapify(ready)
+    order = []
+    while ready:
+        t = heapq.heappop(ready)
+        order.append(t)
+        for u in users[t]:
+            left[u] -= 1
+            if left[u] == 0:
+                heapq.heappush(ready, u)
+    if len(order) < len(deps):
+        stuck = {t for t, n in left.items() if n}
+        start = min(stuck)
+        path, cur = [start], start
+        while True:
+            cur = min(d for d in deps[cur] if d in stuck)
+            if cur in path:
+                cycle = path[path.index(cur):] + [cur]
+                raise ValueError("cycle: " + " -> ".join(cycle))
+            path.append(cur)
+    return order
+--- tests
+import pytest
+
+
+def test_simple():
+    tasks = {"deploy": ["build", "test"], "test": ["build"], "build": ["fetch"]}
+    assert build_order(tasks) == ["fetch", "build", "test", "deploy"]
+
+
+def test_alphabetical_ties():
+    assert build_order({"c": [], "a": [], "b": ["a"]}) == ["a", "b", "c"]
+
+
+def test_cycle():
+    with pytest.raises(ValueError, match="a -> b -> c -> a"):
+        build_order({"a": ["b"], "b": ["c"], "c": ["a"], "d": []})
+
+
+def test_self_cycle():
+    with pytest.raises(ValueError, match="x -> x"):
+        build_order({"x": ["x"]})
+
+
+def test_empty():
+    assert build_order({}) == []
+
+=== route-planner [apps]
+--- task
+Write `shortest_route(roads, start, goal)` where roads is a list of (a, b, km) two-way roads. Return (total_km, [cities]) for the shortest route using Dijkstra's algorithm, or None if unreachable; start == goal gives (0, [start]). Among equal-length routes return the one whose city list is alphabetically smallest. Negative distances raise ValueError; an unknown start raises KeyError.
+--- solution
+import heapq
+from collections import defaultdict
+
+
+def shortest_route(roads, start, goal):
+    graph = defaultdict(list)
+    for a, b, km in roads:
+        if km < 0:
+            raise ValueError("negative distance")
+        graph[a].append((b, km))
+        graph[b].append((a, km))
+    if start not in graph and start != goal:
+        raise KeyError(start)
+    heap = [(0, [start])]
+    done = set()
+    while heap:
+        dist, path = heapq.heappop(heap)
+        city = path[-1]
+        if city in done:
+            continue
+        if city == goal:
+            return dist, path
+        done.add(city)
+        for nxt, km in graph[city]:
+            if nxt not in done:
+                heapq.heappush(heap, (dist + km, path + [nxt]))
+    return None
+--- tests
+import pytest
+
+ROADS = [("A", "B", 5), ("B", "C", 3), ("A", "C", 10), ("C", "D", 1), ("B", "D", 9), ("E", "F", 1)]
+
+
+def test_shortest():
+    assert shortest_route(ROADS, "A", "D") == (9, ["A", "B", "C", "D"])
+
+
+def test_reverse_direction():
+    assert shortest_route(ROADS, "D", "A") == (9, ["D", "C", "B", "A"])
+
+
+def test_unreachable_and_same():
+    assert shortest_route(ROADS, "A", "F") is None
+    assert shortest_route(ROADS, "A", "A") == (0, ["A"])
+
+
+def test_tie_alphabetical():
+    roads = [("S", "X", 1), ("X", "T", 1), ("S", "B", 1), ("B", "T", 1)]
+    assert shortest_route(roads, "S", "T") == (2, ["S", "B", "T"])
+
+
+def test_errors():
+    with pytest.raises(ValueError):
+        shortest_route([("A", "B", -1)], "A", "B")
+    with pytest.raises(KeyError):
+        shortest_route(ROADS, "Z", "A")
+
+=== meeting-rooms [apps]
+--- task
+Write `rooms_needed(meetings)` returning the minimum number of rooms for meetings given as (start, end) minute pairs (a meeting ending at t frees its room for one starting at t), and `assign_rooms(meetings)` returning a room number (starting at 1) for each meeting in input order, always reusing the lowest-numbered free room, processing meetings by start time (ties by input order).
+--- solution
+import heapq
+
+
+def rooms_needed(meetings):
+    events = sorted([(s, 1) for s, _ in meetings] + [(e, -1) for _, e in meetings], key=lambda x: (x[0], x[1]))
+    cur = best = 0
+    for _, d in events:
+        cur += d
+        best = max(best, cur)
+    return best
+
+
+def assign_rooms(meetings):
+    order = sorted(range(len(meetings)), key=lambda i: (meetings[i][0], i))
+    busy = []  # (end, room)
+    free = []
+    next_room = 1
+    out = [0] * len(meetings)
+    for i in order:
+        s, e = meetings[i]
+        while busy and busy[0][0] <= s:
+            _, room = heapq.heappop(busy)
+            heapq.heappush(free, room)
+        if free:
+            room = heapq.heappop(free)
+        else:
+            room = next_room
+            next_room += 1
+        out[i] = room
+        heapq.heappush(busy, (e, room))
+    return out
+--- tests
+def test_needed():
+    assert rooms_needed([(0, 30), (5, 10), (15, 20)]) == 2
+    assert rooms_needed([(0, 10), (10, 20)]) == 1
+    assert rooms_needed([]) == 0
+
+
+def test_assign():
+    assert assign_rooms([(0, 30), (5, 10), (15, 20)]) == [1, 2, 2]
+
+
+def test_lowest_free_room():
+    meetings = [(0, 10), (0, 5), (0, 20), (6, 8)]
+    assert assign_rooms(meetings) == [1, 2, 3, 2]
+
+
+def test_input_order_kept():
+    assert assign_rooms([(15, 20), (0, 30)]) == [2, 1]
+
+
+def test_count_matches():
+    m = [(1, 4), (2, 5), (3, 6), (5, 7), (6, 9)]
+    assert max(assign_rooms(m)) == rooms_needed(m) == 3
+
+=== leaderboard-ties [apps]
+--- task
+Write `rank(scores)` taking (name, score) pairs and returning (rank, name, score) rows sorted by score descending then name, using competition ranking ("1224": tied players share a rank and the next rank skips). Write `dense_rank(scores)` with dense ranking ("1223"). If a name appears more than once only its best score counts.
+--- solution
+def _best(scores):
+    best = {}
+    for name, s in scores:
+        if name not in best or s > best[name]:
+            best[name] = s
+    return sorted(best.items(), key=lambda kv: (-kv[1], kv[0]))
+
+
+def rank(scores):
+    rows, prev, r = [], None, 0
+    for i, (name, s) in enumerate(_best(scores), 1):
+        if s != prev:
+            r, prev = i, s
+        rows.append((r, name, s))
+    return rows
+
+
+def dense_rank(scores):
+    rows, prev, r = [], None, 0
+    for name, s in _best(scores):
+        if s != prev:
+            r, prev = r + 1, s
+        rows.append((r, name, s))
+    return rows
+--- tests
+S = [("cy", 70), ("ann", 90), ("bob", 90), ("dee", 60), ("ann", 50)]
+
+
+def test_competition():
+    assert rank(S) == [(1, "ann", 90), (1, "bob", 90), (3, "cy", 70), (4, "dee", 60)]
+
+
+def test_dense():
+    assert dense_rank(S) == [(1, "ann", 90), (1, "bob", 90), (2, "cy", 70), (3, "dee", 60)]
+
+
+def test_best_score_counts():
+    assert rank([("a", 1), ("a", 5)]) == [(1, "a", 5)]
+
+
+def test_empty():
+    assert rank([]) == [] and dense_rank([]) == []
+
+
+def test_all_tied():
+    assert [r for r, _, _ in rank([("x", 1), ("y", 1), ("z", 1)])] == [1, 1, 1]
+
+=== unit-convert [apps]
+--- task
+Write `convert(value, from_unit, to_unit)` for lengths (mm, cm, m, km, in, ft, yd, mi), masses (mg, g, kg, oz, lb) and temperatures (C, F, K). Converting between different kinds raises ValueError, as do unknown units. Return a float rounded to 6 significant digits. Also write `parse_quantity(text)` that reads "5.5 km" or "-40F" into (5.5, "km") / (-40.0, "F").
+--- solution
+import math
+import re
+
+LENGTH = {"mm": 0.001, "cm": 0.01, "m": 1.0, "km": 1000.0, "in": 0.0254, "ft": 0.3048, "yd": 0.9144, "mi": 1609.344}
+MASS = {"mg": 1e-6, "g": 0.001, "kg": 1.0, "oz": 0.028349523125, "lb": 0.45359237}
+TEMP = {"C", "F", "K"}
+
+
+def _sig(x, digits=6):
+    if x == 0:
+        return 0.0
+    return round(x, digits - 1 - int(math.floor(math.log10(abs(x)))))
+
+
+def _to_kelvin(v, u):
+    return v + 273.15 if u == "C" else (v - 32) * 5 / 9 + 273.15 if u == "F" else v
+
+
+def _from_kelvin(k, u):
+    return k - 273.15 if u == "C" else (k - 273.15) * 9 / 5 + 32 if u == "F" else k
+
+
+def convert(value, from_unit, to_unit):
+    for table in (LENGTH, MASS):
+        if from_unit in table and to_unit in table:
+            return _sig(value * table[from_unit] / table[to_unit])
+    if from_unit in TEMP and to_unit in TEMP:
+        return _sig(_from_kelvin(_to_kelvin(value, from_unit), to_unit))
+    known = set(LENGTH) | set(MASS) | TEMP
+    if from_unit not in known or to_unit not in known:
+        raise ValueError("unknown unit")
+    raise ValueError(f"cannot convert {from_unit} to {to_unit}")
+
+
+def parse_quantity(text):
+    m = re.fullmatch(r"\s*([+-]?\d+(?:\.\d+)?)\s*([A-Za-z]+)\s*", text)
+    if not m:
+        raise ValueError(f"bad quantity {text!r}")
+    return float(m.group(1)), m.group(2)
+--- tests
+import pytest
+
+
+def test_length():
+    assert convert(1, "mi", "km") == 1.60934
+    assert convert(12, "in", "ft") == 1.0
+
+
+def test_mass():
+    assert convert(1, "lb", "g") == 453.592
+
+
+def test_temperature():
+    assert convert(100, "C", "F") == 212.0
+    assert convert(-40, "F", "C") == -40.0
+    assert convert(0, "K", "C") == -273.15
+
+
+def test_errors():
+    with pytest.raises(ValueError):
+        convert(1, "kg", "m")
+    with pytest.raises(ValueError):
+        convert(1, "parsec", "m")
+
+
+def test_parse():
+    assert parse_quantity("5.5 km") == (5.5, "km")
+    assert parse_quantity("-40F") == (-40.0, "F")
+    with pytest.raises(ValueError):
+        parse_quantity("five km")
+
+=== shift-overlaps [apps]
+--- task
+Write `coverage_gaps(shifts, open_time, close_time, min_staff=1)` where shifts are (name, "HH:MM", "HH:MM") within one day. Return the time ranges between open and close where fewer than min_staff people are working, as ("HH:MM", "HH:MM", staff_count) tuples in order, merging adjacent ranges with the same count.
+--- solution
+def _m(t):
+    h, m = map(int, t.split(":"))
+    return h * 60 + m
+
+
+def _t(m):
+    return f"{m // 60:02d}:{m % 60:02d}"
+
+
+def coverage_gaps(shifts, open_time, close_time, min_staff=1):
+    lo, hi = _m(open_time), _m(close_time)
+    points = {lo, hi}
+    spans = []
+    for _, a, b in shifts:
+        a, b = max(_m(a), lo), min(_m(b), hi)
+        if a < b:
+            spans.append((a, b))
+            points.update((a, b))
+    edges = sorted(points)
+    out = []
+    for a, b in zip(edges, edges[1:]):
+        n = sum(1 for s, e in spans if s <= a and e >= b)
+        if n < min_staff:
+            if out and out[-1][1] == a and out[-1][2] == n:
+                out[-1] = (out[-1][0], b, n)
+            else:
+                out.append((a, b, n))
+    return [(_t(a), _t(b), n) for a, b, n in out]
+--- tests
+SHIFTS = [("ann", "08:00", "12:00"), ("bob", "11:00", "16:00"), ("cy", "15:00", "18:00")]
+
+
+def test_no_gap_single_staff():
+    assert coverage_gaps(SHIFTS, "08:00", "18:00") == []
+
+
+def test_gaps_two_staff():
+    assert coverage_gaps(SHIFTS, "08:00", "18:00", min_staff=2) == [
+        ("08:00", "11:00", 1), ("12:00", "15:00", 1), ("16:00", "18:00", 1)]
+
+
+def test_uncovered_opening():
+    assert coverage_gaps([("a", "10:00", "12:00")], "09:00", "12:00") == [("09:00", "10:00", 0)]
+
+
+def test_shift_outside_hours_clipped():
+    assert coverage_gaps([("a", "06:00", "20:00")], "08:00", "18:00") == []
+
+
+def test_no_shifts():
+    assert coverage_gaps([], "09:00", "17:00") == [("09:00", "17:00", 0)]

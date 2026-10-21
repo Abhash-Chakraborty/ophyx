@@ -1,0 +1,1123 @@
+=== ipv4-cidr [misc]
+--- task
+Write `parse_ipv4(text)` returning the address as an int (ValueError for anything that isn't four decimal octets 0-255 without leading zeros), `in_cidr(ip, cidr)` telling whether an address string is inside a block such as "10.0.0.0/8", and `cidr_range(cidr)` returning (first, last) address strings. Do not use the ipaddress module.
+--- solution
+def parse_ipv4(text):
+    parts = text.split(".")
+    if len(parts) != 4:
+        raise ValueError(f"bad address {text!r}")
+    n = 0
+    for p in parts:
+        if not p.isdigit() or (len(p) > 1 and p[0] == "0") or int(p) > 255:
+            raise ValueError(f"bad address {text!r}")
+        n = n * 256 + int(p)
+    return n
+
+
+def _fmt(n):
+    return ".".join(str((n >> s) & 255) for s in (24, 16, 8, 0))
+
+
+def _block(cidr):
+    addr, _, bits = cidr.partition("/")
+    if not bits.isdigit() or not 0 <= int(bits) <= 32:
+        raise ValueError(f"bad prefix in {cidr!r}")
+    mask = (0xFFFFFFFF << (32 - int(bits))) & 0xFFFFFFFF
+    return parse_ipv4(addr) & mask, mask
+
+
+def in_cidr(ip, cidr):
+    net, mask = _block(cidr)
+    return parse_ipv4(ip) & mask == net
+
+
+def cidr_range(cidr):
+    net, mask = _block(cidr)
+    return _fmt(net), _fmt(net | (~mask & 0xFFFFFFFF))
+--- tests
+import pytest
+
+
+def test_parse():
+    assert parse_ipv4("192.168.1.1") == 3232235777
+    assert parse_ipv4("0.0.0.0") == 0
+
+
+@pytest.mark.parametrize("bad", ["1.2.3", "256.1.1.1", "01.2.3.4", "a.b.c.d", "1.2.3.4.5", "1..2.3"])
+def test_bad(bad):
+    with pytest.raises(ValueError):
+        parse_ipv4(bad)
+
+
+def test_in_cidr():
+    assert in_cidr("10.20.30.40", "10.0.0.0/8")
+    assert not in_cidr("11.0.0.1", "10.0.0.0/8")
+    assert in_cidr("1.2.3.4", "0.0.0.0/0")
+
+
+def test_range():
+    assert cidr_range("192.168.1.77/24") == ("192.168.1.0", "192.168.1.255")
+    assert cidr_range("10.0.0.5/32") == ("10.0.0.5", "10.0.0.5")
+
+
+def test_bad_prefix():
+    with pytest.raises(ValueError):
+        in_cidr("1.1.1.1", "1.0.0.0/33")
+
+=== password-strength [misc]
+--- task
+Write `check_password(pw, username="")` returning a list of problems (empty when the password is fine): "too short" under 12 characters, "no digit", "no uppercase", "no lowercase", "no symbol" (a character that is not a letter, digit or space), "contains username" (case-insensitive, usernames of 3+ characters), and "repeated characters" when the same character appears 4 times in a row. Problems are listed in that order.
+--- solution
+import re
+
+
+def check_password(pw, username=""):
+    problems = []
+    if len(pw) < 12:
+        problems.append("too short")
+    if not re.search(r"\d", pw):
+        problems.append("no digit")
+    if not re.search(r"[A-Z]", pw):
+        problems.append("no uppercase")
+    if not re.search(r"[a-z]", pw):
+        problems.append("no lowercase")
+    if not re.search(r"[^A-Za-z0-9 ]", pw):
+        problems.append("no symbol")
+    if len(username) >= 3 and username.lower() in pw.lower():
+        problems.append("contains username")
+    if re.search(r"(.)\1{3}", pw):
+        problems.append("repeated characters")
+    return problems
+--- tests
+def test_good():
+    assert check_password("Correct-Horse-9-Battery") == []
+
+
+def test_many_problems():
+    assert check_password("abc") == ["too short", "no digit", "no uppercase", "no symbol"]
+
+
+def test_username():
+    assert check_password("Hello-Alice-2024!", username="alice") == ["contains username"]
+    assert check_password("Hello-Al-2024!xyz", username="al") == []
+
+
+def test_repeated():
+    assert check_password("Aaaaa-bcdef-123") == ["repeated characters"]
+
+
+def test_space_is_not_symbol():
+    assert "no symbol" in check_password("Abc def ghi 123")
+
+=== url-query [misc]
+--- task
+Write `parse_query(qs)` that turns a query string ("a=1&b=two&a=3&flag") into a dict where repeated keys become lists, keys without "=" map to "", and values are percent-decoded with "+" as space. Write `build_url(base, params)` that appends params (dict; list values repeat the key; None values are skipped) to a base URL that may already contain a query string or fragment, keeping the fragment at the end and sorting the new keys.
+--- solution
+from urllib.parse import quote_plus, unquote_plus
+
+
+def parse_query(qs):
+    out = {}
+    for part in qs.lstrip("?").split("&"):
+        if not part:
+            continue
+        key, _, value = part.partition("=")
+        key, value = unquote_plus(key), unquote_plus(value)
+        if key in out:
+            if not isinstance(out[key], list):
+                out[key] = [out[key]]
+            out[key].append(value)
+        else:
+            out[key] = value
+    return out
+
+
+def build_url(base, params):
+    base, hash_, frag = base.partition("#")
+    pairs = []
+    for k in sorted(params):
+        v = params[k]
+        if v is None:
+            continue
+        for item in v if isinstance(v, list) else [v]:
+            pairs.append(f"{quote_plus(str(k))}={quote_plus(str(item))}")
+    if pairs:
+        sep = "&" if "?" in base else "?"
+        if base.endswith(("?", "&")):
+            sep = ""
+        base += sep + "&".join(pairs)
+    return base + (hash_ + frag if hash_ else "")
+--- tests
+def test_parse():
+    assert parse_query("a=1&b=two&a=3&flag") == {"a": ["1", "3"], "b": "two", "flag": ""}
+
+
+def test_decode():
+    assert parse_query("?q=hello+world&x=%2Fpath%3F") == {"q": "hello world", "x": "/path?"}
+
+
+def test_build():
+    assert build_url("https://x.org/s", {"q": "a b", "page": 2}) == "https://x.org/s?page=2&q=a+b"
+
+
+def test_build_existing_query_and_fragment():
+    url = build_url("https://x.org/s?lang=en#top", {"tag": ["py", "web"], "skip": None})
+    assert url == "https://x.org/s?lang=en&tag=py&tag=web#top"
+
+
+def test_build_empty():
+    assert build_url("https://x.org/", {}) == "https://x.org/"
+
+=== cookie-header [misc]
+--- task
+Write `parse_cookie(header)` that reads a Cookie request header ("a=1; b=hello%20world; c") into a dict (percent-decoded values, double quotes around values removed, entries without "=" skipped, first occurrence wins). Write `set_cookie(name, value, max_age=None, path="/", secure=True, http_only=True, same_site="Lax")` returning a Set-Cookie header value with attributes in that order; same_site must be Strict, Lax or None, and None requires secure (ValueError otherwise).
+--- solution
+from urllib.parse import quote, unquote
+
+
+def parse_cookie(header):
+    out = {}
+    for part in header.split(";"):
+        if "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        k, v = k.strip(), v.strip()
+        if len(v) >= 2 and v[0] == v[-1] == '"':
+            v = v[1:-1]
+        if k and k not in out:
+            out[k] = unquote(v)
+    return out
+
+
+def set_cookie(name, value, max_age=None, path="/", secure=True, http_only=True, same_site="Lax"):
+    if same_site not in ("Strict", "Lax", "None"):
+        raise ValueError("same_site must be Strict, Lax or None")
+    if same_site == "None" and not secure:
+        raise ValueError("SameSite=None requires Secure")
+    parts = [f"{name}={quote(str(value), safe='')}"]
+    if max_age is not None:
+        parts.append(f"Max-Age={int(max_age)}")
+    if path:
+        parts.append(f"Path={path}")
+    if secure:
+        parts.append("Secure")
+    if http_only:
+        parts.append("HttpOnly")
+    parts.append(f"SameSite={same_site}")
+    return "; ".join(parts)
+--- tests
+import pytest
+
+
+def test_parse():
+    assert parse_cookie('a=1; b=hello%20world; c; d="quoted"') == {"a": "1", "b": "hello world", "d": "quoted"}
+
+
+def test_first_wins():
+    assert parse_cookie("a=1; a=2") == {"a": "1"}
+
+
+def test_set_default():
+    assert set_cookie("sid", "abc") == "sid=abc; Path=/; Secure; HttpOnly; SameSite=Lax"
+
+
+def test_set_options():
+    out = set_cookie("theme", "dark mode", max_age=3600, http_only=False, same_site="Strict")
+    assert out == "theme=dark%20mode; Max-Age=3600; Path=/; Secure; SameSite=Strict"
+
+
+def test_none_needs_secure():
+    with pytest.raises(ValueError):
+        set_cookie("a", "b", secure=False, same_site="None")
+    with pytest.raises(ValueError):
+        set_cookie("a", "b", same_site="lax")
+
+=== isbn-check [misc]
+--- task
+Write `isbn_valid(text)` that accepts ISBN-10 (last character may be "X") and ISBN-13 numbers, ignoring hyphens and spaces, and checks the check digit. Write `isbn10_to_13(text)` converting a valid ISBN-10 to ISBN-13 (prefix 978, new check digit), raising ValueError for invalid input.
+--- solution
+def _clean(text):
+    return text.replace("-", "").replace(" ", "").upper()
+
+
+def _valid10(s):
+    if len(s) != 10 or not s[:9].isdigit() or not (s[9].isdigit() or s[9] == "X"):
+        return False
+    total = sum((10 - i) * int(c) for i, c in enumerate(s[:9])) + (10 if s[9] == "X" else int(s[9]))
+    return total % 11 == 0
+
+
+def _check13(first12):
+    total = sum(int(c) * (1 if i % 2 == 0 else 3) for i, c in enumerate(first12))
+    return str((10 - total % 10) % 10)
+
+
+def isbn_valid(text):
+    s = _clean(text)
+    if len(s) == 10:
+        return _valid10(s)
+    return len(s) == 13 and s.isdigit() and _check13(s[:12]) == s[12]
+
+
+def isbn10_to_13(text):
+    s = _clean(text)
+    if not _valid10(s):
+        raise ValueError(f"invalid ISBN-10 {text!r}")
+    body = "978" + s[:9]
+    return body + _check13(body)
+--- tests
+import pytest
+
+
+def test_isbn10():
+    assert isbn_valid("0-306-40615-2")
+    assert isbn_valid("0-8044-2957-X")
+    assert not isbn_valid("0-306-40615-3")
+
+
+def test_isbn13():
+    assert isbn_valid("978-0-306-40615-7")
+    assert not isbn_valid("978-0-306-40615-8")
+
+
+def test_bad_shapes():
+    assert not isbn_valid("12345")
+    assert not isbn_valid("X306406152")
+
+
+def test_convert():
+    assert isbn10_to_13("0-306-40615-2") == "9780306406157"
+    assert isbn_valid(isbn10_to_13("080442957X"))
+
+
+def test_convert_invalid():
+    with pytest.raises(ValueError):
+        isbn10_to_13("0306406153")
+
+=== iban-check [misc]
+--- task
+Write `iban_valid(text)` that validates an IBAN: ignore spaces, uppercase it, require 15 to 34 letters and digits starting with a two-letter country code and two digits, move the first four characters to the end, replace letters with numbers (A=10 ... Z=35) and check the result mod 97 is 1. Write `format_iban(text)` returning it uppercase in groups of four separated by spaces, or raising ValueError if invalid.
+--- solution
+import re
+
+
+def _clean(text):
+    return text.replace(" ", "").upper()
+
+
+def iban_valid(text):
+    s = _clean(text)
+    if not re.fullmatch(r"[A-Z]{2}\d{2}[A-Z0-9]{11,30}", s):
+        return False
+    moved = s[4:] + s[:4]
+    digits = "".join(str(int(c, 36)) for c in moved)
+    return int(digits) % 97 == 1
+
+
+def format_iban(text):
+    if not iban_valid(text):
+        raise ValueError("invalid IBAN")
+    s = _clean(text)
+    return " ".join(s[i:i + 4] for i in range(0, len(s), 4))
+--- tests
+import pytest
+
+
+def test_valid():
+    assert iban_valid("GB82 WEST 1234 5698 7654 32")
+    assert iban_valid("de89370400440532013000")
+
+
+def test_invalid_checksum():
+    assert not iban_valid("GB82 WEST 1234 5698 7654 33")
+
+
+def test_bad_shape():
+    assert not iban_valid("1234")
+    assert not iban_valid("GBXX WEST 1234 5698 7654 32")
+
+
+def test_format():
+    assert format_iban("de89370400440532013000") == "DE89 3704 0044 0532 0130 00"
+
+
+def test_format_invalid():
+    with pytest.raises(ValueError):
+        format_iban("DE00")
+
+=== http-headers [misc]
+--- task
+Write `parse_headers(raw)` that parses an HTTP/1.1 response head (status line, then header lines, ending at a blank line) into (status_code, reason, headers) where headers is a dict with lowercase names; repeated headers are joined with ", " except Set-Cookie, which becomes a list. Obsolete folded continuation lines (starting with a space or tab) are appended to the previous header with one space. A malformed status line raises ValueError.
+--- solution
+import re
+
+
+def parse_headers(raw):
+    lines = raw.replace("\r\n", "\n").split("\n")
+    m = re.fullmatch(r"HTTP/\d\.\d (\d{3})(?: (.*))?", lines[0].strip())
+    if not m:
+        raise ValueError(f"bad status line {lines[0]!r}")
+    headers, last = {}, None
+    for line in lines[1:]:
+        if not line.strip():
+            break
+        if line[0] in " \t" and last:
+            if isinstance(headers[last], list):
+                headers[last][-1] += " " + line.strip()
+            else:
+                headers[last] += " " + line.strip()
+            continue
+        name, _, value = line.partition(":")
+        name, value = name.strip().lower(), value.strip()
+        if name == "set-cookie":
+            headers.setdefault(name, []).append(value)
+        elif name in headers:
+            headers[name] += ", " + value
+        else:
+            headers[name] = value
+        last = name
+    return int(m.group(1)), m.group(2) or "", headers
+--- tests
+import pytest
+
+RAW = ("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nSet-Cookie: a=1\r\nSet-Cookie: b=2\r\n"
+       "Cache-Control: no-cache\r\ncache-control: private\r\nX-Long: part one\r\n  part two\r\n\r\nbody")
+
+
+def test_status():
+    code, reason, _ = parse_headers(RAW)
+    assert (code, reason) == (200, "OK")
+
+
+def test_headers():
+    _, _, h = parse_headers(RAW)
+    assert h["content-type"] == "text/html"
+    assert h["cache-control"] == "no-cache, private"
+
+
+def test_set_cookie_list():
+    assert parse_headers(RAW)[2]["set-cookie"] == ["a=1", "b=2"]
+
+
+def test_folding():
+    assert parse_headers(RAW)[2]["x-long"] == "part one part two"
+
+
+def test_bad_status():
+    with pytest.raises(ValueError):
+        parse_headers("HTP/1.1 200 OK\n\n")
+
+=== semantic-diff-lists [misc]
+--- task
+Write `line_diff(a, b)` returning a unified-style list of lines comparing two lists of strings: unchanged lines prefixed "  ", removed "- ", added "+ ", computed from a longest common subsequence (when several are possible, prefer showing removals before additions). Write `diff_stats(diff)` returning (added, removed) counts.
+--- solution
+def line_diff(a, b):
+    n, m = len(a), len(b)
+    lcs = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n - 1, -1, -1):
+        for j in range(m - 1, -1, -1):
+            lcs[i][j] = lcs[i + 1][j + 1] + 1 if a[i] == b[j] else max(lcs[i + 1][j], lcs[i][j + 1])
+    out, i, j = [], 0, 0
+    while i < n and j < m:
+        if a[i] == b[j]:
+            out.append("  " + a[i])
+            i += 1
+            j += 1
+        elif lcs[i + 1][j] >= lcs[i][j + 1]:
+            out.append("- " + a[i])
+            i += 1
+        else:
+            out.append("+ " + b[j])
+            j += 1
+    out += ["- " + x for x in a[i:]] + ["+ " + x for x in b[j:]]
+    return out
+
+
+def diff_stats(diff):
+    return sum(d.startswith("+ ") for d in diff), sum(d.startswith("- ") for d in diff)
+--- tests
+def test_change():
+    assert line_diff(["a", "b", "c"], ["a", "x", "c"]) == ["  a", "- b", "+ x", "  c"]
+
+
+def test_insert_delete():
+    assert line_diff(["a", "c"], ["a", "b", "c", "d"]) == ["  a", "+ b", "  c", "+ d"]
+    assert line_diff(["a", "b"], []) == ["- a", "- b"]
+
+
+def test_identical():
+    assert line_diff(["x"], ["x"]) == ["  x"]
+
+
+def test_stats():
+    assert diff_stats(line_diff(["a", "b", "c"], ["b", "c", "d", "e"])) == (2, 1)
+
+
+def test_keeps_common_order():
+    d = line_diff(["1", "2", "3", "4"], ["1", "3", "2", "4"])
+    assert [x for x in d if x.startswith("  ")] in (["  1", "  3", "  4"], ["  1", "  2", "  4"])
+
+=== interval-merge-bookings [misc]
+--- task
+Write `merge_intervals(intervals)` that merges overlapping or touching closed integer intervals [start, end] given as pairs (start <= end, else ValueError) and returns them sorted. Write `subtract(intervals, cut)` returning the parts of the merged intervals not covered by the interval `cut` (integers, so removing [3, 5] from [1, 10] leaves [1, 2] and [6, 10]).
+--- solution
+def merge_intervals(intervals):
+    for s, e in intervals:
+        if s > e:
+            raise ValueError(f"bad interval {(s, e)}")
+    out = []
+    for s, e in sorted(intervals):
+        if out and s <= out[-1][1] + 1:
+            out[-1][1] = max(out[-1][1], e)
+        else:
+            out.append([s, e])
+    return [tuple(x) for x in out]
+
+
+def subtract(intervals, cut):
+    cs, ce = cut
+    out = []
+    for s, e in merge_intervals(intervals):
+        if e < cs or s > ce:
+            out.append((s, e))
+            continue
+        if s < cs:
+            out.append((s, cs - 1))
+        if e > ce:
+            out.append((ce + 1, e))
+    return out
+--- tests
+import pytest
+
+
+def test_merge():
+    assert merge_intervals([(5, 8), (1, 3), (2, 4), (9, 9), (12, 15)]) == [(1, 9), (12, 15)]
+
+
+def test_merge_empty_and_single():
+    assert merge_intervals([]) == []
+    assert merge_intervals([(3, 3)]) == [(3, 3)]
+
+
+def test_bad():
+    with pytest.raises(ValueError):
+        merge_intervals([(5, 1)])
+
+
+def test_subtract_middle():
+    assert subtract([(1, 10)], (3, 5)) == [(1, 2), (6, 10)]
+
+
+def test_subtract_edges():
+    assert subtract([(1, 4), (6, 9)], (3, 7)) == [(1, 2), (8, 9)]
+    assert subtract([(1, 4)], (0, 10)) == []
+
+=== moving-average-alerts [misc]
+--- task
+Write `alerts(values, window, high, low)` that computes a simple moving average over the last `window` values (only once the window is full) and returns a list of (index, "high") / (index, "low") events: "high" when the average rises above `high` while not already in the high state, and a return to normal only happens when it drops below `low` (hysteresis). Index is the position of the value that completed the window. low must be below high (ValueError).
+--- solution
+from collections import deque
+
+
+def alerts(values, window, high, low):
+    if low >= high:
+        raise ValueError("low must be below high")
+    if window < 1:
+        raise ValueError("window must be positive")
+    buf, total, state, out = deque(), 0.0, "normal", []
+    for i, v in enumerate(values):
+        buf.append(v)
+        total += v
+        if len(buf) > window:
+            total -= buf.popleft()
+        if len(buf) < window:
+            continue
+        avg = total / window
+        if state == "normal" and avg > high:
+            state = "high"
+            out.append((i, "high"))
+        elif state == "high" and avg < low:
+            state = "normal"
+            out.append((i, "low"))
+    return out
+--- tests
+import pytest
+
+
+def test_high_then_low():
+    values = [1, 1, 1, 9, 9, 9, 1, 1, 1]
+    assert alerts(values, 3, high=6, low=3) == [(4, "high"), (8, "low")]
+
+
+def test_no_flapping_between_thresholds():
+    values = [10, 10, 5, 10, 5, 10]
+    assert alerts(values, 1, high=8, low=4) == [(0, "high")]
+
+
+def test_window_not_full():
+    assert alerts([100, 100], 3, high=1, low=0) == []
+
+
+def test_bad_thresholds():
+    with pytest.raises(ValueError):
+        alerts([1], 1, high=1, low=2)
+
+
+def test_repeat_cycles():
+    values = [9, 0, 9, 0]
+    assert alerts(values, 1, high=5, low=1) == [(0, "high"), (1, "low"), (2, "high"), (3, "low")]
+
+=== debounce-events [misc]
+--- task
+Write `debounce(events, wait)` where events are (timestamp_seconds, name) pairs sorted by time: for each name, a burst of events with gaps smaller than `wait` collapses into one, emitted at the time of the last event in the burst plus `wait`. Return (emit_time, name, count) tuples sorted by emit time, then name. Write `throttle(events, interval)` that keeps, per name, only events at least `interval` seconds after the last kept one.
+--- solution
+def debounce(events, wait):
+    open_bursts, out = {}, []
+    for t, name in events:
+        if name in open_bursts and t - open_bursts[name][0] < wait:
+            last, n = open_bursts[name]
+            open_bursts[name] = (t, n + 1)
+        else:
+            if name in open_bursts:
+                last, n = open_bursts[name]
+                out.append((last + wait, name, n))
+            open_bursts[name] = (t, 1)
+    for name, (last, n) in open_bursts.items():
+        out.append((last + wait, name, n))
+    return sorted(out, key=lambda x: (x[0], x[1]))
+
+
+def throttle(events, interval):
+    last, out = {}, []
+    for t, name in events:
+        if name not in last or t - last[name] >= interval:
+            last[name] = t
+            out.append((t, name))
+    return out
+--- tests
+EV = [(0.0, "save"), (0.2, "save"), (0.3, "resize"), (0.5, "save"), (2.0, "save"), (2.1, "resize")]
+
+
+def test_debounce():
+    assert debounce(EV, 1.0) == [(1.3, "resize", 1), (1.5, "save", 3), (3.0, "save", 1), (3.1, "resize", 1)]
+
+
+def test_debounce_single():
+    assert debounce([(5, "x")], 2) == [(7, "x", 1)]
+
+
+def test_gap_equal_to_wait_splits():
+    assert debounce([(0, "a"), (1, "a")], 1) == [(1, "a", 1), (2, "a", 1)]
+
+
+def test_throttle():
+    assert throttle(EV, 1.0) == [(0.0, "save"), (0.3, "resize"), (2.0, "save"), (2.1, "resize")]
+
+
+def test_empty():
+    assert debounce([], 1) == [] and throttle([], 1) == []
+
+=== cron-matcher [misc]
+--- task
+Write `cron_matches(expr, when)` for five-field cron expressions (minute hour day-of-month month day-of-week, Sunday = 0 or 7) supporting "*", numbers, ranges "1-5", lists "1,15", and steps "*/15" or "10-30/10". Follow cron's rule: if both day fields are restricted, a match on either is enough. Write `next_run(expr, after)` returning the first matching minute strictly after `after` (search up to 366 days, else ValueError). Bad fields raise ValueError.
+--- solution
+import datetime
+
+RANGES = [(0, 59), (0, 23), (1, 31), (1, 12), (0, 7)]
+
+
+def _field(text, lo, hi):
+    values = set()
+    for part in text.split(","):
+        rng, _, step = part.partition("/")
+        step = int(step) if step else 1
+        if step < 1:
+            raise ValueError("bad step")
+        if rng == "*":
+            a, b = lo, hi
+        elif "-" in rng:
+            a, b = map(int, rng.split("-"))
+        else:
+            a = b = int(rng)
+        if not (lo <= a <= b <= hi):
+            raise ValueError(f"value out of range in {text!r}")
+        values.update(range(a, b + 1, step))
+    return values
+
+
+def _parse(expr):
+    fields = expr.split()
+    if len(fields) != 5:
+        raise ValueError("need five fields")
+    try:
+        sets = [_field(f, lo, hi) for f, (lo, hi) in zip(fields, RANGES)]
+    except ValueError as e:
+        raise ValueError(f"bad cron expression {expr!r}: {e}") from None
+    if 7 in sets[4]:
+        sets[4].add(0)
+    return sets, fields
+
+
+def cron_matches(expr, when):
+    (mins, hours, dom, months, dow), fields = _parse(expr)
+    if when.minute not in mins or when.hour not in hours or when.month not in months:
+        return False
+    day_ok = when.day in dom
+    wd = (when.weekday() + 1) % 7
+    week_ok = wd in dow
+    if fields[2] != "*" and fields[4] != "*":
+        return day_ok or week_ok
+    return day_ok and week_ok
+
+
+def next_run(expr, after):
+    _parse(expr)
+    t = after.replace(second=0, microsecond=0) + datetime.timedelta(minutes=1)
+    end = after + datetime.timedelta(days=366)
+    while t <= end:
+        if cron_matches(expr, t):
+            return t
+        t += datetime.timedelta(minutes=1)
+    raise ValueError("no run within a year")
+--- tests
+from datetime import datetime as dt
+
+import pytest
+
+
+def test_basic():
+    assert cron_matches("*/15 9-17 * * 1-5", dt(2024, 5, 6, 9, 30))
+    assert not cron_matches("*/15 9-17 * * 1-5", dt(2024, 5, 5, 9, 30))
+    assert not cron_matches("*/15 9-17 * * 1-5", dt(2024, 5, 6, 9, 31))
+
+
+def test_lists_and_sunday_seven():
+    assert cron_matches("0 0 * * 7", dt(2024, 5, 5, 0, 0))
+    assert cron_matches("5,35 * * * *", dt(2024, 1, 1, 3, 35))
+
+
+def test_day_fields_or():
+    assert cron_matches("0 12 1 * 1", dt(2024, 5, 6, 12, 0))
+    assert cron_matches("0 12 1 * 1", dt(2024, 6, 1, 12, 0))
+
+
+def test_next_run():
+    assert next_run("30 2 * * *", dt(2024, 5, 6, 2, 30)) == dt(2024, 5, 7, 2, 30)
+    with pytest.raises(ValueError):
+        next_run("0 0 29 2 *", dt(2024, 3, 1))
+
+
+def test_bad():
+    with pytest.raises(ValueError):
+        cron_matches("60 * * * *", dt(2024, 1, 1))
+    with pytest.raises(ValueError):
+        cron_matches("* * *", dt(2024, 1, 1))
+
+=== top-k-stream [misc]
+--- task
+Write a class `TopK(k)` that keeps the k largest numbers seen so far from a stream using a min-heap: `add(x)`, `items()` returning them sorted largest first, and `threshold()` returning the smallest value that is currently kept (None until k items were seen). Write `top_k_by(records, k, key)` returning the k records with the largest key value, ties kept in input order.
+--- solution
+import heapq
+
+
+class TopK:
+    def __init__(self, k):
+        if k < 1:
+            raise ValueError("k must be positive")
+        self.k = k
+        self.heap = []
+
+    def add(self, x):
+        if len(self.heap) < self.k:
+            heapq.heappush(self.heap, x)
+        elif x > self.heap[0]:
+            heapq.heapreplace(self.heap, x)
+
+    def items(self):
+        return sorted(self.heap, reverse=True)
+
+    def threshold(self):
+        return self.heap[0] if len(self.heap) == self.k else None
+
+
+def top_k_by(records, k, key):
+    indexed = [(key(r), -i, r) for i, r in enumerate(records)]
+    best = heapq.nlargest(k, indexed, key=lambda t: (t[0], t[1]))
+    return [r for _, _, r in best]
+--- tests
+import pytest
+
+
+def test_topk():
+    t = TopK(3)
+    for x in [5, 1, 9, 3, 7, 2]:
+        t.add(x)
+    assert t.items() == [9, 7, 5]
+    assert t.threshold() == 5
+
+
+def test_threshold_before_full():
+    t = TopK(2)
+    t.add(1)
+    assert t.threshold() is None
+
+
+def test_duplicates():
+    t = TopK(2)
+    for x in [4, 4, 4]:
+        t.add(x)
+    assert t.items() == [4, 4]
+
+
+def test_by_key_ties_in_order():
+    recs = [{"n": "a", "s": 5}, {"n": "b", "s": 9}, {"n": "c", "s": 5}, {"n": "d", "s": 1}]
+    assert [r["n"] for r in top_k_by(recs, 3, key=lambda r: r["s"])] == ["b", "a", "c"]
+
+
+def test_bad_k():
+    with pytest.raises(ValueError):
+        TopK(0)
+
+=== polygon-geometry [misc]
+--- task
+Write `polygon_area(points)` (shoelace formula, absolute value, ValueError for fewer than 3 points), `perimeter(points)` for the closed polygon, `centroid(points)` of a non-degenerate polygon, and `point_in_polygon(pt, points)` using ray casting, where points on an edge count as inside.
+--- solution
+import math
+
+
+def polygon_area(points):
+    if len(points) < 3:
+        raise ValueError("need at least 3 points")
+    s = 0.0
+    for (x1, y1), (x2, y2) in zip(points, points[1:] + points[:1]):
+        s += x1 * y2 - x2 * y1
+    return abs(s) / 2
+
+
+def perimeter(points):
+    return sum(math.dist(a, b) for a, b in zip(points, points[1:] + points[:1]))
+
+
+def centroid(points):
+    a = 0.0
+    cx = cy = 0.0
+    for (x1, y1), (x2, y2) in zip(points, points[1:] + points[:1]):
+        cross = x1 * y2 - x2 * y1
+        a += cross
+        cx += (x1 + x2) * cross
+        cy += (y1 + y2) * cross
+    if a == 0:
+        raise ValueError("degenerate polygon")
+    a /= 2
+    return cx / (6 * a), cy / (6 * a)
+
+
+def _on_segment(p, a, b):
+    (px, py), (ax, ay), (bx, by) = p, a, b
+    cross = (bx - ax) * (py - ay) - (by - ay) * (px - ax)
+    return abs(cross) < 1e-9 and min(ax, bx) - 1e-9 <= px <= max(ax, bx) + 1e-9 and min(ay, by) - 1e-9 <= py <= max(ay, by) + 1e-9
+
+
+def point_in_polygon(pt, points):
+    x, y = pt
+    inside = False
+    for a, b in zip(points, points[1:] + points[:1]):
+        if _on_segment(pt, a, b):
+            return True
+        (x1, y1), (x2, y2) = a, b
+        if (y1 > y) != (y2 > y):
+            xin = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
+            if x < xin:
+                inside = not inside
+    return inside
+--- tests
+import pytest
+
+SQUARE = [(0, 0), (4, 0), (4, 4), (0, 4)]
+L_SHAPE = [(0, 0), (2, 0), (2, 1), (1, 1), (1, 2), (0, 2)]
+
+
+def test_area():
+    assert polygon_area(SQUARE) == 16
+    assert polygon_area(L_SHAPE) == 3
+    assert polygon_area(list(reversed(SQUARE))) == 16
+
+
+def test_perimeter():
+    assert perimeter(SQUARE) == 16
+
+
+def test_centroid():
+    assert centroid(SQUARE) == (2, 2)
+
+
+def test_point_in():
+    assert point_in_polygon((1, 1), SQUARE)
+    assert not point_in_polygon((5, 1), SQUARE)
+    assert point_in_polygon((4, 2), SQUARE)
+    assert not point_in_polygon((1.5, 1.5), L_SHAPE)
+
+
+def test_errors():
+    with pytest.raises(ValueError):
+        polygon_area([(0, 0), (1, 1)])
+    with pytest.raises(ValueError):
+        centroid([(0, 0), (1, 1), (2, 2)])
+
+=== haversine-nearby [misc]
+--- task
+Write `haversine_km(a, b)` for (lat, lon) degree pairs on a sphere of radius 6371 km, and `nearby(origin, places, radius_km)` returning (name, distance rounded to 1 decimal) for places (dict name -> (lat, lon)) within the radius, nearest first, ties by name. Latitudes outside [-90, 90] or longitudes outside [-180, 180] raise ValueError.
+--- solution
+import math
+
+R = 6371.0
+
+
+def _check(p):
+    lat, lon = p
+    if not -90 <= lat <= 90 or not -180 <= lon <= 180:
+        raise ValueError(f"bad coordinate {p}")
+
+
+def haversine_km(a, b):
+    _check(a)
+    _check(b)
+    lat1, lon1, lat2, lon2 = map(math.radians, (*a, *b))
+    h = math.sin((lat2 - lat1) / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(h))
+
+
+def nearby(origin, places, radius_km):
+    rows = []
+    for name, p in places.items():
+        d = haversine_km(origin, p)
+        if d <= radius_km:
+            rows.append((round(d, 1), name))
+    return [(name, d) for d, name in sorted(rows)]
+--- tests
+import pytest
+
+PARIS, LONDON, BERLIN = (48.8566, 2.3522), (51.5074, -0.1278), (52.52, 13.405)
+
+
+def test_distance():
+    assert round(haversine_km(PARIS, LONDON)) == 344
+    assert haversine_km(PARIS, PARIS) == 0
+
+
+def test_symmetry():
+    assert haversine_km(PARIS, BERLIN) == pytest.approx(haversine_km(BERLIN, PARIS))
+
+
+def test_nearby():
+    places = {"London": LONDON, "Berlin": BERLIN, "Paris": PARIS}
+    assert nearby(PARIS, places, 500) == [("Paris", 0.0), ("London", 343.6)]
+
+
+def test_bad_coordinate():
+    with pytest.raises(ValueError):
+        haversine_km((91, 0), PARIS)
+
+
+def test_antipodes():
+    assert haversine_km((0, 0), (0, 180)) == pytest.approx(math_pi_r(), rel=1e-9)
+
+
+def math_pi_r():
+    import math
+    return math.pi * 6371.0
+
+=== tokenize-calculator [misc]
+--- task
+Write `evaluate(expr)` for arithmetic expressions with integers and decimals, + - * /, unary minus, ^ for power (right-associative, binding tighter than unary minus, so -2^2 = -4) and parentheses, without using eval. Division by zero raises ZeroDivisionError; any syntax error raises ValueError with the position of the bad token. Return an int when the result is a whole number, else a float.
+--- solution
+import re
+
+_TOKEN = re.compile(r"\s*(?:(\d+\.\d*|\.\d+|\d+)|(\S))")
+
+
+def _tokens(expr):
+    out = []
+    for m in _TOKEN.finditer(expr):
+        if m.group(1):
+            out.append(("num", float(m.group(1)), m.start(1)))
+        elif m.group(2):
+            if m.group(2) not in "+-*/^()":
+                raise ValueError(f"unexpected {m.group(2)!r} at {m.start(2)}")
+            out.append(("op", m.group(2), m.start(2)))
+    out.append(("end", None, len(expr)))
+    return out
+
+
+def evaluate(expr):
+    toks = _tokens(expr)
+    pos = 0
+
+    def peek():
+        return toks[pos]
+
+    def take():
+        nonlocal pos
+        pos += 1
+        return toks[pos - 1]
+
+    def expect(op):
+        t = take()
+        if t[1] != op:
+            raise ValueError(f"expected {op!r} at {t[2]}")
+
+    def atom():
+        t = take()
+        if t[0] == "num":
+            return t[1]
+        if t[1] == "(":
+            v = add()
+            expect(")")
+            return v
+        raise ValueError(f"unexpected token at {t[2]}")
+
+    def power():
+        base = atom()
+        if peek()[1] == "^":
+            take()
+            return base ** unary()
+        return base
+
+    def unary():
+        if peek()[1] == "-":
+            take()
+            return -unary()
+        if peek()[1] == "+":
+            take()
+            return unary()
+        return power()
+
+    def mul():
+        v = unary()
+        while peek()[1] in ("*", "/"):
+            op = take()[1]
+            r = unary()
+            if op == "/":
+                if r == 0:
+                    raise ZeroDivisionError("division by zero")
+                v /= r
+            else:
+                v *= r
+        return v
+
+    def add():
+        v = mul()
+        while peek()[1] in ("+", "-"):
+            op = take()[1]
+            r = mul()
+            v = v + r if op == "+" else v - r
+        return v
+
+    result = add()
+    if peek()[0] != "end":
+        raise ValueError(f"unexpected token at {peek()[2]}")
+    return int(result) if float(result).is_integer() else result
+--- tests
+import pytest
+
+
+def test_precedence():
+    assert evaluate("1 + 2 * 3") == 7
+    assert evaluate("(1 + 2) * 3") == 9
+    assert evaluate("2 ^ 3 ^ 2") == 512
+
+
+def test_unary():
+    assert evaluate("-2^2") == -4
+    assert evaluate("(-2)^2") == 4
+    assert evaluate("3 - -1") == 4
+
+
+def test_decimals():
+    assert evaluate("7 / 2") == 3.5
+    assert evaluate(".5 * 4") == 2
+
+
+def test_errors():
+    with pytest.raises(ZeroDivisionError):
+        evaluate("1 / (2 - 2)")
+    with pytest.raises(ValueError, match="at 4"):
+        evaluate("1 + * 2")
+    with pytest.raises(ValueError):
+        evaluate("(1 + 2")
+    with pytest.raises(ValueError):
+        evaluate("2 $ 3")
+
+
+def test_whitespace():
+    assert evaluate("  42 ") == 42
+
+=== retry-with-jitter-schedule [misc]
+--- task
+Write `backoff_delays(attempts, base=0.5, factor=2, cap=30, jitter=0.1, seed=None)` returning the list of waits before each retry: base * factor**i capped at cap, each multiplied by a random factor in [1 - jitter, 1 + jitter] from random.Random(seed), rounded to 3 places. Write `call_with_retries(fn, attempts, delays, retry_on=(Exception,), sleep=time.sleep)` that calls fn until it succeeds, sleeping the given delays between tries, re-raising the last exception when attempts run out; exceptions not in retry_on propagate at once.
+--- solution
+import random
+import time
+
+
+def backoff_delays(attempts, base=0.5, factor=2, cap=30, jitter=0.1, seed=None):
+    rng = random.Random(seed)
+    out = []
+    for i in range(attempts):
+        d = min(cap, base * factor**i)
+        d *= rng.uniform(1 - jitter, 1 + jitter)
+        out.append(round(d, 3))
+    return out
+
+
+def call_with_retries(fn, attempts, delays, retry_on=(Exception,), sleep=time.sleep):
+    if attempts < 1:
+        raise ValueError("attempts must be positive")
+    for i in range(attempts):
+        try:
+            return fn()
+        except retry_on:
+            if i == attempts - 1:
+                raise
+            sleep(delays[min(i, len(delays) - 1)])
+--- tests
+import pytest
+
+
+def test_delays_no_jitter():
+    assert backoff_delays(5, jitter=0) == [0.5, 1.0, 2.0, 4.0, 8.0]
+    assert backoff_delays(8, jitter=0)[-1] == 30
+
+
+def test_jitter_bounds_and_seed():
+    a = backoff_delays(4, seed=1)
+    assert a == backoff_delays(4, seed=1)
+    assert all(0.9 * x <= y <= 1.1 * x for x, y in zip([0.5, 1, 2, 4], a))
+
+
+def test_retries_then_success():
+    calls, slept = [], []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) < 3:
+            raise ConnectionError("down")
+        return "ok"
+
+    assert call_with_retries(flaky, 5, [1, 2, 3], sleep=slept.append) == "ok"
+    assert slept == [1, 2]
+
+
+def test_gives_up():
+    slept = []
+    with pytest.raises(TimeoutError):
+        call_with_retries(lambda: (_ for _ in ()).throw(TimeoutError()), 3, [0.1], sleep=slept.append)
+    assert slept == [0.1, 0.1]
+
+
+def test_non_retryable():
+    def bad():
+        raise KeyError("x")
+
+    with pytest.raises(KeyError):
+        call_with_retries(bad, 3, [1], retry_on=(ConnectionError,), sleep=lambda s: None)
