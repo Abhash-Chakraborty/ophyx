@@ -13,6 +13,7 @@ CONFIG keys:
   version     input version for the tokenizer (default v1); out_version: where outputs go (default = version)
   smoke       true: ~smoke_rows rows from the datasets-server rows API, no uploads, outputs under WORK
   max_tokens  longest rendered example kept (default 4096)
+  rebuild     row stages only: ignore finished parts and their ids, and upload over the same files
 
 Pipeline per example (drop reasons are counted at every step, per source, in the report):
   1. Python only. The sources have no language field, so each fenced block is classified by its tag:
@@ -95,6 +96,7 @@ SMOKE = bool(CONFIG.get("smoke", False))
 WORK = CONFIG.get("work", "/kaggle/tmp/sft" if os.path.isdir("/kaggle") else tempfile.mkdtemp(prefix="sft-"))
 OUTW = "/kaggle/working" if os.path.isdir("/kaggle") else WORK
 CHUNK = CONFIG.get("chunk", 50_000)
+REBUILD = bool(CONFIG.get("rebuild", False))  # row stages: build every part again, overwriting the same files
 MAX_TOKENS = CONFIG.get("max_tokens", 4096)
 PROCS = CONFIG.get("procs", os.cpu_count())
 PREFIX = f"{OV}/sft/{STAGE}"
@@ -1152,7 +1154,7 @@ def main():
 
     seen = set()
     for f in sorted(uploader.done):  # restart: dedup state from every finished part
-        if f.startswith(f"{PREFIX}/ids/"):
+        if f.startswith(f"{PREFIX}/ids/") and not REBUILD:
             seen.update(np.fromfile(download(f), dtype=np.uint64).tolist())
     log(f"{len(seen):,} example ids from finished parts")
     this_run, samples = {}, []
@@ -1172,7 +1174,7 @@ def main():
                 rows = rows[:CONFIG.get("smoke_rows", 200)]
             for k in range(0, len(rows), CHUNK):
                 tag = f"{STAGE}-{CONFIG.get('rows_tag', 'v1')}-c{k // CHUNK:03d}"
-                if f"{PREFIX}/_done/{tag}.json" in uploader.done:
+                if f"{PREFIX}/_done/{tag}.json" in uploader.done and not REBUILD:
                     continue
                 out, recs = process_part(tag, STAGE, rows[k:k + CHUNK], pool, tok, seen, uploader)
                 this_run[tag] = out
