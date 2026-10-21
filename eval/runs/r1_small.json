@@ -1,0 +1,120 @@
+{
+ "models": [
+  {
+   "id": "abhash-chakraborty/pycoder-base350m-sft",
+   "kind": "ours",
+   "name": "pycoder-350m-sft",
+   "max_len": 2048
+  },
+  {
+   "id": "abhash-chakraborty/pycoder-base350m",
+   "kind": "base",
+   "name": "pycoder-350m-base",
+   "max_len": 2048
+  },
+  {
+   "id": "abhash-chakraborty/pycoder-nano125m-sft",
+   "kind": "ours",
+   "name": "pycoder-125m-sft",
+   "max_len": 2048
+  },
+  {
+   "id": "abhash-chakraborty/pycoder-nano125m",
+   "kind": "base",
+   "name": "pycoder-125m-base",
+   "max_len": 2048
+  },
+  {
+   "id": "Qwen/Qwen2.5-Coder-0.5B",
+   "kind": "base"
+  },
+  {
+   "id": "Qwen/Qwen2.5-Coder-0.5B-Instruct",
+   "kind": "instruct"
+  },
+  {
+   "id": "Qwen/Qwen2.5-Coder-1.5B",
+   "kind": "base"
+  },
+  {
+   "id": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+   "kind": "instruct"
+  },
+  {
+   "id": "Qwen/Qwen3-0.6B-Base",
+   "kind": "base"
+  },
+  {
+   "id": "Qwen/Qwen3-0.6B",
+   "kind": "instruct"
+  },
+  {
+   "id": "Qwen/Qwen3-1.7B-Base",
+   "kind": "base"
+  },
+  {
+   "id": "Qwen/Qwen3-1.7B",
+   "kind": "instruct"
+  },
+  {
+   "id": "HuggingFaceTB/SmolLM2-135M",
+   "kind": "base"
+  },
+  {
+   "id": "HuggingFaceTB/SmolLM2-360M",
+   "kind": "base"
+  },
+  {
+   "id": "HuggingFaceTB/SmolLM2-360M-Instruct",
+   "kind": "instruct"
+  },
+  {
+   "id": "HuggingFaceTB/SmolLM2-1.7B",
+   "kind": "base"
+  },
+  {
+   "id": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+   "kind": "instruct"
+  },
+  {
+   "id": "deepseek-ai/deepseek-coder-1.3b-base",
+   "kind": "base"
+  },
+  {
+   "id": "deepseek-ai/deepseek-coder-1.3b-instruct",
+   "kind": "instruct"
+  },
+  {
+   "id": "microsoft/phi-1",
+   "kind": "base"
+  },
+  {
+   "id": "microsoft/phi-1_5",
+   "kind": "base"
+  },
+  {
+   "id": "Salesforce/codegen-350M-mono",
+   "kind": "base"
+  },
+  {
+   "id": "bigcode/gpt_bigcode-santacoder",
+   "kind": "base"
+  },
+  {
+   "id": "infly/OpenCoder-1.5B-Base",
+   "kind": "base"
+  },
+  {
+   "id": "infly/OpenCoder-1.5B-Instruct",
+   "kind": "instruct"
+  },
+  {
+   "id": "01-ai/Yi-Coder-1.5B",
+   "kind": "base"
+  },
+  {
+   "id": "01-ai/Yi-Coder-1.5B-Chat",
+   "kind": "instruct"
+  }
+ ]
+}

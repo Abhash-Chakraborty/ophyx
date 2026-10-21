@@ -1,0 +1,71 @@
+{
+ "models": [
+  {
+   "id": "Qwen/Qwen2.5-Coder-3B",
+   "kind": "base"
+  },
+  {
+   "id": "Qwen/Qwen2.5-Coder-3B-Instruct",
+   "kind": "instruct"
+  },
+  {
+   "id": "Qwen/Qwen3-4B",
+   "kind": "instruct"
+  },
+  {
+   "id": "microsoft/phi-2",
+   "kind": "base"
+  },
+  {
+   "id": "stabilityai/stable-code-3b",
+   "kind": "base"
+  },
+  {
+   "id": "bigcode/starcoder2-3b",
+   "kind": "base"
+  },
+  {
+   "id": "ibm-granite/granite-3b-code-base-2k",
+   "kind": "base"
+  },
+  {
+   "id": "ibm-granite/granite-3b-code-instruct-2k",
+   "kind": "instruct"
+  },
+  {
+   "id": "Qwen/Qwen2.5-Coder-7B",
+   "kind": "base",
+   "tp": 2
+  },
+  {
+   "id": "Qwen/Qwen2.5-Coder-7B-Instruct",
+   "kind": "instruct",
+   "tp": 2
+  },
+  {
+   "id": "deepseek-ai/deepseek-coder-6.7b-base",
+   "kind": "base",
+   "tp": 2
+  },
+  {
+   "id": "deepseek-ai/deepseek-coder-6.7b-instruct",
+   "kind": "instruct",
+   "tp": 2
+  },
+  {
+   "id": "bigcode/starcoder2-7b",
+   "kind": "base",
+   "tp": 2
+  },
+  {
+   "id": "codellama/CodeLlama-7b-Python-hf",
+   "kind": "base",
+   "tp": 2
+  },
+  {
+   "id": "Qwen/Qwen3-8B",
+   "kind": "instruct",
+   "tp": 2
+  }
+ ]
+}
