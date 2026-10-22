@@ -5,8 +5,8 @@ concept suite and the hands-on prompts) are attached as inputs. Answers go to
 <out>/samples/<model>/<bench>.jsonl; eval/bench_exec.py scores them offline, with no keys.
 
 CONFIG:
-  models   list of {"id", "kind": "base" | "instruct" | "ours", "name"?, "tp": 1 | 2, "max_len"?,
-           "benches"?: [...] (default: all that apply to the kind), "think": false (Qwen3),
+  models   list of {"id" (HF id, or a local path that may be a glob), "kind": "base" | "instruct" | "ours",
+           "name"?, "tp": 1 | 2, "max_len"?, "benches"?: [...] (default: all that apply to the kind), "think": false (Qwen3),
            "trust_remote_code": false}
   benches  default benches for every model
   budget_s no new model starts after this many seconds (default 10 h); a running one is killed 30 min later
@@ -456,7 +456,15 @@ def orchestrate():
     import multiprocessing as mp
     setup()
     ctx = mp.get_context("fork")
-    models = list(CONFIG["models"])
+    models = []
+    for m in CONFIG["models"]:  # a local path may be a glob: Kaggle mounts kernel outputs at varying depths
+        if m["id"].startswith("/") and "*" in m["id"]:
+            hits = sorted(glob.glob(m["id"], recursive=True))
+            if not hits:
+                log(f"{m['id']}: no match; skipped")
+                continue
+            m = {**m, "id": hits[0]}
+        models.append(m)
     done = {}
     os.makedirs(os.path.join(OUT, "logs"), exist_ok=True)
 
