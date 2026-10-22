@@ -9,7 +9,8 @@ them offline like every other model. Nothing is executed here.
 Edit the constants before a push: MODELS (CLI slugs from `kaggle b t models`), BENCHES (priority order:
 a budget stop cuts the last ones), BUDGET_USD (this run stops sending new requests once the
 proxy-reported cost reaches it), ONLY (a top-up of the replies an earlier run missed), WORKERS.
-Reasoning models get reasoning_effort "low" and 4,096 extra output tokens for their thinking.
+Reasoning models get reasoning_effort "low" (OpenAI and xAI) and 4,096 extra output tokens for their thinking;
+Gemma 4 and Claude Haiku are listed too, since they used the whole budget thinking and returned no text.
 """
 
 import collections
@@ -28,7 +29,7 @@ BENCHES = __BENCHES__
 BUDGET_USD = __BUDGET__
 ONLY = __ONLY__  # None, or {slug: ["bench|task_id", ...]}: a top-up run that asks only these
 WORKERS = 4
-REASONING = ("gpt-5", "gpt-6", "gpt-oss", "gemini-2.5", "gemini-3", "gemini-4", "deepseek-r1", "thinking", "grok", "glm-5")
+REASONING = ("gpt-5", "gpt-6", "gpt-oss", "gemma-4", "claude-haiku", "gemini-2.5", "gemini-3", "gemini-4", "deepseek-r1", "thinking", "grok", "glm-5")
 ROOT = os.environ.get("PYCODER_FRONTIER_ROOT", "/kaggle")  # changed only by the local mock test
 FALLBACK_PRICE = (5e-6, 25e-6)  # $/token in, out: used only when the proxy reports no cost
 
