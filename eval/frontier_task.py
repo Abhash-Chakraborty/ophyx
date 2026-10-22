@@ -8,7 +8,8 @@ them offline like every other model. Nothing is executed here.
 
 Edit the constants before a push: MODELS (CLI slugs from `kaggle b t models`), BENCHES (priority order:
 a budget stop cuts the last ones), BUDGET_USD (this run stops sending new requests once the
-proxy-reported cost reaches it), ONLY (a top-up of the replies an earlier run missed), WORKERS.
+proxy-reported cost reaches it), ONLY (a top-up of the replies an earlier run missed), EXTRA (output tokens
+added for every request, for re-asking replies that stopped at the length limit), WORKERS.
 Reasoning models get reasoning_effort "low" (OpenAI and xAI) and 4,096 extra output tokens for their thinking;
 Gemma 4 and Claude Haiku are listed too, since they used the whole budget thinking and returned no text.
 """
@@ -28,6 +29,7 @@ MODELS = __MODELS__
 BENCHES = __BENCHES__
 BUDGET_USD = __BUDGET__
 ONLY = __ONLY__  # None, or {slug: ["bench|task_id", ...]}: a top-up run that asks only these
+EXTRA = __EXTRA__
 WORKERS = 4
 REASONING = ("gpt-5", "gpt-6", "gpt-oss", "gemma-4", "claude-haiku", "gemini-2.5", "gemini-3", "gemini-4", "deepseek-r1", "thinking", "grok", "glm-5")
 ROOT = os.environ.get("OPHYX_FRONTIER_ROOT", "/kaggle")  # changed only by the local mock test
@@ -73,7 +75,7 @@ def frontier_run(llm) -> tuple[int, int]:
             return {"error": "budget"}
         mid = ids[slug]
         reasoning = any(k in slug for k in REASONING)
-        kw = {"model": mid, "messages": p["messages"], "max_completion_tokens": p["max_tokens"] + (4096 if reasoning else 256)}
+        kw = {"model": mid, "messages": p["messages"], "max_completion_tokens": p["max_tokens"] + (4096 if reasoning else 256) + EXTRA}
         if reasoning and ("gpt" in slug or "grok" in slug):
             kw["reasoning_effort"] = "low"
         if slug not in no_temp:
