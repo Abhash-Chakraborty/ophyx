@@ -45,7 +45,9 @@ def main():
     for name, r in merged.items():
         if name.startswith("_"):
             continue
-        row = {"model": name, "kind": r.get("_kind"), "params_b": PARAMS.get(name)}
+        size = name.split("-")[1] if name.startswith("ophyx-") else ""  # DPO/GRPO runs keep their base's size
+        params = PARAMS.get(name) or {"350m": 0.349, "125m": 0.126}.get(size)
+        row = {"model": name, "kind": r.get("_kind"), "params_b": params}
         for bench, key, label in COLS:
             v = r.get(bench, {})
             row[label] = v.get(key) if isinstance(v, dict) else None
