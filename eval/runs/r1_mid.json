@@ -1,0 +1,61 @@
+{
+ "budget_s": 36000,
+ "models": [
+  {
+   "id": "/kaggle/input/**/dpo/final",
+   "kind": "ours",
+   "name": "ophyx-350m-dpo-p1"
+  },
+  {
+   "id": "deepseek-ai/deepseek-coder-1.3b-base",
+   "kind": "base"
+  },
+  {
+   "id": "deepseek-ai/deepseek-coder-1.3b-instruct",
+   "kind": "instruct"
+  },
+  {
+   "id": "infly/OpenCoder-1.5B-Base",
+   "kind": "base",
+   "trust_remote_code": true
+  },
+  {
+   "id": "infly/OpenCoder-1.5B-Instruct",
+   "kind": "instruct",
+   "trust_remote_code": true
+  },
+  {
+   "id": "Qwen/Qwen2.5-Coder-3B",
+   "kind": "base"
+  },
+  {
+   "id": "Qwen/Qwen2.5-Coder-3B-Instruct",
+   "kind": "instruct"
+  },
+  {
+   "id": "Qwen/Qwen3-4B",
+   "kind": "instruct",
+   "think": false
+  },
+  {
+   "id": "bigcode/starcoder2-3b",
+   "kind": "base"
+  },
+  {
+   "id": "stabilityai/stable-code-3b",
+   "kind": "base"
+  },
+  {
+   "id": "ibm-granite/granite-3b-code-instruct-2k",
+   "kind": "instruct"
+  },
+  {
+   "id": "ibm-granite/granite-3b-code-base-2k",
+   "kind": "base"
+  },
+  {
+   "id": "microsoft/phi-2",
+   "kind": "base"
+  }
+ ]
+}
