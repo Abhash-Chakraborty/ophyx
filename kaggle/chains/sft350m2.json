@@ -77,6 +77,18 @@
      "mask_glob": "/kaggle/tmp/hf_data/v1/sft/repair/mask/train/*.bin",
      "aligned": true,
      "weight": 0.0
+    },
+    "sft_expert": {
+     "glob": "/kaggle/tmp/hf_data/v1/sft/expert/tokens/train/*.bin",
+     "mask_glob": "/kaggle/tmp/hf_data/v1/sft/expert/mask/train/*.bin",
+     "aligned": true,
+     "weight": 0.0
+    },
+    "sft_selfrepair": {
+     "glob": "/kaggle/tmp/hf_data/v1/sft/selfrepair/tokens/train/*.bin",
+     "mask_glob": "/kaggle/tmp/hf_data/v1/sft/selfrepair/mask/train/*.bin",
+     "aligned": true,
+     "weight": 0.0
     }
    },
    "val_glob": "/kaggle/tmp/hf_data/v1/sft/*/tokens/val/*.bin",
@@ -89,17 +101,21 @@
       "sft_stage2": 0.0,
       "sft_synth": 0.0,
       "sft_bank": 0.02,
-      "sft_repair": 0.04
+      "sft_repair": 0.04,
+      "sft_expert": 0.0,
+      "sft_selfrepair": 0.0
      }
     },
     {
      "until": 1.0,
      "weights": {
       "sft_stage1": 0.22,
-      "sft_stage2": 0.64,
+      "sft_stage2": 0.624,
       "sft_synth": 0.05,
       "sft_bank": 0.03,
-      "sft_repair": 0.06
+      "sft_repair": 0.06,
+      "sft_expert": 0.008,
+      "sft_selfrepair": 0.008
      }
     }
    ]
