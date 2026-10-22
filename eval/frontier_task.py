@@ -52,8 +52,10 @@ def frontier_run(llm) -> tuple[int, int]:
             ids[slug] = mid
     files = glob.glob(f"{ROOT}/input/**/prompts.jsonl", recursive=True)
     prompts = sorted((r for r in map(json.loads, open(files[0])) if r["bench"] in BENCHES), key=lambda r: BENCHES.index(r["bench"]))
-    client = OpenAI(api_key=os.environ["MODEL_PROXY_API_KEY"], base_url=os.environ["MODEL_PROXY_URL"].rstrip("/") + "/openapi",
-                    max_retries=0, timeout=300)
+    base = os.environ["MODEL_PROXY_URL"].rstrip("/")
+    for suffix in ("/openapi", "/genai"):  # the variable may already end in one; kaggle_benchmarks strips it the same way
+        base = base[: -len(suffix)] if base.endswith(suffix) else base
+    client = OpenAI(api_key=os.environ["MODEL_PROXY_API_KEY"], base_url=base + "/openapi", max_retries=0, timeout=300)
     lock = threading.Lock()
     spent = [0.0]
     no_temp = set()
@@ -101,6 +103,14 @@ def frontier_run(llm) -> tuple[int, int]:
                 return {"error": msg}
         return {"error": "retries exhausted"}
 
+    for slug in list(ids):  # one tiny call per model first, so a broken setup costs one request, not a whole run
+        probe = call(slug, {"messages": [{"role": "user", "content": "Reply with the word ok."}], "max_tokens": 16})
+        print(f"preflight {slug}: {probe.get('error') or 'ok'}", flush=True)
+        if "error" in probe:
+            ids.pop(slug)
+    if not ids:
+        json.dump({"error": "every model failed the preflight", "spent_usd": spent[0]}, open(f"{ROOT}/working/summary.json", "w"))
+        return 0, 1
     jobs = [(slug, p) for p in prompts for slug in ids]  # interleaved, so one model's rate limit doesn't stall the rest
     t0 = time.time()
     with cf.ThreadPoolExecutor(WORKERS) as ex:
