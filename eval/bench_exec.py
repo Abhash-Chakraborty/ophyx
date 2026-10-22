@@ -15,7 +15,7 @@ empty environment and its own temp dir.
                     the tasks whose reference passes here, since some tasks need the network or a missing library
 
 CONFIG: models (names to score; default all found), skip_models, benches, shard / nshards (split
-the models across kernels), jobs (parallel children, default 4), canonical (default true on shard 0).
+the models across kernels), jobs (parallel children, default 4), canonical (default true: every shard needs the runnable set).
 """
 
 import concurrent.futures as cf
@@ -507,7 +507,7 @@ def main():
     results = json.load(open(res_path)) if os.path.exists(res_path) else {}
     benches = CONFIG.get("benches")
     ok_ids = None
-    if CONFIG.get("canonical", shard == 0):
+    if CONFIG.get("canonical", True):
         ok_ids = bcb_canonical()
         results["canonical"] = {"bcb_hard": {"n": 148, "pass@1": round(100 * len(ok_ids) / 148, 1)}}
         json.dump(sorted(ok_ids), open(os.path.join(OUT, "bcb_runnable.json"), "w"))
