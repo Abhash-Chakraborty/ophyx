@@ -46,6 +46,8 @@ def main():
     if os.path.isdir("/kaggle"):
         r = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "trl"], capture_output=True, text=True)
         log("pip install trl:", r.returncode, r.stderr[-800:])
+    # Kaggle's T4 session shows two GPUs; Trainer would wrap the model in DataParallel, which DPOTrainer refuses
+    os.environ.setdefault("CUDA_VISIBLE_DEVICES", str(CONFIG.get("gpu", 0)))
     import torch
     import trl
     from datasets import Dataset
