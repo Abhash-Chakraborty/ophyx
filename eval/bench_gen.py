@@ -6,8 +6,10 @@ concept suite and the hands-on prompts) are attached as inputs. Answers go to
 
 CONFIG:
   models   list of {"id", "kind": "base" | "instruct" | "ours", "name"?, "tp": 1 | 2, "max_len"?,
-           "benches"?: [...] (default: all that apply to the kind), "think": false (Qwen3)}
+           "benches"?: [...] (default: all that apply to the kind), "think": false (Qwen3),
+           "trust_remote_code": false}
   benches  default benches for every model
+  budget_s no new model starts after this many seconds (default 10 h); a running one is killed 30 min later
   out      default /kaggle/working
 
 Prompt formats, chosen to match how each family is usually reported:
@@ -264,15 +266,36 @@ def check_tokenizer(tok, name):
         raise SystemExit(f"{name}: tokenizer round trip fails ({back!r}); not running it")
 
 
+def fixed_tokenizer(spec):
+    """Some transformers builds convert deepseek-coder's byte-level BPE into a broken slow-style tokenizer.
+    If the round trip fails, load tokenizer.json as-is and save it where vLLM and transformers can both read it."""
+    from transformers import AutoTokenizer, PreTrainedTokenizerFast
+    trc = spec.get("trust_remote_code", False)
+    tok = AutoTokenizer.from_pretrained(spec["id"], trust_remote_code=trc)
+    probe = "def f(x):\n    return x + 1  # ok"
+    if tok.decode(tok.encode(probe, add_special_tokens=False)) == probe:
+        return None
+    from huggingface_hub import hf_hub_download
+    fixed = PreTrainedTokenizerFast(tokenizer_file=hf_hub_download(spec["id"], "tokenizer.json"),
+                                    bos_token=tok.bos_token, eos_token=tok.eos_token, pad_token=tok.pad_token,
+                                    unk_token=tok.unk_token)
+    fixed.chat_template = tok.chat_template
+    check_tokenizer(fixed, spec["id"] + " (rebuilt)")
+    path = os.path.join(OUT, "tokenizers", model_name(spec))
+    fixed.save_pretrained(path)
+    log(f"{spec['id']}: tokenizer round trip failed; using tokenizer.json as-is from {path}")
+    return path
+
+
 # ---------------------------------------------------------------- engines
 
 
 class VLLMEngine:
     def __init__(self, spec, max_len):
         from vllm import LLM
-        self.llm = LLM(model=spec["id"], tensor_parallel_size=spec.get("tp", 1), dtype=spec.get("dtype", "float16"),
-                       max_model_len=max_len, gpu_memory_utilization=0.88, seed=0, trust_remote_code=False,
-                       enable_prefix_caching=True)
+        self.llm = LLM(model=spec["id"], tokenizer=spec.get("tokenizer") or spec["id"], tensor_parallel_size=spec.get("tp", 1),
+                       dtype=spec.get("dtype", "float16"), max_model_len=max_len, gpu_memory_utilization=0.88, seed=0,
+                       trust_remote_code=spec.get("trust_remote_code", False), enable_prefix_caching=True)
         self.tok = self.llm.get_tokenizer()
         check_tokenizer(self.tok, spec["id"])
 
@@ -295,12 +318,14 @@ class HFEngine:
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
         self.torch, self.max_len = torch, max_len
-        self.tok = AutoTokenizer.from_pretrained(spec["id"])
+        trc = spec.get("trust_remote_code", False)
+        self.tok = AutoTokenizer.from_pretrained(spec.get("tokenizer") or spec["id"], trust_remote_code=trc)
         self.tok.padding_side = "left"
         if self.tok.pad_token is None:
             self.tok.pad_token = self.tok.eos_token
         check_tokenizer(self.tok, spec["id"])
-        self.model = AutoModelForCausalLM.from_pretrained(spec["id"], dtype=torch.float16).to("cuda").eval()
+        self.model = AutoModelForCausalLM.from_pretrained(spec["id"], dtype=torch.float16,
+                                                          trust_remote_code=trc).to("cuda").eval()
 
     def generate(self, ids, max_tokens, stops, stop_ids):
         torch = self.torch
@@ -334,7 +359,7 @@ class HFEngine:
 def model_max_len(spec):
     from transformers import AutoConfig
     try:
-        c = AutoConfig.from_pretrained(spec["id"])
+        c = AutoConfig.from_pretrained(spec["id"], trust_remote_code=spec.get("trust_remote_code", False))
         native = getattr(c, "max_position_embeddings", None) or getattr(c, "n_positions", None) or 4096
     except Exception:
         native = 4096
@@ -347,6 +372,7 @@ def run_model(spec):
     os.makedirs(mdir, exist_ok=True)
     max_len = model_max_len(spec)
     t = time.time()
+    spec = {**spec, "tokenizer": fixed_tokenizer(spec)}
     try:
         eng = VLLMEngine(spec, max_len)
         engine = "vllm"
@@ -457,21 +483,43 @@ def orchestrate():
     # smoke run). The main thread starts the children and polls them, one per free GPU.
     single = [m for m in models if m.get("tp", 1) == 1]
     double = [m for m in models if m.get("tp", 1) == 2]
+    # Kaggle drops the whole output when a session hits its 12 h limit, so stop starting models after
+    # budget_s and kill whatever still runs at budget_s + 30 min. Finished benches are already on disk.
+    budget = CONFIG.get("budget_s", 10 * 3600)
+    hard = budget + 1800
+    timeout = CONFIG.get("model_timeout_s", 3 * 3600)
+
+    def left():
+        return hard - (time.time() - T0)
+
+    def skip(rest):
+        for spec in rest:
+            done[model_name(spec)] = {"rc": None, "skipped": "session budget"}
+            log(f"{model_name(spec)}: skipped, session budget used up")
+        rest.clear()
+
     running = {}  # gpu -> (process, spec, start)
     while single or running:
+        if time.time() - T0 > budget:
+            skip(single)
         for gpu in ("0", "1"):
             if gpu not in running and single:
                 spec = single.pop(0)
                 running[gpu] = (start_child(spec, gpu), spec, time.time())
         for gpu, (p, spec, t) in list(running.items()):
-            if not p.is_alive() or time.time() - t > CONFIG.get("model_timeout_s", 3 * 3600):
+            if not p.is_alive() or time.time() - t > timeout or left() < 0:
                 finish_child(p, spec, gpu, t)
                 del running[gpu]
         time.sleep(5)
-    for spec in double:
+    while double:
+        if time.time() - T0 > budget:
+            skip(double)
+            break
+        spec = double.pop(0)
         p, t = start_child(spec, "0,1"), time.time()
-        p.join(CONFIG.get("model_timeout_s", 3 * 3600))
+        p.join(max(1, min(timeout, left())))
         finish_child(p, spec, "0,1", t)
+    json.dump(done, open(os.path.join(OUT, "gen_status.json"), "w"), indent=1)
     log("GEN DONE", json.dumps(done))
 
 
