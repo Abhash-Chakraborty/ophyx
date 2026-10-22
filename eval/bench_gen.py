@@ -250,6 +250,20 @@ def cut(text, stops):
     return text[:min(idx)] if idx else text
 
 
+def looks_bytelevel(text):
+    """Raw byte-level BPE text ("\u0120return" for " return"): the tokenizer lost its byte-level steps."""
+    return ("\u0120" in text or "\u010a" in text) and " " not in text and "\n" not in text
+
+
+def check_tokenizer(tok, name):
+    """deepseek-coder's tokenizer on Kaggle (vLLM + that transformers build) encoded prompts without spaces and
+    decoded raw byte-level text, so it scored 0 everywhere. Refuse to run a model whose round trip fails."""
+    probe = "def f(x):\n    return x + 1  # ok"
+    back = tok.decode(tok.encode(probe, add_special_tokens=False))
+    if back != probe:
+        raise SystemExit(f"{name}: tokenizer round trip fails ({back!r}); not running it")
+
+
 # ---------------------------------------------------------------- engines
 
 
@@ -260,13 +274,18 @@ class VLLMEngine:
                        max_model_len=max_len, gpu_memory_utilization=0.88, seed=0, trust_remote_code=False,
                        enable_prefix_caching=True)
         self.tok = self.llm.get_tokenizer()
+        check_tokenizer(self.tok, spec["id"])
 
     def generate(self, ids, max_tokens, stops, stop_ids):
         from vllm import SamplingParams
         params = [SamplingParams(temperature=0.0, max_tokens=m, stop=s or None, stop_token_ids=stop_ids or None,
                                  skip_special_tokens=False, include_stop_str_in_output=False) for m, s in zip(max_tokens, stops)]
         outs = self.llm.generate([{"prompt_token_ids": x} for x in ids], params, use_tqdm=False)
-        return [(o.outputs[0].text, o.outputs[0].finish_reason) for o in outs]
+        res = [(o.outputs[0].text, o.outputs[0].finish_reason) for o in outs]
+        bad = sum(looks_bytelevel(t) for t, _ in res)
+        if bad > len(res) // 4:  # vLLM detokenizes on its own path, which the round-trip check doesn't cover
+            raise SystemExit(f"{bad}/{len(res)} answers are raw byte-level text: the tokenizer is broken here")
+        return res
 
 
 class HFEngine:
@@ -280,6 +299,7 @@ class HFEngine:
         self.tok.padding_side = "left"
         if self.tok.pad_token is None:
             self.tok.pad_token = self.tok.eos_token
+        check_tokenizer(self.tok, spec["id"])
         self.model = AutoModelForCausalLM.from_pretrained(spec["id"], dtype=torch.float16).to("cuda").eval()
 
     def generate(self, ids, max_tokens, stops, stop_ids):
