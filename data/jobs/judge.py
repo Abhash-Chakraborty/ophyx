@@ -22,6 +22,7 @@ import signal as _signal
 import subprocess as _subprocess
 import sys as _sys
 import tempfile as _tempfile
+import time as _time
 
 _PRLIMIT = _shutil.which("prlimit")
 
@@ -203,13 +204,60 @@ done()
 '''
 
 
-def _sandbox_run(cmd, d, wall_s, cpu_s, mem=2 << 30):
+_UIDS = None  # free sandbox uids for drop=True, one per running sandbox; JUDGE_UID_BASE keeps processes apart
+
+
+def _uid_get():
+    global _UIDS
+    import queue
+    if _UIDS is None:
+        _UIDS = queue.Queue()
+        base = int(_os.environ.get("JUDGE_UID_BASE", "61000"))
+        for u in range(base, base + 128):
+            _UIDS.put(u)
+    return _UIDS.get()
+
+
+def _uid_reap(uid):
+    """Kill every process the sandbox user left behind (forked children outlive the program otherwise)."""
+    for _ in range(3):
+        left = 0
+        for pid in _os.listdir("/proc"):
+            if not pid.isdigit():
+                continue
+            try:
+                if _os.stat(f"/proc/{pid}").st_uid == uid:
+                    _os.kill(int(pid), _signal.SIGKILL)
+                    left += 1
+            except OSError:
+                pass
+        if not left:
+            return
+        _time.sleep(0.05)
+
+
+def _sandbox_run(cmd, d, wall_s, cpu_s, mem=2 << 30, drop=False):
+    """drop=True (for model samples, when running as root): run under a uid of its own, so a process cap holds
+    (root ignores RLIMIT_NPROC), the program can't touch root's files, and everything it leaves behind is killed."""
+    if drop and _os.geteuid() == 0:
+        uid = _uid_get()
+        try:
+            _os.chmod(d, 0o777)
+            return _sandbox_run_as(cmd, d, wall_s, cpu_s, mem, {"user": uid, "group": uid, "extra_groups": []},
+                                   ["--nproc=8"])
+        finally:
+            _uid_reap(uid)
+            _UIDS.put(uid)
+    return _sandbox_run_as(cmd, d, wall_s, cpu_s, mem, {}, [])
+
+
+def _sandbox_run_as(cmd, d, wall_s, cpu_s, mem, kw, nproc):
     env = {"PATH": "/usr/bin:/bin", "HOME": d, "TMPDIR": d, "PYTHONHASHSEED": "0", "PYTHONDONTWRITEBYTECODE": "1",
            "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}
     if _PRLIMIT:
-        cmd = [_PRLIMIT, f"--cpu={cpu_s}", f"--as={mem}", f"--fsize={50 << 20}", "--nofile=256", "--"] + cmd
+        cmd = [_PRLIMIT, f"--cpu={cpu_s}", f"--as={mem}", f"--fsize={50 << 20}", "--nofile=256", *nproc, "--"] + cmd
     p = _subprocess.Popen(cmd, cwd=d, env=env, stdout=_subprocess.PIPE, stderr=_subprocess.STDOUT,
-                          stdin=_subprocess.DEVNULL, start_new_session=True)
+                          stdin=_subprocess.DEVNULL, start_new_session=True, **kw)
     try:
         out, _ = p.communicate(timeout=wall_s)
         return p.returncode, out.decode(errors="replace"), False
@@ -236,8 +284,10 @@ def forbidden(code):
     return m.group(0) if m else None
 
 
-def judge(code, tests, fn_name=None, per_test_s=4, stop_on_fail=True, total_s=None, guard=False):
-    """guard=True (for model samples): code that reaches into the judge fails as kind "forbidden"."""
+def judge(code, tests, fn_name=None, per_test_s=4, stop_on_fail=True, total_s=None, guard=False, mem=2 << 30,
+          drop=False):
+    """guard=True (for model samples): code that reaches into the judge fails as kind "forbidden".
+    mem caps each process's address space; drop runs the program as nobody (see _sandbox_run)."""
     if guard and forbidden(code):
         return {"status": "fail", "n_run": 0, "n_pass": 0, "fails": 1,
                 "first_fail": {"i": -1, "kind": "forbidden", "stderr": f"forbidden: {forbidden(code)}"}}
@@ -250,7 +300,7 @@ def judge(code, tests, fn_name=None, per_test_s=4, stop_on_fail=True, total_s=No
                         "stop_on_fail": stop_on_fail}, f)
         total = total_s or (per_test_s * 2 + 2) * len(tests) + 10
         rc, out, timed_out = _sandbox_run([_sys.executable, "-I", "runner.py", "payload.json"], d, total,
-                                          per_test_s * len(tests) + 20)
+                                          per_test_s * len(tests) + 20, mem, drop)
         try:
             if rc != 0 or timed_out:  # a runner that was killed (by the solution, or the clock) proves nothing
                 raise ValueError(f"runner exit {rc}")

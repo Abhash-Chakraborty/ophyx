@@ -27,6 +27,7 @@ import json as _json
 import multiprocessing as _mp
 import os as _os
 import random as _random
+import shutil as _shutil
 import subprocess as _subprocess
 import sys as _sys
 import time as _time
@@ -105,10 +106,27 @@ def g_rewards(recs_by_pid, pids, completions):
             return 0.0
         rec = recs_by_pid[pid]
         tests = sorted(rec["tests"], key=lambda t: len(t["input"]) + len(t["output"]))
-        return 1.0 if judge(code, tests, rec["fn_name"], per_test_s=G_PER_TEST, guard=True)["status"] == "pass" else 0.0
+        # 512 MB and nobody: two runs judge in parallel next to two trainers, and a pilot container died silently
+        return 1.0 if judge(code, tests, rec["fn_name"], per_test_s=G_PER_TEST, guard=True, mem=512 << 20,
+                            drop=True)["status"] == "pass" else 0.0
 
     with cf.ThreadPoolExecutor(max(2, (_os.cpu_count() or 4))) as ex:
         return list(ex.map(one, zip(pids, completions)))
+
+
+def g_low_resources():
+    """Why to stop now (host memory or /tmp nearly full), or None."""
+    try:
+        import psutil
+        avail = psutil.virtual_memory().available
+    except ImportError:
+        avail = None
+    free = _shutil.disk_usage("/tmp").free
+    if avail is not None and avail < 2 << 30:
+        return f"host memory {avail / 2**30:.1f} GB free"
+    if free < 3 << 30:
+        return f"/tmp {free / 2**30:.1f} GB free"
+    return None
 
 
 def g_greedy_pass(model, tok, recs, end_id, max_new):
@@ -132,6 +150,7 @@ def g_run(spec, gpu, train, hold, rates, logf):
     _os.dup2(fd, 1)
     _os.dup2(fd, 2)
     _os.environ["CUDA_VISIBLE_DEVICES"] = gpu
+    _os.environ["JUDGE_UID_BASE"] = str(61000 + 1000 * int(gpu))  # each run reaps only its own sandbox uids
     code = 0
     try:
         g_train(spec, train, hold, rates)
@@ -205,6 +224,10 @@ def g_train(spec, train, hold, rates):
 
         def on_step_end(self, a, state, control, **kw):
             if _time.time() - t0 > G_BUDGET - 1800:  # keep 30 min for the holdout check and the save
+                control.should_training_stop = True
+            low = g_low_resources()
+            if low:  # stop and save while we still can: a killed container keeps no output at all
+                print(f"{name}: stopping at step {state.global_step}: {low}", flush=True)
                 control.should_training_stop = True
             if state.global_step % 10 == 0:
                 print(f"{name}: step {state.global_step}, {(_time.time() - t0) / 60:.0f} min", flush=True)
