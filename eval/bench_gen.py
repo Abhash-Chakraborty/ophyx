@@ -26,6 +26,7 @@ reliably only on exit). Models with "tp": 2 use both GPUs. A model vLLM can't lo
 import glob
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -266,12 +267,25 @@ def check_tokenizer(tok, name):
         raise SystemExit(f"{name}: tokenizer round trip fails ({back!r}); not running it")
 
 
+def load_tokenizer(path, trc):
+    """The tokenizer the engine will use: vLLM loads its own (and broke deepseek-coder where transformers didn't)."""
+    try:
+        try:
+            from vllm.tokenizers import get_tokenizer
+        except ImportError:
+            from vllm.transformers_utils.tokenizer import get_tokenizer
+        return get_tokenizer(path, trust_remote_code=trc)
+    except ImportError:
+        from transformers import AutoTokenizer
+        return AutoTokenizer.from_pretrained(path, trust_remote_code=trc)
+
+
 def fixed_tokenizer(spec):
-    """Some transformers builds convert deepseek-coder's byte-level BPE into a broken slow-style tokenizer.
-    If the round trip fails, load tokenizer.json as-is and save it where vLLM and transformers can both read it."""
-    from transformers import AutoTokenizer, PreTrainedTokenizerFast
+    """Some builds turn deepseek-coder's byte-level BPE into a tokenizer that drops spaces. If the engine's
+    tokenizer fails the round trip, load tokenizer.json as-is and save it where vLLM and transformers can read it."""
+    from transformers import PreTrainedTokenizerFast
     trc = spec.get("trust_remote_code", False)
-    tok = AutoTokenizer.from_pretrained(spec["id"], trust_remote_code=trc)
+    tok = load_tokenizer(spec["id"], trc)
     probe = "def f(x):\n    return x + 1  # ok"
     if tok.decode(tok.encode(probe, add_special_tokens=False)) == probe:
         return None
@@ -281,8 +295,10 @@ def fixed_tokenizer(spec):
                                     unk_token=tok.unk_token)
     fixed.chat_template = tok.chat_template
     check_tokenizer(fixed, spec["id"] + " (rebuilt)")
-    path = os.path.join(OUT, "tokenizers", model_name(spec))
+    # a neutral directory name: vLLM may pick a tokenizer class from the model name
+    path = os.path.join(OUT, "tokenizers", f"tok{abs(hash(spec['id'])) % 10**8}")
     fixed.save_pretrained(path)
+    check_tokenizer(load_tokenizer(path, False), spec["id"] + " (rebuilt, as the engine loads it)")
     log(f"{spec['id']}: tokenizer round trip failed; using tokenizer.json as-is from {path}")
     return path
 
@@ -432,6 +448,7 @@ def setup():
 
 def child(spec, gpus, logf):
     """One model in a forked process: CUDA is first touched here, and all GPU memory goes back on exit."""
+    os.setsid()  # vLLM's engine core is a child of this process; finish_child kills the whole group
     fd = os.open(logf, os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
     os.dup2(fd, 1)
     os.dup2(fd, 2)
@@ -477,6 +494,11 @@ def orchestrate():
         if p.is_alive():
             p.kill()
         p.join()
+        try:  # an engine core left behind kept 12.6 GB on its GPU and every later model there ran out of memory
+            os.killpg(p.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        time.sleep(3)
         name, rc = model_name(spec), p.exitcode
         logf = os.path.join(OUT, "logs", f"{name}.log")
         tail = open(logf).read()[-1500:] if os.path.exists(logf) else ""
