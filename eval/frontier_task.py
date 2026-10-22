@@ -8,7 +8,7 @@ them offline like every other model. Nothing is executed here.
 
 Edit the constants before a push: MODELS (CLI slugs from `kaggle b t models`), BENCHES (priority order:
 a budget stop cuts the last ones), BUDGET_USD (this run stops sending new requests once the
-proxy-reported cost reaches it), WORKERS.
+proxy-reported cost reaches it), ONLY (a top-up of the replies an earlier run missed), WORKERS.
 Reasoning models get reasoning_effort "low" and 4,096 extra output tokens for their thinking.
 """
 
@@ -26,6 +26,7 @@ import kaggle_benchmarks as kbench
 MODELS = __MODELS__
 BENCHES = __BENCHES__
 BUDGET_USD = __BUDGET__
+ONLY = __ONLY__  # None, or {slug: ["bench|task_id", ...]}: a top-up run that asks only these
 WORKERS = 4
 REASONING = ("gpt-5", "gpt-6", "gpt-oss", "gemini-2.5", "gemini-3", "gemini-4", "deepseek-r1", "thinking", "grok", "glm-5")
 ROOT = os.environ.get("PYCODER_FRONTIER_ROOT", "/kaggle")  # changed only by the local mock test
@@ -85,7 +86,11 @@ def frontier_run(llm) -> tuple[int, int]:
                 usd = nd / 1e9 if nd else ((u.prompt_tokens or 0) * FALLBACK_PRICE[0] + (u.completion_tokens or 0) * FALLBACK_PRICE[1] if u else 0)
                 with lock:
                     spent[0] += usd
-                c = r.choices[0]
+                c = r.choices[0] if r.choices else None
+                if c is None or c.message is None:  # an empty reply (seen from Gemma and Haiku): ask again, then give up
+                    if attempt < 2:
+                        continue
+                    return {"error": f"no message (finish {getattr(c, 'finish_reason', None)})"}
                 return {"response": c.message.content or "", "finish": c.finish_reason, "usd": round(usd, 6),
                         "in": u.prompt_tokens if u else None, "out": u.completion_tokens if u else None}
             except Exception as e:
@@ -111,7 +116,8 @@ def frontier_run(llm) -> tuple[int, int]:
     if not ids:
         json.dump({"error": "every model failed the preflight", "spent_usd": spent[0]}, open(f"{ROOT}/working/summary.json", "w"))
         return 0, 1
-    jobs = [(slug, p) for p in prompts for slug in ids]  # interleaved, so one model's rate limit doesn't stall the rest
+    jobs = [(slug, p) for p in prompts for slug in ids
+            if ONLY is None or f"{p['bench']}|{p['task_id']}" in ONLY.get(slug, ())]  # interleaved, so one model's rate limit doesn't stall the rest
     t0 = time.time()
     with cf.ThreadPoolExecutor(WORKERS) as ex:
         futs = {ex.submit(call, slug, p): (slug, p) for slug, p in jobs}
