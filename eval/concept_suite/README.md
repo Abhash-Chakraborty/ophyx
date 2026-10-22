@@ -24,8 +24,8 @@ it may be pasted into training data, synthetic-data prompts or public issues.
 
 ```
 python eval/concept_suite/build_tasks.py
-nice -n 19 ~/.cache/pycoder-smoke/venv/bin/python eval/concept_suite/check_refs.py --jobs 2
-nice -n 19 ~/.cache/pycoder-smoke/venv/bin/python eval/concept_suite/check_refs.py --filter concurrency --repeat 3
+nice -n 19 ~/.cache/ophyx-smoke/venv/bin/python eval/concept_suite/check_refs.py --jobs 2
+nice -n 19 ~/.cache/ophyx-smoke/venv/bin/python eval/concept_suite/check_refs.py --filter concurrency --repeat 3
 ```
 
 The build exits non-zero on any lint error. Run the concurrency repeat after touching a threading
@@ -39,14 +39,14 @@ under `tmp_path`, sleep at most 0.05 s and finish in about 3 s.
 python eval/concept_suite/run.py --self-test --out /tmp/concept
 
 # a model (HF id or local path), greedy on a GPU
-PYCODER_CONFIG='{"model": "/kaggle/working/hf-ckpt"}' python eval/concept_suite/run.py
+OPHYX_CONFIG='{"model": "/kaggle/working/hf-ckpt"}' python eval/concept_suite/run.py
 
 # precomputed outputs: JSONL rows of {"task_id", "completion"} or {"task_id", "solution"}
 python eval/concept_suite/run.py --completions samples.jsonl --tag mymodel
 ```
 
 CONFIG follows `eval/evalplus_run.py`: a `CONFIG` dict in the notebook globals or JSON in
-`PYCODER_CONFIG`, and CLI flags override it. The keys are listed in the `run.py` docstring.
+`OPHYX_CONFIG`, and CLI flags override it. The keys are listed in the `run.py` docstring.
 
 A tokenizer with `<|user|>`, `<|python|>` and `<|end|>` gets the project chat template
 (`<|user|>\n{prompt}\n<|python|>\n`, stopping at `<|end|>`). A base model gets the task as a module

@@ -33,7 +33,7 @@ def load_env(path):
 def lint(path):
     """Undefined names, use-after-del, unused locals on the fully assembled script (includes and all).
     Two relaunches failed on bugs this catches, after costing a Kaggle round trip each."""
-    ruff = shutil.which("ruff") or os.path.expanduser("~/.cache/pycoder-smoke/venv/bin/ruff")
+    ruff = shutil.which("ruff") or os.path.expanduser("~/.cache/ophyx-smoke/venv/bin/ruff")
     if not os.path.exists(ruff):
         print("warning: ruff not found; skipping lint")
         return True

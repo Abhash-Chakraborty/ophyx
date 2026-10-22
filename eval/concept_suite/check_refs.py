@@ -22,8 +22,8 @@ import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PY = os.path.expanduser("~/.cache/pycoder-smoke/venv/bin/python")
-TMP_ROOT = os.path.expanduser("~/.cache/pycoder-smoke/concept-tmp")
+PY = os.path.expanduser("~/.cache/ophyx-smoke/venv/bin/python")
+TMP_ROOT = os.path.expanduser("~/.cache/ophyx-smoke/concept-tmp")
 
 
 def run_one(task, timeout):

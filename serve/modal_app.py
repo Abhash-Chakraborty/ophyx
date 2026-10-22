@@ -1,6 +1,6 @@
-"""pycoder demo endpoint on Modal: fp32 weights on a T4, scales to zero when nobody is using it.
+"""ophyx demo endpoint on Modal: fp32 weights on a T4, scales to zero when nobody is using it.
 
-    modal deploy serve/modal_app.py          # needs `modal token new` once, and a Modal secret "pycoder-hf"
+    modal deploy serve/modal_app.py          # needs `modal token new` once, and a Modal secret "ophyx-hf"
                                              # with HF_TOKEN while the model repo is private
 
 Endpoints (FastAPI):
@@ -18,15 +18,15 @@ import time
 
 import modal
 
-MODEL_REPO = os.environ.get("PYCODER_MODEL", "abhash-chakraborty/pycoder-base350m-sft")
+MODEL_REPO = os.environ.get("OPHYX_MODEL", "abhash-chakraborty/ophyx-350m-sft")
 MODEL_DIR = "/model"
-GPU = os.environ.get("PYCODER_GPU", "T4")
+GPU = os.environ.get("OPHYX_GPU", "T4")
 SCALEDOWN_S = 180
 MAX_PROMPT_TOKENS = 1536
 MAX_NEW_TOKENS = 1024
 REQUEST_TIMEOUT_S = 90
 PER_IP_PER_MIN = 6
-ALLOWED_ORIGINS = [o for o in os.environ.get("PYCODER_ORIGINS", "*").split(",") if o]
+ALLOWED_ORIGINS = [o for o in os.environ.get("OPHYX_ORIGINS", "*").split(",") if o]
 
 
 def download():
@@ -38,15 +38,15 @@ def download():
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .pip_install("torch==2.6.0", "transformers==4.51.3", "fastapi[standard]==0.115.12", "huggingface_hub==0.30.2")
-    .env({"PYCODER_MODEL": MODEL_REPO})
-    .run_function(download, secrets=[modal.Secret.from_name("pycoder-hf")])
+    .env({"OPHYX_MODEL": MODEL_REPO})
+    .run_function(download, secrets=[modal.Secret.from_name("ophyx-hf")])
 )
-app = modal.App("pycoder-demo", image=image)
+app = modal.App("ophyx-demo", image=image)
 
 
 @app.cls(gpu=GPU, scaledown_window=SCALEDOWN_S, max_containers=1, timeout=600)
 @modal.concurrent(max_inputs=4)
-class Pycoder:
+class Ophyx:
     @modal.enter()
     def load(self):
         import torch

@@ -1,4 +1,4 @@
-"""Kaggle Benchmarks task: frontier and open API models answer pycoder's benchmark prompts.
+"""Kaggle Benchmarks task: frontier and open API models answer ophyx's benchmark prompts.
 
 Pushed with `kaggle b t push <name> -f frontier_task.py -d abhashchakraborty/pycoder-frontier-prompts`,
 which runs it once on Kaggle's infrastructure (the model proxy and the AI quota only work there).
@@ -30,7 +30,7 @@ BUDGET_USD = __BUDGET__
 ONLY = __ONLY__  # None, or {slug: ["bench|task_id", ...]}: a top-up run that asks only these
 WORKERS = 4
 REASONING = ("gpt-5", "gpt-6", "gpt-oss", "gemma-4", "claude-haiku", "gemini-2.5", "gemini-3", "gemini-4", "deepseek-r1", "thinking", "grok", "glm-5")
-ROOT = os.environ.get("PYCODER_FRONTIER_ROOT", "/kaggle")  # changed only by the local mock test
+ROOT = os.environ.get("OPHYX_FRONTIER_ROOT", "/kaggle")  # changed only by the local mock test
 FALLBACK_PRICE = (5e-6, 25e-6)  # $/token in, out: used only when the proxy reports no cost
 
 
@@ -39,7 +39,7 @@ def norm(s):
     return s[:-3] if s.endswith("-it") else s
 
 
-@kbench.task(name="pycoder-frontier-run", description="Frontier and open API models on pycoder's benchmark prompts "
+@kbench.task(name="ophyx-frontier-run", description="Frontier and open API models on ophyx's benchmark prompts "
              "(EvalPlus, LiveCodeBench, BigCodeBench-Hard, CRUXEval, concept suite, hands-on tasks). Replies are "
              "saved for offline scoring. Author: Abhash Chakraborty.")
 def frontier_run(llm) -> tuple[int, int]:

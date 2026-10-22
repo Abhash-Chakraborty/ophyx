@@ -20,7 +20,7 @@ kernel, version = sys.argv[1], sys.argv[2]
 deadline = time.time() + (int(sys.argv[3]) if len(sys.argv) > 3 else 3600)
 kaggle = os.path.expanduser("~/.local/bin/kaggle")
 while time.time() < deadline:
-    d = tempfile.mkdtemp(dir=os.path.expanduser("~/.cache/pycoder-ops"))
+    d = tempfile.mkdtemp(dir=os.path.expanduser("~/.cache/ophyx-ops"))
     subprocess.run([kaggle, "kernels", "output", f"abhashchakraborty/{kernel}/{version}", "-p", d,
                     "--file-pattern", r".*\.(log|json)$"], env=env, capture_output=True, text=True)
     logs = glob.glob(os.path.join(d, "*.log"))

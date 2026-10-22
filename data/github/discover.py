@@ -6,7 +6,7 @@ returns at most 1,000 results, so the ranges are narrow at the low end).
 Gate 2: licence on the allowlist, size < 200 MB, pushed within ~3 years, not a template/tutorial/
 course dump (name, description and topic heuristics), Python >= 60% of language bytes.
 
-  python data/github/discover.py --out ~/.cache/pycoder-github
+  python data/github/discover.py --out ~/.cache/ophyx-github
 Resumable: finished star slices and checked repos are recorded in OUT.
 """
 
@@ -45,7 +45,7 @@ def get(url, min_gap=[0.0]):
         if wait > 0:
             time.sleep(wait)
         req = urllib.request.Request(url, headers={"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github+json",
-                                                   "User-Agent": "pycoder-discover/1", "X-GitHub-Api-Version": "2022-11-28"})
+                                                   "User-Agent": "ophyx-discover/1", "X-GitHub-Api-Version": "2022-11-28"})
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
                 remaining = int(r.headers.get("X-RateLimit-Remaining", "100"))
@@ -78,7 +78,7 @@ def star_slices(lo=50, hi=400_000):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default=os.path.expanduser("~/.cache/pycoder-github"))
+    ap.add_argument("--out", default=os.path.expanduser("~/.cache/ophyx-github"))
     ap.add_argument("--min-stars", type=int, default=50)
     ap.add_argument("--pushed-after", default="2023-01-01")
     a = ap.parse_args()

@@ -14,7 +14,7 @@ Prompt formats, chosen to match how each family is usually reported:
   base      plain completion (EvalPlus base prompts, BigCodeBench "complete", CRUXEval few-shot)
   instruct  the model's chat template; EvalPlus/BigCodeBench use EvalPlus's instruction and response
             prefix; LiveCodeBench uses its official system and format prompt
-  ours      the pycoder SFT template <|user|>\\n...\\n<|python|>\\n, answer ends at <|end|>;
+  ours      the ophyx SFT template <|user|>\\n...\\n<|python|>\\n, answer ends at <|end|>;
             the function signature (HumanEval, BigCodeBench) or starter code (LiveCodeBench) is prefilled
 
 Tiny models run two at a time, one per T4, each in its own forked process (vLLM frees GPU memory
@@ -28,7 +28,7 @@ import subprocess
 import sys
 import time
 
-CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("PYCODER_CONFIG", "{}"))
+CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("OPHYX_CONFIG", "{}"))
 OUT = CONFIG.get("out", "/kaggle/working" if os.path.isdir("/kaggle") else os.path.abspath("bench"))
 ALL_BENCHES = ["humaneval", "mbpp", "concept", "crux_o", "crux_i", "lcb", "bcb_complete", "bcb_instruct", "manual"]
 DEFAULT_BENCHES = CONFIG.get("benches", ALL_BENCHES)
@@ -394,7 +394,7 @@ def run_model(spec):
 
 def setup():
     keys = glob.glob("/kaggle/input/**/keys.json", recursive=True)
-    if keys:  # private pycoder checkpoints on HF
+    if keys:  # private ophyx checkpoints on HF
         k = json.load(open(keys[0]))
         if k.get("HF_TOKEN"):
             os.environ["HF_TOKEN"] = k["HF_TOKEN"]

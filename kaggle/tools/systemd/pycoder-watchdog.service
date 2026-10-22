@@ -1,12 +1,12 @@
 [Unit]
-Description=pycoder training-chain watchdog (backup for the GitHub Actions schedule)
+Description=ophyx training-chain watchdog (backup for the GitHub Actions schedule)
 
 [Service]
 Type=oneshot
 WorkingDirectory=/home/ubuntu/Experiment
 Environment=KAGGLE_BIN=/home/ubuntu/.local/bin/kaggle
 Environment=PATH=/home/ubuntu/.local/bin:/usr/bin:/bin
-ExecStart=/home/ubuntu/.cache/pycoder-smoke/venv/bin/python -I /home/ubuntu/Experiment/kaggle/watchdog.py
+ExecStart=/home/ubuntu/.cache/ophyx-smoke/venv/bin/python -I /home/ubuntu/Experiment/kaggle/watchdog.py
 Nice=19
 CPUQuota=20%
 MemoryMax=300M

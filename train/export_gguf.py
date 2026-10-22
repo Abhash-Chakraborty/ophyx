@@ -9,7 +9,7 @@ Our tokenizer is GPT-2 byte-level BPE with single digits split first. That is ll
 by a hash of their output, so the hash lookup is patched to return "smollm" for ours.
 
 CONFIG: model (HF id), out_repo (HF model repo for the .gguf files; none: keep them in
-/kaggle/working), name (file prefix, default pycoder), types (["f32", "f16", "q8_0"]),
+/kaggle/working), name (file prefix, default ophyx), types (["f32", "f16", "q8_0"]),
 llama_tag (default b6800), prompts (for the text check).
 
 Output under /kaggle/working/gguf/: <name>-<type>.gguf, check.json.
@@ -22,9 +22,9 @@ import subprocess
 import sys
 import time
 
-CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("PYCODER_CONFIG", "{}"))
-MODEL = CONFIG.get("model", "abhash-chakraborty/pycoder-base350m-sft")
-NAME = CONFIG.get("name", "pycoder")
+CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("OPHYX_CONFIG", "{}"))
+MODEL = CONFIG.get("model", "abhash-chakraborty/ophyx-350m-sft")
+NAME = CONFIG.get("name", "ophyx")
 TYPES = CONFIG.get("types", ["f32", "f16", "q8_0"])
 TAG = CONFIG.get("llama_tag", "b6800")
 WORK = "/kaggle/tmp/gguf" if os.path.isdir("/kaggle") else os.path.abspath("gguf-work")
@@ -123,25 +123,25 @@ def main():
     hook = "    def get_vocab_base_pre(self, tokenizer) -> str:\n"
     assert hook in src, "convert_hf_to_gguf.py changed: get_vocab_base_pre not found"
     patched = src.replace(hook, hook + "        if getattr(tokenizer, 'convert_tokens_to_ids', None) and "
-                          "tokenizer.convert_tokens_to_ids('<|python|>') == 2:\n            return 'smollm'  # pycoder\n", 1)
+                          "tokenizer.convert_tokens_to_ids('<|python|>') == 2:\n            return 'smollm'  # ophyx\n", 1)
     # Newer transformers keeps rope_theta only inside rope_parameters, and AutoConfig(...).to_dict() is what the
     # converter reads, so the GGUF silently lost our rope base (100k) and llama.cpp fell back to its default.
     load = '        if "llm_config" in config:\n'
     assert load in patched, "convert_hf_to_gguf.py changed: load_hparams not found"
     patched = patched.replace(load, '        if "rope_theta" not in config and "rope_theta" in (config.get("rope_parameters") or {}):\n'
-                              '            config["rope_theta"] = config["rope_parameters"]["rope_theta"]  # pycoder\n' + load, 1)
-    open(os.path.join(lc, "convert_pycoder.py"), "w").write(patched)
+                              '            config["rope_theta"] = config["rope_parameters"]["rope_theta"]  # ophyx\n' + load, 1)
+    open(os.path.join(lc, "convert_ophyx.py"), "w").write(patched)
 
     files = {}
     base = os.path.join(OUT, f"{NAME}-f32.gguf")
-    sh([sys.executable, os.path.join(lc, "convert_pycoder.py"), mdir, "--outtype", "f32", "--outfile", base])
+    sh([sys.executable, os.path.join(lc, "convert_ophyx.py"), mdir, "--outtype", "f32", "--outfile", base])
     files["f32"] = base
     for t in TYPES:
         if t == "f32":
             continue
         dst = os.path.join(OUT, f"{NAME}-{t}.gguf")
         if t in ("f16", "bf16"):
-            sh([sys.executable, os.path.join(lc, "convert_pycoder.py"), mdir, "--outtype", t, "--outfile", dst])
+            sh([sys.executable, os.path.join(lc, "convert_ophyx.py"), mdir, "--outtype", t, "--outfile", dst])
         else:
             sh([os.path.join(lc, "build", "bin", "llama-quantize"), base, dst, t.upper()])
         files[t] = dst

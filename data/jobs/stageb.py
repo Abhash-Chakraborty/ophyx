@@ -25,7 +25,7 @@ import zlib
 
 import numpy as np
 
-CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("PYCODER_CONFIG", "{}"))
+CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("OPHYX_CONFIG", "{}"))
 JOB = CONFIG["job"]
 SHARD, NSHARDS = CONFIG.get("shard", 0), CONFIG.get("nshards", 1)
 REPO = CONFIG.get("repo", "abhash-chakraborty/pycoder-data")
@@ -147,7 +147,7 @@ def bench_items():
     from huggingface_hub import hf_hub_download, list_repo_files
 
     def gh_jsonl(url):
-        raw = urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "pycoder"}), timeout=120).read()
+        raw = urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "ophyx"}), timeout=120).read()
         return [json.loads(l) for l in gzip.decompress(raw).decode().splitlines() if l.strip()]
 
     def hf_records(repo, keep=lambda f: True):

@@ -1,4 +1,4 @@
-# Published code-benchmark scores for comparison with pycoder (350M)
+# Published code-benchmark scores for comparison with ophyx (350M)
 
 Retrieved 2026-10-21. Every number in `published_scores.json` (1,788 rows) has a source URL. Leaderboard rows come from the raw data files the leaderboard pages load. Rows from papers and model cards are marked `AUTHOR/VENDOR-REPORTED` in `note`. Nothing was estimated. If a number wasn't found, it isn't in the file.
 
@@ -444,7 +444,7 @@ Each row is one model in one source. Full variant names and notes are in the JSO
 
 ## Caveats (non-comparability)
 
-- **Base vs instruct prompting.** EvalPlus and BigCodeBench run base models in completion mode and instruct models with a chat template ('prompted' flag). Compare pycoder base against base rows and pycoder SFT against instruct rows.
+- **Base vs instruct prompting.** EvalPlus and BigCodeBench run base models in completion mode and instruct models with a chat template ('prompted' flag). Compare ophyx base against base rows and ophyx SFT against instruct rows.
 - **MBPP has at least three versions.** There is the original 500-task test split (often 3-shot: DeepSeek-Coder, Code Llama, Qwen 'MBPP 3-shot', Gemma, Qwen3 'MBPP'), the EvalPlus 378-task sanitized subset (EvalPlus MBPP/MBPP+, StarCoder2, Qwen2.5-Coder, OpenCoder), and the sanitized MBPP with sampling (CodeGen). Numbers from different versions are not comparable.
 - **Greedy vs sampled pass@1.** EvalPlus, StarCoder2, Code Llama, DeepSeek-Coder and Granite use greedy decoding. CodeGen reports the best of T in {0.2, 0.6, 0.8} for HumanEval and T=0.8 for MBPP. SantaCoder uses T=0.2 with 200 samples, CRUXEval T=0.2 with n=10, and Gemma 3 samples (LCB is an average of 8). Sampled pass@1 at high T is lower than greedy.
 - **The same model gets different scores from different harnesses.** DeepSeek-Coder-1.3B-base scores HE 28.7 on the EvalPlus leaderboard, 34.8 in the DeepSeek and Qwen reports, and 28.7 in StarCoder2. Qwen2.5-Coder-1.5B-Instruct scores LCB 6.1 in its own report and 15.7 in OpenCoder's (different window). Yi-Coder-9B base MBPP is 48.4 in OpenCoder's table against 69.4 for 3-shot. Prefer one source per comparison table.

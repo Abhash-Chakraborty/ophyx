@@ -33,7 +33,7 @@ import time
 import urllib.request
 from functools import partial
 
-CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("PYCODER_CONFIG", "{}"))
+CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("OPHYX_CONFIG", "{}"))
 T0 = time.time()
 
 SPLASH_PROBE = r"""
@@ -55,7 +55,7 @@ def choose_attention():
     Must run before `import jax`; never raises."""
     if CONFIG.get("attention") != "auto" and not any(r.get("attention") == "auto" for r in CONFIG.get("runs", [])):
         return
-    os.environ["PYCODER_ATTENTION"] = "xla"
+    os.environ["OPHYX_ATTENTION"] = "xla"
     if not os.path.isdir("/kaggle") or not os.environ.get("TPU_ACCELERATOR_TYPE", os.environ.get("ISTPUVM")):
         return
     import importlib.metadata as md
@@ -74,7 +74,7 @@ def choose_attention():
         t = subprocess.run([sys.executable, "-c", SPLASH_PROBE], capture_output=True, text=True, timeout=900, env=env)
         if "SPLASH_OK" in t.stdout:
             os.environ["TPU_LIBRARY_PATH"] = libs[0]
-            os.environ["PYCODER_ATTENTION"] = "splash"
+            os.environ["OPHYX_ATTENTION"] = "splash"
             print(f"[attention] splash works with {libs[0]}", flush=True)
         else:
             print(f"[attention] splash probe failed; using xla: {(t.stdout + t.stderr)[-400:]}", flush=True)
@@ -235,7 +235,7 @@ def apply_rope(x, cos, sin):  # x [B, T, heads, hd]; HF rotate_half convention
 
 def make_attention(kind, mesh, H, KV, hd, T):
     if kind == "auto":
-        kind = os.environ.get("PYCODER_ATTENTION", "xla")
+        kind = os.environ.get("OPHYX_ATTENTION", "xla")
         log(f"attention: {kind}")
     if kind == "splash":
         from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel as sk
@@ -872,7 +872,7 @@ def train(data=None):
         try:
             os.environ["WANDB_API_KEY"] = KEYS["WANDB_API_KEY"]
             import wandb
-            wandb.init(project=cfg("wandb", "pycoder"), name=cfg("run_name", None), id=cfg("run_id", None),
+            wandb.init(project=cfg("wandb", "ophyx"), name=cfg("run_name", None), id=cfg("run_id", None),
                        resume="allow", config=CONFIG)
         except Exception as e:
             log("wandb disabled:", e)

@@ -9,7 +9,7 @@ import argparse
 import json
 
 PARAMS = {  # billions, from the safetensors metadata on Hugging Face (21 Oct 2026)
-    "pycoder-350m-sft": 0.349, "pycoder-350m-base": 0.349, "pycoder-125m-sft": 0.126, "pycoder-125m-base": 0.126,
+    "ophyx-350m-sft": 0.349, "ophyx-350m-base": 0.349, "ophyx-125m-sft": 0.126, "ophyx-125m-base": 0.126,
     "SmolLM2-135M": 0.135, "SmolLM2-360M": 0.362, "SmolLM2-360M-Instruct": 0.362, "SmolLM2-1.7B": 1.71,
     "SmolLM2-1.7B-Instruct": 1.71, "Qwen2.5-Coder-0.5B": 0.494, "Qwen2.5-Coder-0.5B-Instruct": 0.494,
     "Qwen2.5-Coder-1.5B": 1.54, "Qwen2.5-Coder-1.5B-Instruct": 1.54, "Qwen2.5-Coder-3B": 3.09,

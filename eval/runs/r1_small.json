@@ -1,27 +1,27 @@
 {
  "models": [
   {
-   "id": "abhash-chakraborty/pycoder-base350m-sft",
+   "id": "abhash-chakraborty/ophyx-350m-sft",
    "kind": "ours",
-   "name": "pycoder-350m-sft",
+   "name": "ophyx-350m-sft",
    "max_len": 2048
   },
   {
-   "id": "abhash-chakraborty/pycoder-base350m",
+   "id": "abhash-chakraborty/ophyx-350m-base",
    "kind": "base",
-   "name": "pycoder-350m-base",
+   "name": "ophyx-350m-base",
    "max_len": 2048
   },
   {
-   "id": "abhash-chakraborty/pycoder-nano125m-sft",
+   "id": "abhash-chakraborty/ophyx-125m-sft",
    "kind": "ours",
-   "name": "pycoder-125m-sft",
+   "name": "ophyx-125m-sft",
    "max_len": 2048
   },
   {
-   "id": "abhash-chakraborty/pycoder-nano125m",
+   "id": "abhash-chakraborty/ophyx-125m-base",
    "kind": "base",
-   "name": "pycoder-125m-base",
+   "name": "ophyx-125m-base",
    "max_len": 2048
   },
   {

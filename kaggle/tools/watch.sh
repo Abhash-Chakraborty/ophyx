@@ -1,5 +1,5 @@
 #!/bin/sh
-# Poll the given pycoder kernels every 10 min; exit when any status changes (max 14 h).
+# Poll the given ophyx kernels every 10 min; exit when any status changes (max 14 h).
 #   kaggle/tools/watch.sh validate-trainer synth-t4-gen ...
 cd "$(dirname "$0")/../.."; set -a; . ./.env; set +a
 snap() { for k in "$@"; do printf '%s=%s\n' "$k" "$(nice -n 19 ~/.local/bin/kaggle kernels status abhashchakraborty/pycoder-$k 2>&1 | grep -o '[A-Z_]*"$' | tr -d '"')"; done; }

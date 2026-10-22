@@ -29,7 +29,7 @@ import sys
 import time
 import zlib
 
-CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("PYCODER_CONFIG", "{}"))
+CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("OPHYX_CONFIG", "{}"))
 OUT = CONFIG.get("out", "/kaggle/working/kit" if os.path.isdir("/kaggle") else os.path.abspath("kit"))
 LIMIT = CONFIG.get("limit", 0)
 SKIP = set(CONFIG.get("skip", []))

@@ -26,7 +26,7 @@ import sys
 import tempfile
 import time
 
-CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("PYCODER_CONFIG", "{}"))
+CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("OPHYX_CONFIG", "{}"))
 SHARD, NSHARDS = CONFIG.get("shard", 0), CONFIG.get("nshards", 1)
 SRC = CONFIG.get("src", "/kaggle/input")
 OUT = os.path.join(CONFIG.get("out", "/kaggle/working"), "verified")

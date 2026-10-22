@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 
-CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("PYCODER_CONFIG", "{}"))
+CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("OPHYX_CONFIG", "{}"))
 SRC = CONFIG.get("src", "/kaggle/input")
 OUT = os.path.join(CONFIG.get("out", "/kaggle/working"), "dpo")
 T0 = time.time()
@@ -51,7 +51,7 @@ def main():
     from datasets import Dataset
     from transformers import AutoModelForCausalLM, AutoTokenizer, TrainerCallback
 
-    model_id = CONFIG.get("model", "abhash-chakraborty/pycoder-base350m-sft")
+    model_id = CONFIG.get("model", "abhash-chakraborty/ophyx-350m-sft")
     tok = AutoTokenizer.from_pretrained(model_id)
     tok.eos_token = "<|end|>"
     if tok.pad_token is None or tok.pad_token == tok.eos_token:

@@ -1,7 +1,7 @@
 """Turn a trainer checkpoint (local dir or the HF backup) into a Hugging Face Qwen3 model, on CPU.
 
   python train/export_ckpt.py hf://abhash-chakraborty/pycoder-runs/nano125m-v1/latest out/nano125m-v1-hf
-  python train/export_ckpt.py run/nano125m-v1/ckpt-00007629 out/nano125m-v1-hf --push abhash-chakraborty/pycoder-nano125m
+  python train/export_ckpt.py run/nano125m-v1/ckpt-00007629 out/nano125m-v1-hf --push abhash-chakraborty/ophyx-125m-base
 
 Model size, vocab and seq come from the checkpoint's meta.json. Needs jax (CPU is fine), numpy,
 safetensors and huggingface_hub. The tokenizer comes from the data repo unless --tokenizer is given.
@@ -53,7 +53,7 @@ like = jax.eval_shape(lambda: g["init_params"](dims, vocab, jax.random.PRNGKey(0
 params = g["load_params"](src, like)
 g["export_hf"](params, dims, vocab, seq, args.out, eos_id=run.get("eos_id", 0))
 json.dump({"source": args.src, "step": meta["step"], "run_name": run.get("run_name")},
-          open(os.path.join(args.out, "pycoder_export.json"), "w"), indent=1)
+          open(os.path.join(args.out, "ophyx_export.json"), "w"), indent=1)
 print("exported step", meta["step"], "to", args.out, sorted(os.listdir(args.out)))
 
 if args.push:

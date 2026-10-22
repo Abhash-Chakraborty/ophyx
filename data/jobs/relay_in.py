@@ -3,7 +3,7 @@
 Kaggle CPU, internet on, keys attached (pycoder-keys); it runs no model or generated code. Attach this
 kernel's output to an offline session (GRPO, sandboxed scoring) as a kernel source.
 
-CONFIG: models [{"repo": "abhash-chakraborty/pycoder-base350m-sft", "dir": "pycoder-base350m-sft"}],
+CONFIG: models [{"repo": "abhash-chakraborty/ophyx-350m-sft", "dir": "ophyx-350m-sft"}],
 pip ["trl"] (requirement strings). Wheels are the packages pip would add or upgrade on top of this
 image (pip install --dry-run --report), downloaded without their dependencies, so the offline
 session installs them with `pip install --no-index --find-links wheels/ ...`.
@@ -17,7 +17,7 @@ import os
 import subprocess
 import sys
 
-CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("PYCODER_CONFIG", "{}"))
+CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("OPHYX_CONFIG", "{}"))
 OUT = CONFIG.get("out", "/kaggle/working")
 KEYS = json.load(open(glob.glob("/kaggle/input/**/keys.json", recursive=True)[0]))
 

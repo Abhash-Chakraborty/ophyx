@@ -186,7 +186,7 @@ def main():
     ap.add_argument("--n", type=int, default=0, help="gen: generate specs with index < n")
     ap.add_argument("--failed", default=None, help="repair: directory with *.failed.jsonl from verify.py")
     ap.add_argument("--budget", type=float, required=True, help="stop once total spend (all modes) reaches this many USD")
-    ap.add_argument("--out", default=os.path.expanduser("~/.cache/pycoder-synth-tinker/raw"))
+    ap.add_argument("--out", default=os.path.expanduser("~/.cache/ophyx-synth-tinker/raw"))
     ap.add_argument("--batch", type=int, default=250)
     ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--dataset", default="abhashchakraborty/pycoder-synth-tinker")

@@ -1,5 +1,5 @@
 [Unit]
-Description=Run the pycoder watchdog hourly at :47
+Description=Run the ophyx watchdog hourly at :47
 
 [Timer]
 OnCalendar=*-*-* *:47:00

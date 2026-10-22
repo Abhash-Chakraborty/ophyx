@@ -65,7 +65,7 @@ def g_problems():
     files = sorted(_glob.glob(_os.path.join(SRC, "**", "verified", "bank-*.jsonl"), recursive=True))
     recs = [r for f in files for r in map(_json.loads, open(f)) if not r.get("inconsistent")]
     rates = {}
-    name = CONFIG.get("judged_name", "pycoder-base350m-sft")
+    name = CONFIG.get("judged_name", "ophyx-350m-sft")
     for f in _glob.glob(_os.path.join(SRC, "**", "judged", name, "bank-*.jsonl"), recursive=True):
         for r in map(_json.loads, open(f)):
             rates[r["pid"]] = (r["passed"] / max(1, r["n"]), r.get("greedy_pass"))

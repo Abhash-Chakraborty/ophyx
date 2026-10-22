@@ -11,7 +11,7 @@ import json
 import os
 import time
 
-CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("PYCODER_CONFIG", "{}"))
+CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("OPHYX_CONFIG", "{}"))
 REPO = CONFIG.get("repo", "abhash-chakraborty/pycoder-data")
 REPO_TYPE = CONFIG.get("repo_type", "dataset")
 KEYS = json.load(open(glob.glob("/kaggle/input/**/keys.json", recursive=True)[0]))

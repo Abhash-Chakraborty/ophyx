@@ -20,7 +20,7 @@ CONFIG keys (CLI flags with the same names, dashes for underscores, override the
   tasks, filter, limit, batch_size, max_new_tokens, jobs, timeout, python, nice, tmp, out
 
     python eval/concept_suite/run.py --self-test --out /tmp/concept
-    PYCODER_CONFIG='{"model": "/kaggle/working/hf-ckpt"}' python eval/concept_suite/run.py
+    OPHYX_CONFIG='{"model": "/kaggle/working/hf-ckpt"}' python eval/concept_suite/run.py
     python eval/concept_suite/run.py --completions samples.jsonl --tag mymodel
 
 Writes <out>/concept-<tag>.jsonl (one record per task) and merges the summary into
@@ -39,9 +39,9 @@ import sys
 import tempfile
 import time
 
-CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("PYCODER_CONFIG", "{}"))
+CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("OPHYX_CONFIG", "{}"))
 HERE = os.path.dirname(os.path.abspath(__file__))
-_SMOKE_TMP = os.path.expanduser("~/.cache/pycoder-smoke/concept-tmp")
+_SMOKE_TMP = os.path.expanduser("~/.cache/ophyx-smoke/concept-tmp")
 DEFAULTS = {
     "model": None, "models": None, "completions": None, "self_test": False, "template": "auto",
     "tasks": os.path.join(HERE, "tasks.jsonl"), "filter": "", "limit": 0, "tag": None,

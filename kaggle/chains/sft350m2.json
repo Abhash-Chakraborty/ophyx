@@ -5,8 +5,8 @@
  "accel": "tpu",
  "timeout": 32400,
  "kernels": [
-  "pycoder-train-sft350m2-a",
-  "pycoder-train-sft350m2-b"
+  "ophyx-train-sft350m2-a",
+  "ophyx-train-sft350m2-b"
  ],
  "datasets": [
   "pycoder-keys"

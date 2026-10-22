@@ -28,7 +28,7 @@ class MessageTok:
 
 
 def load_bench_gen(kit):
-    os.environ["PYCODER_CONFIG"] = json.dumps({"kit_dir": kit, "out": os.path.join(kit, "_unused")})
+    os.environ["OPHYX_CONFIG"] = json.dumps({"kit_dir": kit, "out": os.path.join(kit, "_unused")})
     spec = importlib.util.spec_from_file_location("bench_gen", os.path.join(HERE, "bench_gen.py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

@@ -17,7 +17,7 @@ Each distinct sample is judged once, with every test (stop at the first failure)
                          problems split by pass rate (none / some / all)
 """
 
-J_NAME = CONFIG.get("name", "pycoder-base350m-sft")
+J_NAME = CONFIG.get("name", "ophyx-350m-sft")
 J_OUT = os.path.join(OUTW, "judged", J_NAME)
 J_PER_TEST = CONFIG.get("per_test_s", 4)
 

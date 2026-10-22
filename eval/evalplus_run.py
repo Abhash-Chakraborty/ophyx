@@ -21,7 +21,7 @@ import sys
 import time
 import urllib.request
 
-CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("PYCODER_CONFIG", "{}"))
+CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("OPHYX_CONFIG", "{}"))
 MODELS = CONFIG.get("models", ["HuggingFaceTB/SmolLM2-135M", "HuggingFaceTB/SmolLM2-360M", "Qwen/Qwen2.5-Coder-0.5B"])
 DATASETS = CONFIG.get("datasets", ["humaneval", "mbpp"])
 BATCH = CONFIG.get("batch_size", 16)

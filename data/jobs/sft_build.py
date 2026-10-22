@@ -86,7 +86,7 @@ import numpy as np
 warnings.filterwarnings("ignore", category=SyntaxWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("PYCODER_CONFIG", "{}"))
+CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("OPHYX_CONFIG", "{}"))
 STAGE = CONFIG.get("stage", "stage2")
 SHARD, NSHARDS = CONFIG.get("shard", 0), CONFIG.get("nshards", 1)
 REPO = CONFIG.get("repo", "abhash-chakraborty/pycoder-data")
@@ -238,7 +238,7 @@ def bench_items():
     from huggingface_hub import hf_hub_download, list_repo_files
 
     def gh_jsonl(url):
-        raw = urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "pycoder"}), timeout=120).read()
+        raw = urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "ophyx"}), timeout=120).read()
         return [json.loads(l) for l in gzip.decompress(raw).decode().splitlines() if l.strip()]
 
     def hf_records(repo, keep=lambda f: True):
@@ -1098,7 +1098,7 @@ def smoke_rows(src_repo, config, n, offset):
         q = urllib.parse.urlencode({"dataset": src_repo, "config": config, "split": "train",
                                     "offset": offset + len(rows), "length": min(100, n - len(rows))})
         req = urllib.request.Request(f"https://datasets-server.huggingface.co/rows?{q}",
-                                     headers={"Authorization": f"Bearer {KEYS.get('HF_TOKEN', '')}", "User-Agent": "pycoder/0.1"})
+                                     headers={"Authorization": f"Bearer {KEYS.get('HF_TOKEN', '')}", "User-Agent": "ophyx/0.1"})
         got = json.load(urllib.request.urlopen(req, timeout=120))["rows"]
         if not got:
             break

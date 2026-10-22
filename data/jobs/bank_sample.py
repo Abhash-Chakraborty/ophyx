@@ -26,7 +26,7 @@ import subprocess as _subprocess
 import sys as _sys
 import time as _time
 
-S_MODEL = CONFIG.get("model", "abhash-chakraborty/pycoder-base350m-sft")
+S_MODEL = CONFIG.get("model", "abhash-chakraborty/ophyx-350m-sft")
 S_NAME = CONFIG.get("name", S_MODEL.split("/")[-1])
 S_N = CONFIG.get("n", 8)
 S_TEMP = CONFIG.get("temperature", 0.8)

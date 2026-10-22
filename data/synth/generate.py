@@ -5,8 +5,8 @@ second in total) and needs no GPU. Raw generations are written as gzipped JSONL 
 to the private Kaggle dataset `pycoder-synth-raw`, where a keyless, offline Kaggle session executes
 them (data/synth/verify.py). Generated code is never executed here.
 
-  python data/synth/generate.py --n 2000 --out ~/.cache/pycoder-synth            # pilot
-  python data/synth/generate.py --n 200000 --out ~/.cache/pycoder-synth --upload-every 10
+  python data/synth/generate.py --n 2000 --out ~/.cache/ophyx-synth            # pilot
+  python data/synth/generate.py --n 200000 --out ~/.cache/ophyx-synth --upload-every 10
 
 Resumable: the next index is stored in OUT/state.json, and sample i always gets the same spec.
 """
@@ -172,7 +172,7 @@ def generate_one(s, env, pacers):
     for attempt in range(6):
         pacer.wait()
         req = urllib.request.Request(t["url"], data=json.dumps(body).encode(), headers={
-            "Authorization": f"Bearer {env[t['key']]}", "Content-Type": "application/json", "User-Agent": "pycoder-synth/1"})
+            "Authorization": f"Bearer {env[t['key']]}", "Content-Type": "application/json", "User-Agent": "ophyx-synth/1"})
         try:
             t0 = time.time()
             with urllib.request.urlopen(req, timeout=300) as r:
@@ -219,7 +219,7 @@ def upload(out_dir, env, dataset):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, required=True, help="generate samples with index < n")
-    ap.add_argument("--out", default=os.path.expanduser("~/.cache/pycoder-synth"))
+    ap.add_argument("--out", default=os.path.expanduser("~/.cache/ophyx-synth"))
     ap.add_argument("--rpm", type=float, default=50)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--batch", type=int, default=1000)

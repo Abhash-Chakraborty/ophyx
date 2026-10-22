@@ -30,7 +30,7 @@ import sys
 import tempfile
 import time
 
-CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("PYCODER_CONFIG", "{}"))
+CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("OPHYX_CONFIG", "{}"))
 OUT = CONFIG.get("out", "/kaggle/working" if os.path.isdir("/kaggle") else os.path.abspath("bench_exec"))
 JOBS = CONFIG.get("jobs", 4)
 INPUT = CONFIG.get("input_root", "/kaggle/input")

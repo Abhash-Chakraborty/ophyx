@@ -11,7 +11,7 @@ import json
 import os
 import time
 
-CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("PYCODER_CONFIG", "{}"))
+CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("OPHYX_CONFIG", "{}"))
 REPO = CONFIG.get("repo", "abhash-chakraborty/pycoder-data")
 V = CONFIG.get("version", "v1")
 OUT = "/kaggle/working" if os.path.isdir("/kaggle") else os.path.abspath("pack-out")

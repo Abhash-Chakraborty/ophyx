@@ -34,7 +34,7 @@ import warnings
 
 warnings.filterwarnings("ignore", category=SyntaxWarning)
 
-CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("PYCODER_CONFIG", "{}"))
+CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("OPHYX_CONFIG", "{}"))
 JOB = CONFIG["job"]
 SHARD = CONFIG.get("shard", 0)
 NSHARDS = CONFIG.get("nshards", 1)
@@ -476,7 +476,7 @@ def job_stack_edu(uploader, pool):
         u = ("https://datasets-server.huggingface.co/rows?dataset=HuggingFaceTB/stack-edu"
              "&config=Python&split=train&offset=0&length=100")
         tok = os.environ.get("HF_TOKEN", "")
-        req = urllib.request.Request(u, headers={"Authorization": f"Bearer {tok}", "User-Agent": "pycoder/0.1"})
+        req = urllib.request.Request(u, headers={"Authorization": f"Bearer {tok}", "User-Agent": "ophyx/0.1"})
         rows = [r["row"] for r in json.load(urllib.request.urlopen(req, timeout=60))["rows"]]
         files = [("smoke", rows)]
     else:
@@ -562,7 +562,7 @@ def job_fineweb(uploader, pool):
     if SMOKE:
         u = ("https://datasets-server.huggingface.co/rows?dataset=HuggingFaceFW/fineweb-edu"
              "&config=sample-10BT&split=train&offset=0&length=100")
-        rows = [r["row"] for r in json.load(urllib.request.urlopen(urllib.request.Request(u, headers={"User-Agent": "pycoder/0.1"}), timeout=60))["rows"]]
+        rows = [r["row"] for r in json.load(urllib.request.urlopen(urllib.request.Request(u, headers={"User-Agent": "ophyx/0.1"}), timeout=60))["rows"]]
         sources = [("smoke", [rows])]
     else:
         from huggingface_hub import HfApi, hf_hub_download
