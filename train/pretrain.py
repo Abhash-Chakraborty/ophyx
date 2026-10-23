@@ -478,6 +478,10 @@ class Data:
         if spec.get("val_glob"):
             vf = sorted(glob.glob(spec["val_glob"], recursive=True))
             self.val = [np.memmap(f, dtype=np.uint16, mode="r") for f in vf]
+            keep = [len(m) > seq + 1 for m in self.val]  # like the buckets: a shard shorter than one window can't be sampled
+            vf, self.val = [f for f, k in zip(vf, keep) if k], [m for m, k in zip(self.val, keep) if k]
+            if not all(keep):
+                log(f"val: dropped {keep.count(False)} shards shorter than {seq + 1} tokens, {len(vf)} left")
             if spec.get("val_mask_glob"):
                 vm = {os.path.basename(f): f for f in glob.glob(spec["val_mask_glob"], recursive=True)}
                 self.val_masks = [np.memmap(vm[os.path.basename(f)], dtype=np.uint8, mode="r") for f in vf]
