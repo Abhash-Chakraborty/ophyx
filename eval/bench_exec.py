@@ -72,6 +72,23 @@ def rows_of(path):
     return [json.loads(line) for line in open(path) if line.strip()]
 
 
+# Repo-format markers some base models write as plain text (starcoder2's <file_sep>, stable-code's
+# <repo_continuation>): vLLM keeps them, since the tokenizer doesn't mark them special
+SPECIAL_RE = re.compile(r"<(?:file_sep|repo_continuation|\|endoftext\||\|fim_\w+\||fim_\w+|filename|gh_stars|reponame"
+                        r"|issue_\w+|jupyter_\w+|empty_output|commit_\w+)>")
+
+
+def trim_special(samples):
+    """Cut each completion at the first marker; returns (samples, how many were cut)."""
+    cut = 0
+    for s in samples:
+        m = SPECIAL_RE.search(s.get("completion") or "")
+        if m:
+            s["completion"] = s["completion"][: m.start()]
+            cut += 1
+    return samples, cut
+
+
 def sandbox(cmd, cwd, timeout, stdin=None, mem_gb=4, extra_env=None):
     """Run cmd in cwd with limits; returns (status, seconds, output tail)."""
     if PRLIMIT:
@@ -519,7 +536,9 @@ def main():
             bench = os.path.basename(f)[:-6]
             if benches and bench not in benches:
                 continue
-            samples = rows_of(f)
+            samples, cut = trim_special(rows_of(f))
+            if cut:
+                print(f"{name} {bench}: cut {cut} completions at a repo-format marker", flush=True)
             t = time.time()
             try:
                 if bench in ("humaneval", "mbpp"):
