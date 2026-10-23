@@ -59,21 +59,43 @@ def average(dirs, weights, out):
     print(f"averaged {len(dirs)} checkpoints, {len(acc)} tensors -> {out}", flush=True)
 
 
+def resolve(m, token, cache):
+    """A dir, a glob (kernel outputs mount at varying depths under /kaggle/input), or an HF id."""
+    if m in cache:
+        return cache[m]
+    from huggingface_hub import snapshot_download
+    if os.path.isdir(m):
+        d = m
+    elif any(c in m for c in "*?["):
+        hits = sorted(glob.glob(m, recursive=True))
+        if len(hits) != 1:
+            raise SystemExit(f"{m}: {len(hits)} matches, need exactly 1: {hits[:5]}")
+        d = hits[0]
+    else:
+        d = snapshot_download(m, local_dir=f"/kaggle/tmp/avg/{len(cache)}", token=token,
+                              allow_patterns=["*.json", "*.safetensors", "*.txt"])
+    cache[m] = d
+    return d
+
+
 def kaggle_main(cfg):
-    from huggingface_hub import HfApi, snapshot_download
+    """CONFIG {"models": [...], "weights": [...], "out_repo": ...} for one average, or
+    {"soups": {name: {"models": [...], "weights": [...]}}} for several, saved under /kaggle/working/<name>/."""
+    from huggingface_hub import HfApi
     keys = glob.glob("/kaggle/input/**/keys.json", recursive=True)
     token = json.load(open(keys[0]))["HF_TOKEN"] if keys else None
-    dirs = []
-    for i, m in enumerate(cfg["models"]):
-        dirs.append(m if os.path.isdir(m) else snapshot_download(
-            m, local_dir=f"/kaggle/tmp/avg/{i}", token=token, allow_patterns=["*.json", "*.safetensors", "*.txt"]))
-    out = "/kaggle/working/averaged"
-    average(dirs, cfg.get("weights"), out)
-    if cfg.get("out_repo"):
-        api = HfApi(token=token)
-        api.create_repo(cfg["out_repo"], repo_type="model", private=True, exist_ok=True)
-        api.upload_folder(repo_id=cfg["out_repo"], folder_path=out, commit_message=f"Average of {len(dirs)} checkpoints")
-        print("uploaded to", cfg["out_repo"], flush=True)
+    soups = cfg.get("soups") or {"averaged": {"models": cfg["models"], "weights": cfg.get("weights"),
+                                              "out_repo": cfg.get("out_repo")}}
+    cache = {}
+    for name, s in soups.items():
+        dirs = [resolve(m, token, cache) for m in s["models"]]
+        out = f"/kaggle/working/{name}"
+        average(dirs, s.get("weights"), out)
+        if s.get("out_repo"):
+            api = HfApi(token=token)
+            api.create_repo(s["out_repo"], repo_type="model", private=True, exist_ok=True)
+            api.upload_folder(repo_id=s["out_repo"], folder_path=out, commit_message=f"Average of {len(dirs)} checkpoints")
+            print("uploaded to", s["out_repo"], flush=True)
 
 
 if __name__ == "__main__":

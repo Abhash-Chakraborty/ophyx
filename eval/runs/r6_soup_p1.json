@@ -1,0 +1,15 @@
+{
+ "budget_s": 4200,
+ "models": [
+  {
+   "id": "/kaggle/input/**/soup-sdg",
+   "kind": "ours",
+   "name": "ophyx-350m-soup-sdg"
+  },
+  {
+   "id": "/kaggle/input/**/soup-all",
+   "kind": "ours",
+   "name": "ophyx-350m-soup-all"
+  }
+ ]
+}
