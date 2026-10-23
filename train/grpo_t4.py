@@ -67,7 +67,18 @@ def g_problems():
     recs = [r for f in files for r in map(_json.loads, open(f)) if not r.get("inconsistent")]
     rates = {}
     name = CONFIG.get("judged_name", "ophyx-350m-sft")
-    for f in _glob.glob(_os.path.join(SRC, "**", "judged", name, "bank-*.jsonl"), recursive=True):
+    files = _glob.glob(_os.path.join(SRC, "**", "judged", name, "bank-*.jsonl"), recursive=True)
+    if not files:  # outputs judged before the rename sit under judged/pycoder-base350m-sft/
+        names = {f.split(_os.sep)[-2] for f in _glob.glob(_os.path.join(SRC, "**", "judged", "*", "bank-*.jsonl"), recursive=True)}
+        if len(names) > 1:
+            raise SystemExit(f"no judged/{name}/ but several others {sorted(names)}: set judged_name")
+        if names:
+            name = names.pop()
+            log(f"judged_name: using judged/{name}/")
+            files = _glob.glob(_os.path.join(SRC, "**", "judged", name, "bank-*.jsonl"), recursive=True)
+        elif not CONFIG.get("allow_no_rates"):  # without rates there is no band, and most groups carry no signal
+            raise SystemExit("no judged/*/bank-*.jsonl in the inputs: attach the bank-judge outputs or set allow_no_rates")
+    for f in files:
         for r in map(_json.loads, open(f)):
             rates[r["pid"]] = (r["passed"] / max(1, r["n"]), r.get("greedy_pass"))
     rng = _random.Random(0)
