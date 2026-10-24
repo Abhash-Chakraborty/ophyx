@@ -53,8 +53,9 @@ class Ophyx:
         from transformers import AutoModelForCausalLM, AutoTokenizer
         self.torch = torch
         self.tok = AutoTokenizer.from_pretrained(MODEL_DIR)
-        self.model = AutoModelForCausalLM.from_pretrained(MODEL_DIR, dtype=torch.float32).to("cuda").eval()
+        self.model = AutoModelForCausalLM.from_pretrained(MODEL_DIR, torch_dtype=torch.float32).to("cuda").eval()
         self.end_id = self.tok.convert_tokens_to_ids("<|end|>")
+        self.stop_ids = [self.end_id, self.tok.convert_tokens_to_ids("<|user|>")]
         self.buckets = {}
 
     def allowed(self, ip):
@@ -99,7 +100,7 @@ class Ophyx:
                 raise HTTPException(413, f"prompt is too long ({ids.shape[1]} tokens, max {MAX_PROMPT_TOKENS})")
             streamer = TextIteratorStreamer(self.tok, skip_prompt=True, skip_special_tokens=True, timeout=REQUEST_TIMEOUT_S)
             kw = dict(input_ids=ids.to("cuda"), max_new_tokens=min(max_new, 2048 - ids.shape[1]), streamer=streamer,
-                      eos_token_id=[self.end_id], pad_token_id=self.end_id,
+                      eos_token_id=self.stop_ids, pad_token_id=self.end_id,
                       do_sample=temperature > 0, temperature=temperature or None, top_p=0.95 if temperature > 0 else None)
 
             def run():
