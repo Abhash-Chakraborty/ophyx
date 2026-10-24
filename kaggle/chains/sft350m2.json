@@ -43,7 +43,8 @@
    "dir": "/kaggle/tmp/hf_data",
    "patterns": [
     "v1/sft/*/tokens/*/*.bin",
-    "v1/sft/*/mask/*/*.bin"
+    "v1/sft/*/mask/*/*.bin",
+    "v1/tokenizer/tokenizer.json"
    ]
   },
   "data": {
@@ -119,6 +120,7 @@
      }
     }
    ]
-  }
+  },
+  "tokenizer_path": "/kaggle/tmp/hf_data/v1/tokenizer/tokenizer.json"
  }
 }

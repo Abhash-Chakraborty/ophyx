@@ -7,7 +7,7 @@ concept suite and the hands-on prompts) are attached as inputs. Answers go to
 CONFIG:
   models   list of {"id" (HF id, or a local path that may be a glob), "kind": "base" | "instruct" | "ours",
            "name"?, "tp": 1 | 2, "max_len"?, "benches"?: [...] (default: all that apply to the kind), "think": false (Qwen3),
-           "trust_remote_code": false}
+           "trust_remote_code": false, "tokenizer"?: a dir (may be a glob) for exports saved without one}
   benches  default benches for every model
   budget_s no new model starts after this many seconds (default 10 h); a running one is killed 30 min later
   out      default /kaggle/working
@@ -285,7 +285,7 @@ def fixed_tokenizer(spec):
     tokenizer fails the round trip, load tokenizer.json as-is and save it where vLLM and transformers can read it."""
     from transformers import PreTrainedTokenizerFast
     trc = spec.get("trust_remote_code", False)
-    tok = load_tokenizer(spec["id"], trc)
+    tok = load_tokenizer(spec.get("tokenizer") or spec["id"], trc)
     probe = "def f(x):\n    return x + 1  # ok"
     if tok.decode(tok.encode(probe, add_special_tokens=False)) == probe:
         return None
@@ -388,7 +388,7 @@ def run_model(spec):
     os.makedirs(mdir, exist_ok=True)
     max_len = model_max_len(spec)
     t = time.time()
-    spec = {**spec, "tokenizer": fixed_tokenizer(spec)}
+    spec = {**spec, "tokenizer": fixed_tokenizer(spec) or spec.get("tokenizer")}
     try:
         eng = VLLMEngine(spec, max_len)
         engine = "vllm"
@@ -481,6 +481,12 @@ def orchestrate():
                 log(f"{m['id']}: no match; skipped")
                 continue
             m = {**m, "id": hits[0]}
+        if m.get("tokenizer", "").startswith("/") and "*" in m["tokenizer"]:
+            hits = sorted(glob.glob(m["tokenizer"], recursive=True))
+            if not hits:
+                log(f"{m['tokenizer']}: no tokenizer match; {m['id']} skipped")
+                continue
+            m = {**m, "tokenizer": hits[0]}
         models.append(m)
     done = {}
     os.makedirs(os.path.join(OUT, "logs"), exist_ok=True)
