@@ -1,7 +1,7 @@
 # R1 results
 
 Every open model below ran the same way on Kaggle's free T4s and was scored offline on Kaggle CPUs,
-in October 2026: 38 models from 0.13B to 4B parameters, ours included. Seven frontier API models
+in October 2026: 40 models from 0.13B to 4B parameters, ours included. Seven frontier API models
 answered two of the benchmarks through Kaggle Benchmarks and were scored the same way.
 
 ## How it was run
@@ -37,6 +37,8 @@ All numbers are pass@1 in percent.
 | ophyx-350m-grpo-p3-lr1e6 | ours | 0.35B | 35.4 | 32.9 | 57.1 | 48.1 | 1.0 | 3.1 | 2.3 | 2.0 | 24.6 | 19.5 | 19.0 |
 | ophyx-350m-grpo-p3-lr3e6 | ours | 0.35B | 39.0 | 36.0 | 57.9 | 48.1 | 0.7 | 2.3 | 3.1 | 1.2 | 24.2 | 19.4 | 19.0 |
 | ophyx-350m-sft | ours | 0.35B | 37.2 | 35.4 | 57.4 | 48.1 | 1.7 | 2.3 | 3.8 | 1.5 | 24.9 | 19.5 | 23.8 |
+| ophyx-350m-soup-all | ours | 0.35B | 36.0 | 34.1 | 57.7 | 48.1 | 1.7 | 3.1 | 2.3 | 1.8 | 24.6 | 19.5 | 16.7 |
+| ophyx-350m-soup-sdg | ours | 0.35B | 36.6 | 34.8 | 57.7 | 48.1 | 1.7 | 3.1 | 2.3 | 1.2 | 24.6 | 19.4 | 19.0 |
 | codegen-350M-mono | base | 0.36B | 14.0 | 11.6 | 25.1 | 20.9 | 0.0 | 0.0 |  | 0.0 | 20.4 | 15.8 |  |
 | SmolLM2-360M | base | 0.36B | 12.2 | 10.4 | 27.0 | 22.0 | 0.0 | 0.8 |  | 0.3 | 31.6 | 19.6 |  |
 | SmolLM2-360M-Instruct | instruct | 0.36B | 18.3 | 15.9 | 34.7 | 27.5 | 0.0 | 0.0 | 0.0 | 0.9 | 3.6 | 20.4 | 7.1 |
@@ -86,6 +88,9 @@ All numbers are pass@1 in percent.
   noise of SFT on every benchmark: HumanEval+ 32.9 and 36.0, MBPP+ 48.1 for both, and 8 hands-on
   tasks instead of 10. On 200 held-out bank problems it went from 15 to 18 and 20 solved, so the
   gain stayed inside the bank's own problems.
+- Averaging weights does not help either. SFT + DPO + GRPO (lr 3e-6) scores 34.8 on HumanEval+ and
+  8 hands-on tasks; all four checkpoints averaged score 34.1 and 7. All four start from the same SFT
+  weights, so the averages stay close to them.
 
 Scoring notes:
 
