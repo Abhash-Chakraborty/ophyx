@@ -1,7 +1,7 @@
 # R1 results
 
 Every open model below ran the same way on Kaggle's free T4s and was scored offline on Kaggle CPUs,
-in October 2026: 40 models from 0.13B to 4B parameters, ours included. Seven frontier API models
+in October 2026: 46 models from 0.13B to 4B parameters, ours included. Seven frontier API models
 answered two of the benchmarks through Kaggle Benchmarks and were scored the same way.
 
 ## How it was run
@@ -33,10 +33,16 @@ All numbers are pass@1 in percent.
 | ophyx-125m-sft | ours | 0.13B | 17.7 | 16.5 | 43.1 | 36.8 | 0.0 | 0.0 | 0.0 | 0.0 | 8.5 | 10.6 | 9.5 |
 | SmolLM2-135M | base | 0.14B | 4.3 | 3.0 | 7.7 | 5.0 | 0.0 | 0.0 |  | 0.3 | 10.0 | 13.6 |  |
 | ophyx-350m-base | base | 0.35B | 32.9 | 31.7 | 49.7 | 42.3 | 0.0 | 0.0 |  | 0.3 | 28.5 | 20.9 |  |
+| ophyx-350m-ctx-base | base | 0.35B | 30.5 | 28.0 | 39.4 | 33.1 | 0.3 | 1.5 |  | 0.3 | 25.1 | 22.0 |  |
+| ophyx-350m-ctxsoup-50 | base | 0.35B | 30.5 | 28.7 | 46.8 | 39.2 | 0.3 | 0.8 |  | 0.9 | 27.4 | 22.0 |  |
+| ophyx-350m-ctxsoup-70 | base | 0.35B | 31.1 | 29.3 | 43.1 | 35.7 | 0.3 | 0.8 |  | 0.0 | 26.8 | 22.2 |  |
 | ophyx-350m-dpo-p1 | ours | 0.35B | 39.0 | 37.2 | 57.9 | 48.7 | 1.0 | 3.1 | 3.1 | 1.5 | 24.8 | 19.1 | 21.4 |
 | ophyx-350m-grpo-p3-lr1e6 | ours | 0.35B | 35.4 | 32.9 | 57.1 | 48.1 | 1.0 | 3.1 | 2.3 | 2.0 | 24.6 | 19.5 | 19.0 |
 | ophyx-350m-grpo-p3-lr3e6 | ours | 0.35B | 39.0 | 36.0 | 57.9 | 48.1 | 0.7 | 2.3 | 3.1 | 1.2 | 24.2 | 19.4 | 19.0 |
 | ophyx-350m-sft | ours | 0.35B | 37.2 | 35.4 | 57.4 | 48.1 | 1.7 | 2.3 | 3.8 | 1.5 | 24.9 | 19.5 | 23.8 |
+| ophyx-350m-sft2 | ours | 0.35B | 39.0 | 37.8 | 55.8 | 46.0 | 0.3 | 3.1 | 1.5 | 2.3 | 19.2 | 19.1 | 19.0 |
+| ophyx-350m-sft2soup-50 | ours | 0.35B | 40.2 | 39.6 | 55.8 | 45.8 | 1.0 | 2.3 | 5.3 | 2.3 | 23.6 | 22.4 | 19.0 |
+| ophyx-350m-sft2soup-70 | ours | 0.35B | 42.1 | 41.5 | 56.1 | 46.8 | 1.3 | 3.1 | 3.8 | 1.8 | 21.1 | 21.5 | 21.4 |
 | ophyx-350m-soup-all | ours | 0.35B | 36.0 | 34.1 | 57.7 | 48.1 | 1.7 | 3.1 | 2.3 | 1.8 | 24.6 | 19.5 | 16.7 |
 | ophyx-350m-soup-sdg | ours | 0.35B | 36.6 | 34.8 | 57.7 | 48.1 | 1.7 | 3.1 | 2.3 | 1.2 | 24.6 | 19.4 | 19.0 |
 | codegen-350M-mono | base | 0.36B | 14.0 | 11.6 | 25.1 | 20.9 | 0.0 | 0.0 |  | 0.0 | 20.4 | 15.8 |  |
@@ -91,6 +97,15 @@ All numbers are pass@1 in percent.
 - Averaging weights does not help either. SFT + DPO + GRPO (lr 3e-6) scores 34.8 on HumanEval+ and
   8 hands-on tasks; all four checkpoints averaged score 34.1 and 7. All four start from the same SFT
   weights, so the averages stay close to them.
+- The 4,096-token base (2B more tokens at seq 4,096 from ophyx-350m-base) got worse on short
+  tasks: HumanEval+ 31.7 to 28.0, MBPP+ 42.3 to 33.1. It runs past the end of the function more
+  often: 51 of 378 MBPP answers hit the length limit, against 19 before. Averaging it 50/50 with the
+  old base brings MBPP+ back to 39.2.
+- SFT v2 (800M tokens at seq 4,096 on top of that base, with the problem bank and repair rows added)
+  gains on HumanEval+ (37.8) and LiveCodeBench (2.3) and loses on MBPP+ (46.0), CRUX-I (19.2) and
+  hands-on tasks (8). Averaged 70/30 with SFT v1, it scores 41.5 on HumanEval+, the best of our
+  models, and stays within 1.3 points of SFT v1 on MBPP+, concept and BigCodeBench-Hard. CRUX-I
+  (21.1) and the hands-on tasks (9) are still lower.
 
 Scoring notes:
 
