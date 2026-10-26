@@ -2,7 +2,7 @@
 
 Every open model below ran the same way on Kaggle's free T4s and was scored offline on Kaggle CPUs,
 in October 2026: 46 models from 0.13B to 4B parameters, ours included. Seven frontier API models
-answered two of the benchmarks through Kaggle Benchmarks and were scored the same way.
+answered two or three of the benchmarks through Kaggle Benchmarks and were scored the same way.
 
 ## How it was run
 
@@ -123,20 +123,23 @@ models. The GPT models ran with reasoning effort low, and models that reason bef
 4,096 more output tokens. A reply cut off at the output limit was asked again once with 8,192 more
 tokens. After that, two HumanEval replies are still cut off (Gemini 3.8 Flash on HumanEval/116,
 Gemini 3.1 Pro on HumanEval/32) and count as failures. The proxy offered no route to Qwen3-Coder-480B
-or gpt-oss-20b, so they are missing.
+or gpt-oss-20b, so they are missing. The concept suite (298 tasks) ran on the five cheaper models over
+several days of the proxy's daily quota; GPT-5.5 and Gemini 3.1 Pro did not take it. Eleven of Gemini
+3.8 Flash's concept replies are still cut off after the re-ask, and the proxy returned no reply to
+12 of Gemma 4 31B's prompts in two tries; both count as failures.
 
-| Model | HumanEval | HumanEval+ | Hands-on |
-|---|---|---|---|
-| GPT-5.5 | 98.8 | 93.9 | 95.2 (40 of 42) |
-| Claude Sonnet 5.5 | 98.8 | 95.7 | 90.5 (38) |
-| Gemini 3.1 Pro | 99.4 | 95.7 | 85.7 (36) |
-| Gemini 3.8 Flash | 99.4 | 93.9 | 90.5 (38) |
-| Gemma 4 31B | 99.4 | 95.1 | 92.9 (39) |
-| Claude Haiku 5.5 | 98.8 | 94.5 | 90.5 (38) |
-| GPT-5.4 mini | 93.9 | 89.6 | 92.9 (39) |
+| Model | HumanEval | HumanEval+ | Concept | Hands-on |
+|---|---|---|---|---|
+| GPT-5.5 | 98.8 | 93.9 |  | 95.2 (40 of 42) |
+| Claude Sonnet 5.5 | 98.8 | 95.7 | 95.3 | 90.5 (38) |
+| Gemini 3.1 Pro | 99.4 | 95.7 |  | 85.7 (36) |
+| Gemini 3.8 Flash | 99.4 | 93.9 | 91.6 | 90.5 (38) |
+| Gemma 4 31B | 99.4 | 95.1 | 77.5 | 92.9 (39) |
+| Claude Haiku 5.5 | 98.8 | 94.5 | 93.0 | 90.5 (38) |
+| GPT-5.4 mini | 93.9 | 89.6 | 83.2 | 92.9 (39) |
 
-The lowest of them still passes 147 of 164 HumanEval+ problems and 36 of 42 hands-on tasks;
-ophyx-350m-sft passes 58 and 10.
+The lowest of them still passes 147 of 164 HumanEval+ problems, 231 of 298 concept tasks and 36
+of 42 hands-on tasks; ophyx-350m-sft passes 58, 5 and 10.
 
 ## LiveCodeBench leaderboard on our 342 problems
 
