@@ -1,0 +1,3 @@
+{"budget_s": 10800, "models": [
+  {"id": "/kaggle/input/**/sftsoup-50", "kind": "ours", "name": "ophyx-350m-sft2soup-50"},
+  {"id": "/kaggle/input/**/sftsoup-70", "kind": "ours", "name": "ophyx-350m-sft2soup-70"}]}

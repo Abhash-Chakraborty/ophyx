@@ -1,16 +1,10 @@
 {
- "budget_s": 14400,
+ "budget_s": 10800,
  "models": [
   {
-   "id": "/kaggle/input/**/ophyx-train-sft350m2-*/hf",
+   "id": "/kaggle/input/**/ophyx-train-sft350m2-a/hf",
    "kind": "ours",
    "name": "ophyx-350m-sft2"
-  },
-  {
-   "id": "/kaggle/input/**/pycoder-train-ctx350m-*/hf",
-   "kind": "base",
-   "name": "ophyx-350m-ctx-base",
-   "tokenizer": "/kaggle/input/**/grpo/p3-lr3e6/final"
   }
  ]
 }

@@ -1,0 +1,3 @@
+{"budget_s": 10800, "models": [
+  {"id": "/kaggle/input/**/ctxsoup-50", "kind": "base", "name": "ophyx-350m-ctxsoup-50", "tokenizer": "/kaggle/input/**/grpo/p3-lr3e6/final"},
+  {"id": "/kaggle/input/**/ctxsoup-70", "kind": "base", "name": "ophyx-350m-ctxsoup-70", "tokenizer": "/kaggle/input/**/grpo/p3-lr3e6/final"}]}

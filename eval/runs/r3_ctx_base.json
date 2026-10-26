@@ -1,0 +1,11 @@
+{
+ "budget_s": 10800,
+ "models": [
+  {
+   "id": "/kaggle/input/**/pycoder-train-ctx350m-*/hf",
+   "kind": "base",
+   "name": "ophyx-350m-ctx-base",
+   "tokenizer": "/kaggle/input/**/grpo/p3-lr3e6/final"
+  }
+ ]
+}
