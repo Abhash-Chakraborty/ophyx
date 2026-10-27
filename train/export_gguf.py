@@ -151,7 +151,8 @@ def main():
     check = {"model": MODEL, "llama_tag": TAG, "files": {t: os.path.getsize(f) for t, f in files.items()}}
     sys.path.insert(0, os.path.join(lc, "gguf-py"))
     from gguf import GGUFReader
-    want_theta = float(json.load(open(os.path.join(mdir, "config.json")))["rope_theta"])
+    hc = json.load(open(os.path.join(mdir, "config.json")))
+    want_theta = float(hc.get("rope_theta") or hc["rope_parameters"]["rope_theta"])
     for t, f in files.items():
         fld = GGUFReader(f).fields.get("qwen3.rope.freq_base")
         got = float(fld.parts[fld.data[0]][0]) if fld else None

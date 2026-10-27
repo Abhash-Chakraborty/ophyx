@@ -53,6 +53,8 @@ def average(dirs, weights, out):
     if os.path.exists(cfg):
         c = json.load(open(cfg))
         c["torch_dtype"] = "float32"
+        if "rope_theta" not in c and "rope_theta" in (c.get("rope_parameters") or {}):
+            c["rope_theta"] = c["rope_parameters"]["rope_theta"]  # transformers < 5 reads only this
         json.dump(c, open(cfg, "w"), indent=1)
     json.dump({"sources": dirs, "weights": w.tolist(), "source_dtypes": sorted(set(dtypes.values()))},
               open(os.path.join(out, "average.json"), "w"), indent=1)
