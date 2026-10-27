@@ -1,0 +1,3 @@
+{"budget_s": 10800, "models": [
+  {"id": "/kaggle/input/**/grpo/p4-lr2e6/final", "kind": "ours", "name": "ophyx-350m-grpo-p4-lr2e6"},
+  {"id": "/kaggle/input/**/grpo/p4-lr4e6/final", "kind": "ours", "name": "ophyx-350m-grpo-p4-lr4e6"}]}

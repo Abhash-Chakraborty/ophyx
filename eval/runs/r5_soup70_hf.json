@@ -1,0 +1,1 @@
+{"soups": {"sftsoup-70": {"models": ["/kaggle/input/**/ophyx-train-sft350m2-a/hf", "abhash-chakraborty/ophyx-350m-sft"], "weights": [0.7, 0.3], "out_repo": "abhash-chakraborty/ophyx-350m-sft2-soup70"}}}
