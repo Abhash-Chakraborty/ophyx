@@ -138,7 +138,7 @@ def set_phase(phase, **kw):
 def start_heartbeat(every_s=600):
     """Kaggle shows no logs while a session runs; a 3-hour session once looked alive but produced nothing.
     Every few minutes, write phase / step / recent log lines to HF so a session is never a black box."""
-    repo = CONFIG.get("heartbeat_repo", "abhash-chakraborty/pycoder-runs")
+    repo = CONFIG.get("heartbeat_repo", "abhash-chakraborty/ophyx-runs")
     if _HEARTBEAT["started"] or not KEYS.get("HF_TOKEN") or not (KAGGLE or CONFIG.get("heartbeat_local")):
         return
     every_s = CONFIG.get("heartbeat_every_s", every_s)

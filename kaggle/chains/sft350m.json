@@ -28,7 +28,7 @@
   "eval_every": 200,
   "export_hf": true,
   "wandb": null,
-  "hf_ckpt_repo": "abhash-chakraborty/pycoder-runs",
+  "hf_ckpt_repo": "abhash-chakraborty/ophyx-runs",
   "model": "base",
   "micro_batch": 8,
   "batch_tokens": 262144,
@@ -37,9 +37,9 @@
   "warmup_tokens": 30000000,
   "run_name": "base350m-sft-v1",
   "session_name": "sft350m",
-  "init_from": "hf://abhash-chakraborty/pycoder-runs/base350m-v1/latest",
+  "init_from": "hf://abhash-chakraborty/ophyx-runs/base350m-v1/latest",
   "hf_data": {
-   "repo": "abhash-chakraborty/pycoder-data",
+   "repo": "abhash-chakraborty/ophyx-data",
    "dir": "/kaggle/tmp/hf_data",
    "patterns": [
     "v1/sft/*/tokens/*/*.bin",

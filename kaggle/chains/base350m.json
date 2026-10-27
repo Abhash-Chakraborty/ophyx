@@ -34,7 +34,7 @@
   "eval_every": 500,
   "export_hf": true,
   "wandb": null,
-  "hf_ckpt_repo": "abhash-chakraborty/pycoder-runs",
+  "hf_ckpt_repo": "abhash-chakraborty/ophyx-runs",
   "data": {
    "buckets": {
     "stack_edu_a": {
@@ -142,9 +142,9 @@
     "decay_frac": 0.9,
     "min_lr_frac": 0.1,
     "eval_every": 200,
-    "init_from": "hf://abhash-chakraborty/pycoder-runs/nano125m-v1/latest",
+    "init_from": "hf://abhash-chakraborty/ophyx-runs/nano125m-v1/latest",
     "hf_data": {
-     "repo": "abhash-chakraborty/pycoder-data",
+     "repo": "abhash-chakraborty/ophyx-data",
      "dir": "/kaggle/tmp/hf_data",
      "patterns": [
       "v1/sft/*/tokens/*/*.bin",

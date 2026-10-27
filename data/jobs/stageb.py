@@ -28,7 +28,7 @@ import numpy as np
 CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("OPHYX_CONFIG", "{}"))
 JOB = CONFIG["job"]
 SHARD, NSHARDS = CONFIG.get("shard", 0), CONFIG.get("nshards", 1)
-REPO = CONFIG.get("repo", "abhash-chakraborty/pycoder-data")
+REPO = CONFIG.get("repo", "abhash-chakraborty/ophyx-data")
 V = CONFIG.get("version", "v1")  # input version (raw parts)
 OV = CONFIG.get("out_version", V)  # where this run writes; "smoke" for test runs
 SMOKE = OV == "smoke"

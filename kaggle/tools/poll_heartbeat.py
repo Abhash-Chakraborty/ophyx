@@ -21,9 +21,9 @@ deadline = time.time() + (int(sys.argv[2]) if len(sys.argv) > 2 else 3500)
 api = HfApi(token=env["HF_TOKEN"])
 while time.time() < deadline:
     try:
-        fs = sorted(f for f in api.list_repo_files("abhash-chakraborty/pycoder-runs") if f.startswith(f"sessions/{name}-"))
+        fs = sorted(f for f in api.list_repo_files("abhash-chakraborty/ophyx-runs") if f.startswith(f"sessions/{name}-"))
         if fs:
-            b = json.load(open(hf_hub_download("abhash-chakraborty/pycoder-runs", fs[-1], token=env["HF_TOKEN"], force_download=True)))
+            b = json.load(open(hf_hub_download("abhash-chakraborty/ophyx-runs", fs[-1], token=env["HF_TOKEN"], force_download=True)))
             print(fs[-1], json.dumps({k: b.get(k) for k in ("utc", "uptime_s", "phase", "run", "step", "loss", "tokens_per_s")}))
             print("\n".join(b.get("tail", [])[-12:]))
             sys.exit(0)

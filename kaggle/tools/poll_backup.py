@@ -21,7 +21,7 @@ min_step = int(sys.argv[2]) if len(sys.argv) > 2 else 0
 deadline = time.time() + (int(sys.argv[3]) if len(sys.argv) > 3 else 3500)
 while time.time() < deadline:
     try:
-        m = json.load(open(hf_hub_download("abhash-chakraborty/pycoder-runs", f"{run}/latest/meta.json",
+        m = json.load(open(hf_hub_download("abhash-chakraborty/ophyx-runs", f"{run}/latest/meta.json",
                                            token=env["HF_TOKEN"], force_download=True)))
         if m["step"] > min_step:
             print(time.strftime("%H:%M UTC", time.gmtime()), "backup at step", m["step"])

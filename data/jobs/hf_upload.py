@@ -1,6 +1,6 @@
 """Upload files from attached kernel outputs to the HF dataset. Kaggle CPU, keys attached; runs no data.
 
-CONFIG: repo (default abhash-chakraborty/pycoder-data), items [{"glob": "/kaggle/input/**/x-*.jsonl",
+CONFIG: repo (default abhash-chakraborty/ophyx-data), items [{"glob": "/kaggle/input/**/x-*.jsonl",
 "dest": "v1/problems/verified"}], message, repo_type ("dataset", or "model" for a checkpoint; a missing
 model repo is created private). Each matched file goes to <dest>/<basename>; a basename
 that matches twice (two kernels wrote the same name) is an error. Files go up in commits of 40.
@@ -12,7 +12,7 @@ import os
 import time
 
 CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("OPHYX_CONFIG", "{}"))
-REPO = CONFIG.get("repo", "abhash-chakraborty/pycoder-data")
+REPO = CONFIG.get("repo", "abhash-chakraborty/ophyx-data")
 REPO_TYPE = CONFIG.get("repo_type", "dataset")
 KEYS = json.load(open(glob.glob("/kaggle/input/**/keys.json", recursive=True)[0]))
 

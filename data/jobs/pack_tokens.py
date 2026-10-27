@@ -12,7 +12,7 @@ import os
 import time
 
 CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("OPHYX_CONFIG", "{}"))
-REPO = CONFIG.get("repo", "abhash-chakraborty/pycoder-data")
+REPO = CONFIG.get("repo", "abhash-chakraborty/ophyx-data")
 V = CONFIG.get("version", "v1")
 OUT = "/kaggle/working" if os.path.isdir("/kaggle") else os.path.abspath("pack-out")
 LIMIT = CONFIG.get("limit_gb", 19.0) * 1e9

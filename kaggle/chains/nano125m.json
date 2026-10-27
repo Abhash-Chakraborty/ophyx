@@ -30,7 +30,7 @@
   "eval_every": 500,
   "export_hf": true,
   "wandb": null,
-  "hf_ckpt_repo": "abhash-chakraborty/pycoder-runs",
+  "hf_ckpt_repo": "abhash-chakraborty/ophyx-runs",
   "data": {
    "buckets": {
     "stack_edu_a": {

@@ -1,6 +1,6 @@
 """Turn a trainer checkpoint (local dir or the HF backup) into a Hugging Face Qwen3 model, on CPU.
 
-  python train/export_ckpt.py hf://abhash-chakraborty/pycoder-runs/nano125m-v1/latest out/nano125m-v1-hf
+  python train/export_ckpt.py hf://abhash-chakraborty/ophyx-runs/nano125m-v1/latest out/nano125m-v1-hf
   python train/export_ckpt.py run/nano125m-v1/ckpt-00007629 out/nano125m-v1-hf --push abhash-chakraborty/ophyx-125m-base
 
 Model size, vocab and seq come from the checkpoint's meta.json. Needs jax (CPU is fine), numpy,
@@ -18,7 +18,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument("src")
 ap.add_argument("out")
 ap.add_argument("--tokenizer", default=None)
-ap.add_argument("--data-repo", default="abhash-chakraborty/pycoder-data")
+ap.add_argument("--data-repo", default="abhash-chakraborty/ophyx-data")
 ap.add_argument("--data-version", default="v1")
 ap.add_argument("--push", default=None, help="private HF model repo to upload the export to")
 args = ap.parse_args()
