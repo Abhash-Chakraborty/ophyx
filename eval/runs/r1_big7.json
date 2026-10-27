@@ -1,0 +1,41 @@
+{
+ "budget_s": 34000,
+ "models": [
+  {
+   "id": "Qwen/Qwen2.5-Coder-7B-Instruct",
+   "kind": "instruct",
+   "tp": 2
+  },
+  {
+   "id": "deepseek-ai/deepseek-coder-6.7b-instruct",
+   "kind": "instruct",
+   "tp": 2
+  },
+  {
+   "id": "Qwen/Qwen3-8B",
+   "kind": "instruct",
+   "tp": 2,
+   "think": false
+  },
+  {
+   "id": "Qwen/Qwen2.5-Coder-7B",
+   "kind": "base",
+   "tp": 2
+  },
+  {
+   "id": "deepseek-ai/deepseek-coder-6.7b-base",
+   "kind": "base",
+   "tp": 2
+  },
+  {
+   "id": "bigcode/starcoder2-7b",
+   "kind": "base",
+   "tp": 2
+  },
+  {
+   "id": "codellama/CodeLlama-7b-Python-hf",
+   "kind": "base",
+   "tp": 2
+  }
+ ]
+}
