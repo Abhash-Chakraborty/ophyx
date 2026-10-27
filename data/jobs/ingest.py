@@ -9,7 +9,7 @@ Jobs:
   fineweb     FineWeb-Edu sample-10BT, programming-related documents only
   opencoder   OpenCoder annealing corpus (Python only), CPython stdlib and docs, PEPs
 
-Rules come from DATA.md, phase 3. Global dedup, near-dup and decontamination happen in stage B.
+Rules come from docs/data.md, phase 3. Global dedup, near-dup and decontamination happen in stage B.
 """
 
 import ast
@@ -17,7 +17,6 @@ import concurrent.futures as cf
 import glob
 import gzip
 import hashlib
-import io
 import json
 import multiprocessing as mp
 import os

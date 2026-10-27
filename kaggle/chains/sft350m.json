@@ -1,5 +1,5 @@
 {
- "enabled": true,
+ "enabled": false,
  "after": "base350m-v1",
  "script": "train/pretrain.py",
  "accel": "tpu",

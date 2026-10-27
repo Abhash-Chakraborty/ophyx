@@ -61,10 +61,13 @@ for model_id, tp in CONFIG.get("models", [["Qwen/Qwen2.5-Coder-7B-Instruct-AWQ",
                         **stats}
         print(tag, results[tag], flush=True)
         del llm
-        import gc, torch
-        gc.collect(); torch.cuda.empty_cache()
+        import gc
+        import torch
+        gc.collect()
+        torch.cuda.empty_cache()
     except Exception as e:
-        import traceback; traceback.print_exc()
+        import traceback
+        traceback.print_exc()
         results[tag] = {"error": f"{type(e).__name__}: {str(e)[:400]}"}
     json.dump(results, open(os.path.join(OUTD, "t4_teacher.json"), "w"), indent=1)
 print("RESULTS", json.dumps(results), flush=True)

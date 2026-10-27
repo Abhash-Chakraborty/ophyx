@@ -15,7 +15,7 @@ Harness check: Qwen2.5-Coder-0.5B with the unstripped HumanEval prompt scores 28
 matches the numbers in Qwen's report exactly. Reference solutions score 99.4% on HumanEval+ (one
 timeout on a slow CPU).
 
-Targets for our models (PLAN.md): nano (125M) above SmolLM2-360M, base (350M) at 30–40% HumanEval+.
+Targets for our models (docs/plan.md): nano (125M) above SmolLM2-360M, base (350M) at 30–40% HumanEval+.
 
 ## Our checkpoints
 

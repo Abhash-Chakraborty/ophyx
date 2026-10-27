@@ -7,7 +7,7 @@ format. Scoring is greedy pass@1: the model writes one module and the hidden tes
 they don't.
 
 The suite stays private until the model is released. Its prompts and references are also on the
-training-data decontamination list (10-gram overlap and MinHash, see DATA.md, phase 4), so none of
+training-data decontamination list (10-gram overlap and MinHash, see docs/data.md, phase 4), so none of
 it may be pasted into training data, synthetic-data prompts or public issues.
 
 ## Files

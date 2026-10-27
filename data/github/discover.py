@@ -1,4 +1,4 @@
-"""GitHub discovery, gates 1-2 of DATA.md "Collecting from GitHub". Runs on the orchestration box:
+"""GitHub discovery, gates 1-2 of docs/data.md "Collecting from GitHub". Runs on the orchestration box:
 API calls only (no cloning), well under the rate limits, results to a small JSONL.
 
 Gate 1: search `language:Python fork:false archived:false` sliced by star ranges (each query

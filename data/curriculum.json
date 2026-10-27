@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "Leaves drive synthetic generation (DATA.md, Synthetic data) and the concept eval suite. Keep leaves specific.",
+  "note": "Leaves drive synthetic generation (docs/data.md, Synthetic data) and the concept eval suite. Keep leaves specific.",
   "areas": {
     "language_core": [
       "the Python data model and dunder methods (__repr__, __eq__, __hash__, __lt__)",

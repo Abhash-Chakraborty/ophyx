@@ -1,7 +1,12 @@
 # Training regime
 
+> The plan as written before training. The stages that ran: pretraining (12B tokens), a 4,096-token
+> extension (2B), two SFT rounds, a DPO pilot, GRPO and weight averaging. Stage 4's backtracking
+> search was replaced by plain best-of-8 sampling, and its passing answers went into SFT v2. See the
+> [README](../README.md) for the full record.
+
 From random weights to the released model in seven stages. Model sizes and hardware are in
-[PLAN.md](PLAN.md); data is in [DATA.md](DATA.md).
+[plan.md](plan.md); data is in [data.md](data.md).
 
 | Stage | What | Data | GPU hours | Output |
 |---|---|---|---|---|
@@ -19,7 +24,7 @@ comes from stages 1–3; 4 and 5 sharpen it. Expect gains of a few to ~10 points
 
 ## Stage 1: pretraining, stable phase
 
-Recipe details are in PLAN.md (Muon + AdamW, WSD schedule, fp16 with loss scaling, FIM at 50%,
+Recipe details are in docs/plan.md (Muon + AdamW, WSD schedule, fp16 with loss scaling, FIM at 50%,
 packing with document masks). Additions aimed at efficiency:
 
 - Sequence-length warmup: start at 512 tokens for the first ~2% of steps, then 1024, then 2048.
@@ -37,7 +42,7 @@ packing with document masks). Additions aimed at efficiency:
 ## Stage 2: annealing and context extension
 
 - The WSD decay phase, last ~15% of tokens. LR decays to ~0 (linear or 1-sqrt).
-- Mix shifts to tier A: synthetic, rewritten code, curated repos, docs (DATA.md has the numbers).
+- Mix shifts to tier A: synthetic, rewritten code, curated repos, docs (docs/data.md has the numbers).
 - Last ~1–2% of tokens at 4096 context with RoPE base raised, on repo-level documents, so
   multi-file projects fit.
 - Keep the last stable-phase checkpoint. If a better data mix appears later, anneal again from it
@@ -54,7 +59,7 @@ Two stages, like OpenCoder: broad first, then a smaller, cleaner set.
 | Epochs | 2 | 3 |
 | Peak LR | ~5e-5 | ~2e-5 |
 
-- Template and conversion rules from DATA.md: the response is always one Python module.
+- Template and conversion rules from docs/data.md: the response is always one Python module.
 - Loss on response tokens only. Pack several short examples per sequence with attention masks
   between them.
 - Self-repair examples (new in 3b): the prompt holds code plus the traceback or failing test; the
@@ -169,7 +174,7 @@ Online RL with execution rewards, starting from the stage 4 model.
   explodes).
 - Group size 8, ~64 prompts per step, max 768 new tokens.
 - LR ~1e-6 to 3e-6, constant after a short warmup. Sweep on the debug model first.
-- Infra: TRL's `GRPOTrainer` with vLLM. The model is HF-compatible (PLAN.md), so no custom
+- Infra: TRL's `GRPOTrainer` with vLLM. The model is HF-compatible (docs/plan.md), so no custom
   rollout code. One T4 generates, one trains, weights synced every step (700 MB, fast).
 
 ### Reward
@@ -212,7 +217,7 @@ parse penalty keeps the Python-only format alive without a separate format rewar
 
 - Average the last few checkpoints of stage 5 (and separately test averaging stage 4 and 5
   models). Weight averaging is free and usually gives a small, steady gain.
-- Run the full eval suite from PLAN.md on the base, SFT, stage 4, stage 5 and averaged models, so
+- Run the full eval suite from docs/plan.md on the base, SFT, stage 4, stage 5 and averaged models, so
   the release shows what each stage added.
 - Pick the release model by dev scores, then report test scores once.
 
@@ -233,7 +238,7 @@ Both stages need problems with hidden tests. Target 20k–50k, all Python.
 | Source | Share | Notes |
 |---|---|---|
 | Our curriculum and design-as-code tasks (synthetic, verified) | ~40% | The engineering focus lives here |
-| Repo-mined: functions and their real tests from the verified repos (DATA.md, gate 5) | ~30% | Real-world code. "Implement this function so the repo's tests pass" |
+| Repo-mined: functions and their real tests from the verified repos (docs/data.md, gate 5) | ~30% | Real-world code. "Implement this function so the repo's tests pass" |
 | Verified public sets: KodCode, TACO, CodeContests, APPS train split | ~30% | Algorithmic. Check each licence; decontaminate against APPS test and all evals |
 
 Splits: train (search and RL), dev (~1k, for curriculum and early stopping), and the eval sets,

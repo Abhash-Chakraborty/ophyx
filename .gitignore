@@ -7,3 +7,9 @@ checkpoints/
 *.parquet
 *.bin
 *.safetensors
+.ruff_cache/
+.pytest_cache/
+bench_exec/
+.claude/
+CLAUDE.md
+AGENTS.md

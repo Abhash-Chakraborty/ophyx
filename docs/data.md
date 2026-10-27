@@ -1,5 +1,8 @@
 # Data plan
 
+> The data plan, updated with what was built: the sections on the problem bank and repair data
+> describe the shipped datasets. The tokenised data lives in a private Hugging Face dataset.
+
 Data is the biggest lever at this model size. phi-1 showed that a small model trained on
 "textbook-quality" code beats models trained on 10× more raw GitHub code. This file covers what
 we collect, how we judge it, and how we fill the gaps.
@@ -19,7 +22,7 @@ we collect, how we judge it, and how we fill the gaps.
 
 ## How much data we need
 
-Target: ~10B training tokens for the 350M flagship (see PLAN.md), drawn from ~6.7B unique
+Target: ~10B training tokens for the 350M flagship (see docs/plan.md), drawn from ~6.7B unique
 tokens. Repeating good data up to ~4 epochs costs very little (Muennighoff et al., 2023), so the
 best tier is repeated and the weakest tier is left out.
 
@@ -174,7 +177,7 @@ See "Synthetic data" below.
 
 ### Phase 6: tokenise and ship (weeks 5–6)
 
-- Train the tokenizer on a sample of the final mix (PLAN.md, Tokenizer).
+- Train the tokenizer on a sample of the final mix (docs/plan.md, Tokenizer).
 - Tokenise into `uint16` shards of ~100M tokens, one directory per bucket, so the mix is set at
   load time by sampling weights instead of rebuilding data.
 - Upload shards as private Kaggle datasets (check current size limits). Public at release.
@@ -229,7 +232,7 @@ hours.
 
 This makes "knows all the concepts" measurable.
 
-1. Write the curriculum as a tree (PLAN.md lists the top level). Leaves are specific: "asyncio
+1. Write the curriculum as a tree (docs/plan.md lists the top level). Leaves are specific: "asyncio
    task cancellation", "LRU cache with OrderedDict", "custom exception hierarchy",
    "`__slots__` for memory".
 2. Tag every document with the leaves it touches:
@@ -321,7 +324,7 @@ teacher is only needed for parts of them.
 2. Generate with an open-weight code model whose licence allows training on outputs. The
    Qwen-Coder family is one option (check the licence of the exact size). Don't use outputs from
    APIs whose terms forbid training other models.
-3. Run every sample in the shared sandbox (TRAINING.md): subprocess, CPU and memory limits,
+3. Run every sample in the shared sandbox (docs/training.md): subprocess, CPU and memory limits,
    timeout, temporary directory, in a Kaggle CPU session with no secrets attached.
 4. Keep only what passes. Expect to discard 30–50%.
 5. MinHash dedup within synthetic data and against the eval sets. Cap any single leaf at ~3% of

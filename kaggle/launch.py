@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 
-USER = "abhashchakraborty"
+USER = os.environ.get("KAGGLE_USERNAME", "abhashchakraborty")
 KAGGLE = shutil.which("kaggle") or os.path.expanduser("~/.local/bin/kaggle")
 ACCEL = {"cpu": None, "t4": "NvidiaTeslaT4", "tpu": "TpuV5E8", "tpu6": "TpuV6E8"}
 

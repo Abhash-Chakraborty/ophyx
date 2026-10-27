@@ -24,7 +24,7 @@ import time
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-USER = "abhashchakraborty"
+USER = os.environ.get("KAGGLE_USERNAME", "abhashchakraborty")
 KAGGLE = os.environ.get("KAGGLE_BIN", "kaggle")
 
 

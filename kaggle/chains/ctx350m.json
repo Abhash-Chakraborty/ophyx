@@ -1,5 +1,5 @@
 {
- "enabled": true,
+ "enabled": false,
  "script": "train/pretrain.py",
  "accel": "tpu",
  "timeout": 32400,

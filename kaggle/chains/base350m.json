@@ -1,5 +1,5 @@
 {
- "enabled": true,
+ "enabled": false,
  "script": "train/run_sequence.py",
  "include": [
   "train/pretrain.py"

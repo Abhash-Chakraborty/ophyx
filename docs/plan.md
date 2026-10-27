@@ -1,9 +1,13 @@
 # Python-only code model: plan
 
+> Written on 10 October 2026, before any training. It is kept as the design record, so some parts
+> describe things that changed or never ran. What actually ran and how it scored is in the
+> [README](../README.md) and [eval/R1_RESULTS.md](../eval/R1_RESULTS.md).
+
 A small decoder-only transformer, trained from scratch on free Kaggle GPUs, that reads English
 and writes only Python. Explanations go into comments and docstrings, never into prose.
 
-Working name: TBD. The data plan lives in [DATA.md](DATA.md).
+Working name: TBD. The data plan lives in [data.md](data.md).
 
 ## What specialising buys, and what it doesn't
 
@@ -17,7 +21,7 @@ What it buys:
 - A smaller model reaches a given Python quality, so the model is cheap to run (a 350M model is
   ~700 MB in fp16 and ~380 MB at 8-bit; it runs on a laptop CPU).
 - The domain is narrow enough to cover deliberately. We can list the concepts that matter and
-  check that the data covers each one (see the coverage matrix in DATA.md).
+  check that the data covers each one (see the coverage matrix in docs/data.md).
 - High-quality data can be repeated for several epochs without much loss, so a few billion
   excellent tokens go a long way.
 - A Python-specific tokenizer packs more code into each token, which makes training and
@@ -189,7 +193,7 @@ Options by pretraining budget:
 Measured result (9 October): on TPU, ~350M on 10B tokens costs ~26 TPU hours, about the same
 as one to one and a half weeks of TPU quota. Compute is no longer the main limit for the base model;
 data is. The recommendation stays at ~350M. If quota allows, train it on 15–20B tokens (~40–50 TPU
-hours) rather than going bigger, provided DATA.md delivers enough tier A/B tokens to keep
+hours) rather than going bigger, provided docs/data.md delivers enough tier A/B tokens to keep
 repetition at or below ~4 epochs.
 
 ## How "Python only" works
@@ -264,7 +268,7 @@ prediction (try later as an ablation), custom kernels.
 
 Session limits: every long job runs as a chain of Kaggle sessions, started and resumed by a
 driver script through the Kaggle CLI. Checkpoints every 20–30 minutes, a clean stop before the
-time limit, and a Hugging Face backup. Details in TRAINING.md, "Working within Kaggle's session
+time limit, and a Hugging Face backup. Details in docs/training.md, "Working within Kaggle's session
 limits".
 
 ## Tokenizer
@@ -285,7 +289,7 @@ limits".
 
 ## Data (summary)
 
-Full plan in [DATA.md](DATA.md). The short version:
+Full plan in [data.md](data.md). The short version:
 
 - ~10B training tokens for the flagship, drawn from ~6.7B unique tokens in three quality tiers.
   The best tier is repeated up to ~4 epochs.
@@ -301,7 +305,7 @@ Full plan in [DATA.md](DATA.md). The short version:
 
 ## Post-training
 
-Full regime in [TRAINING.md](TRAINING.md). After pretraining and annealing:
+Full regime in [training.md](training.md). After pretraining and annealing:
 
 - Two-stage SFT (broad, then curated), with self-repair and test-writing examples.
 - Search with recursive backtracking: the model plans a module as stubs, implements and tests
@@ -360,8 +364,8 @@ the gain), then the nano run down to ~2B tokens.
 
 ```
 .
-├── PLAN.md
-├── DATA.md
+├── docs/plan.md
+├── docs/data.md
 ├── configs/            # model + training YAMLs (debug, nano, base, sft, dpo)
 ├── data/
 │   ├── sources/        # one fetcher per source, with licence metadata
@@ -444,5 +448,5 @@ happens, cut GRPO first. The 16-week schedule is the fallback if the fast track 
    the size.
 4. Write the curriculum and the 300-task concept suite. It drives both data collection and
    evaluation.
-5. Request access to Stack v2 / Stack-Edu and start DATA.md phase 1 in Kaggle CPU sessions.
+5. Request access to Stack v2 / Stack-Edu and start docs/data.md phase 1 in Kaggle CPU sessions.
 6. Set up EvalPlus and run the baselines, so there's a number to beat before training starts.

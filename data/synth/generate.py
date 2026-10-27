@@ -14,7 +14,6 @@ Resumable: the next index is stored in OUT/state.json, and sample i always gets 
 import argparse
 import ast
 import concurrent.futures as cf
-import gzip
 import hashlib
 import json
 import os
