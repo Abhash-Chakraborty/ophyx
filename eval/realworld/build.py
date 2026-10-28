@@ -1323,12 +1323,22 @@ done
 
 NODE = r'''
 import glob
+import os
 import shutil
 import subprocess
+import tempfile
 
 def node():
     found = shutil.which("node", path="/usr/bin:/bin:/usr/local/bin:/opt/conda/bin")
     found = found or next(iter(sorted(glob.glob("/home/*/.nvm/versions/node/*/bin/node"))), None)
+    if not found:  # Kaggle has no node: the eval dataset carries the official linux-x64 binary
+        shipped = sorted(glob.glob("/kaggle/input/**/node-v*-linux-x64", recursive=True))
+        if shipped and not os.access(shipped[-1], os.X_OK):  # datasets drop the executable bit
+            found = os.path.join(tempfile.mkdtemp(), "node")
+            shutil.copy(shipped[-1], found)
+            os.chmod(found, 0o755)
+        elif shipped:
+            found = shipped[-1]
     assert found, "node is not installed in this session"
     return found
 
