@@ -77,11 +77,11 @@ answer ran in the same offline sandbox.
 |---|---|---|---|---|---|---|---|
 | **Ophyx 350M v2** | 0.35B | **43.9** | 47.4 | 4.6 | 2.0 | 21.9 | 9 |
 | Ophyx 350M v1 | 0.35B | 35.4 | 48.1 | 3.8 | 1.5 | 19.5 | 10 |
-| SmolLM2-360M-Instruct | 0.36B | 15.9 | 27.5 | 0.0 | 0.9 | 20.4 | 3 |
-| Qwen2.5-Coder-0.5B-Instruct | 0.49B | 54.9 | 42.1 | 2.3 | 0.6 | 25.1 | 4 |
-| Qwen3-0.6B | 0.75B | 36.6 | 46.6 | 0.8 | 7.9 | 24.8 | 5 |
-| deepseek-coder-1.3b-instruct | 1.35B | 61.6 | 52.6 | 3.8 | 5.6 | 28.8 | 13 |
-| Qwen2.5-Coder-7B-Instruct | 7.62B | 86.0 | 72.5 | 16.9 | 17.5 | 53.9 | 24 |
+| SmolLM2-360M-Instruct | 0.36B | 15.9 | 27.5 | 0.0 | 0.9 | 20.4 | 4 |
+| Qwen2.5-Coder-0.5B-Instruct | 0.49B | 54.9 | 42.1 | 2.3 | 0.6 | 25.1 | 5 |
+| Qwen3-0.6B | 0.75B | 36.6 | 46.6 | 0.8 | 7.9 | 24.8 | 6 |
+| deepseek-coder-1.3b-instruct | 1.35B | 61.6 | 52.6 | 3.8 | 5.6 | 28.8 | 14 |
+| Qwen2.5-Coder-7B-Instruct | 7.62B | 86.0 | 72.5 | 16.9 | 17.5 | 53.9 | 26 |
 
 - [eval/R1_RESULTS.md](eval/R1_RESULTS.md): 55 models from 0.13B to 8B, frontier
   models through Kaggle Benchmarks, and published leaderboard scores with sources.

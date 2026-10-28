@@ -38,52 +38,52 @@ All numbers are pass@1 in percent.
 | ophyx-350m-ctxsoup-70 | base | 0.35B | 31.1 | 29.3 | 43.1 | 35.7 | 0.3 | 0.8 |  | 0.0 | 26.8 | 22.2 |  |
 | ophyx-350m-dpo-p1 | ours | 0.35B | 39.0 | 37.2 | 57.9 | 48.7 | 1.0 | 3.1 | 3.1 | 1.5 | 24.8 | 19.1 | 21.4 |
 | ophyx-350m-grpo-p3-lr1e6 | ours | 0.35B | 35.4 | 32.9 | 57.1 | 48.1 | 1.0 | 3.1 | 2.3 | 2.0 | 24.6 | 19.5 | 19.0 |
-| ophyx-350m-grpo-p3-lr3e6 | ours | 0.35B | 39.0 | 36.0 | 57.9 | 48.1 | 0.7 | 2.3 | 3.1 | 1.2 | 24.2 | 19.4 | 19.0 |
+| ophyx-350m-grpo-p3-lr3e6 | ours | 0.35B | 39.0 | 36.0 | 57.9 | 48.1 | 0.7 | 2.3 | 3.1 | 1.2 | 24.2 | 19.4 | 21.4 |
 | ophyx-350m-grpo-p4-lr2e6 | ours | 0.35B | 45.1 | 43.9 | 58.2 | 47.4 | 1.3 | 3.8 | 4.6 | 2.0 | 20.6 | 21.9 | 21.4 |
-| ophyx-350m-grpo-p4-lr4e6 | ours | 0.35B | 43.3 | 42.1 | 58.7 | 47.6 | 1.3 | 3.8 | 2.3 | 1.8 | 21.2 | 21.5 | 19.0 |
+| ophyx-350m-grpo-p4-lr4e6 | ours | 0.35B | 43.3 | 42.1 | 58.7 | 47.6 | 1.3 | 3.8 | 2.3 | 1.8 | 21.2 | 21.5 | 21.4 |
 | ophyx-350m-sft | ours | 0.35B | 37.2 | 35.4 | 57.4 | 48.1 | 1.7 | 2.3 | 3.8 | 1.5 | 24.9 | 19.5 | 23.8 |
 | ophyx-350m-sft2 | ours | 0.35B | 39.0 | 37.8 | 55.8 | 46.0 | 0.3 | 3.1 | 1.5 | 2.3 | 19.2 | 19.1 | 19.0 |
 | ophyx-350m-sft2soup-50 | ours | 0.35B | 40.2 | 39.6 | 55.8 | 45.8 | 1.0 | 2.3 | 5.3 | 2.3 | 23.6 | 22.4 | 19.0 |
 | ophyx-350m-sft2soup-70 | ours | 0.35B | 42.1 | 41.5 | 56.1 | 46.8 | 1.3 | 3.1 | 3.8 | 1.8 | 21.1 | 21.5 | 21.4 |
-| ophyx-350m-soup-all | ours | 0.35B | 36.0 | 34.1 | 57.7 | 48.1 | 1.7 | 3.1 | 2.3 | 1.8 | 24.6 | 19.5 | 16.7 |
+| ophyx-350m-soup-all | ours | 0.35B | 36.0 | 34.1 | 57.7 | 48.1 | 1.7 | 3.1 | 2.3 | 1.8 | 24.6 | 19.5 | 19.0 |
 | ophyx-350m-soup-sdg | ours | 0.35B | 36.6 | 34.8 | 57.7 | 48.1 | 1.7 | 3.1 | 2.3 | 1.2 | 24.6 | 19.4 | 19.0 |
 | codegen-350M-mono | base | 0.36B | 14.0 | 11.6 | 25.1 | 20.9 | 0.0 | 0.0 |  | 0.0 | 20.4 | 15.8 |  |
 | SmolLM2-360M | base | 0.36B | 12.2 | 10.4 | 27.0 | 22.0 | 0.0 | 0.8 |  | 0.3 | 31.6 | 19.6 |  |
-| SmolLM2-360M-Instruct | instruct | 0.36B | 18.3 | 15.9 | 34.7 | 27.5 | 0.0 | 0.0 | 0.0 | 0.9 | 3.6 | 20.4 | 7.1 |
+| SmolLM2-360M-Instruct | instruct | 0.36B | 18.3 | 15.9 | 34.7 | 27.5 | 0.0 | 0.0 | 0.0 | 0.9 | 3.6 | 20.4 | 9.5 |
 | Qwen2.5-Coder-0.5B | base | 0.49B | 26.2 | 22.0 | 55.6 | 48.4 | 0.0 | 3.8 |  | 2.0 | 26.4 | 24.9 |  |
-| Qwen2.5-Coder-0.5B-Instruct | instruct | 0.49B | 58.5 | 54.9 | 50.5 | 42.1 | 0.0 | 0.0 | 2.3 | 0.6 | 15.4 | 25.1 | 9.5 |
+| Qwen2.5-Coder-0.5B-Instruct | instruct | 0.49B | 58.5 | 54.9 | 50.5 | 42.1 | 0.0 | 0.0 | 2.3 | 0.6 | 15.4 | 25.1 | 11.9 |
 | Qwen3-0.6B-Base | base | 0.60B | 29.3 | 23.8 | 51.6 | 43.1 | 0.0 | 3.1 |  | 4.4 | 26.8 | 26.9 |  |
-| Qwen3-0.6B | instruct | 0.75B | 41.5 | 36.6 | 56.1 | 46.6 | 0.0 | 2.3 | 0.8 | 7.9 | 32.2 | 24.8 | 11.9 |
+| Qwen3-0.6B | instruct | 0.75B | 41.5 | 36.6 | 56.1 | 46.6 | 0.0 | 2.3 | 0.8 | 7.9 | 32.2 | 24.8 | 14.3 |
 | gpt_bigcode-santacoder | base | 1.12B | 18.9 | 16.5 | 37.6 | 30.2 | 0.3 | 0.8 |  | 1.2 | 26.5 | 23.0 |  |
 | deepseek-coder-1.3b-base | base | 1.35B | 29.3 | 24.4 | 57.9 | 47.9 | 2.0 | 8.4 |  | 3.8 | 27.0 | 31.6 |  |
-| deepseek-coder-1.3b-instruct | instruct | 1.35B | 63.4 | 61.6 | 62.2 | 52.6 | 4.0 | 2.3 | 3.8 | 5.6 | 12.4 | 28.8 | 31.0 |
+| deepseek-coder-1.3b-instruct | instruct | 1.35B | 63.4 | 61.6 | 62.2 | 52.6 | 4.0 | 2.3 | 3.8 | 5.6 | 12.4 | 28.8 | 33.3 |
 | phi-1 | base | 1.42B | 52.4 | 46.3 | 27.8 | 20.6 | 0.0 | 4.6 |  | 1.8 | 13.5 | 22.1 |  |
 | phi-1_5 | base | 1.42B | 35.4 | 30.5 | 53.2 | 43.4 | 0.3 | 0.0 |  | 2.3 | 23.9 | 27.6 |  |
-| Yi-Coder-1.5B | base | 1.48B | 34.8 | 28.7 | 58.5 | 50.0 | 3.0 | 3.8 |  | 0.6 | 29.1 | 31.9 |  |
-| Yi-Coder-1.5B-Chat | instruct | 1.48B | 70.7 | 65.9 | 65.9 | 57.1 | 3.7 | 3.8 | 10.7 | 7.3 | 27.2 | 30.6 | 23.8 |
+| Yi-Coder-1.5B | base | 1.48B | 35.4 | 29.3 | 58.5 | 50.0 | 3.0 | 3.8 |  | 5.3 | 29.1 | 31.9 |  |
+| Yi-Coder-1.5B-Chat | instruct | 1.48B | 70.7 | 65.9 | 65.9 | 57.1 | 3.7 | 3.8 | 10.7 | 7.3 | 27.2 | 30.6 | 26.2 |
 | Qwen2.5-Coder-1.5B | base | 1.54B | 42.7 | 36.6 | 71.4 | 59.5 | 4.4 | 11.5 |  | 7.0 | 28.1 | 36.0 |  |
-| Qwen2.5-Coder-1.5B-Instruct | instruct | 1.54B | 70.1 | 65.2 | 69.6 | 59.5 | 6.4 | 6.1 | 3.8 | 5.6 | 29.6 | 33.6 | 26.2 |
+| Qwen2.5-Coder-1.5B-Instruct | instruct | 1.54B | 70.1 | 65.2 | 69.6 | 59.5 | 6.4 | 6.1 | 3.1 | 5.6 | 29.6 | 33.6 | 28.6 |
 | SmolLM2-1.7B | base | 1.71B | 23.2 | 17.7 | 46.0 | 36.2 | 0.0 | 0.8 |  | 2.3 | 27.0 | 27.1 |  |
-| SmolLM2-1.7B-Instruct | instruct | 1.71B | 36.0 | 29.9 | 55.0 | 45.0 | 1.3 | 0.8 | 3.1 | 2.6 | 28.8 | 27.6 | 26.2 |
+| SmolLM2-1.7B-Instruct | instruct | 1.71B | 36.0 | 29.3 | 55.0 | 45.0 | 1.3 | 0.8 | 3.1 | 2.6 | 28.8 | 27.6 | 28.6 |
 | Qwen3-1.7B-Base | base | 1.72B | 47.0 | 41.5 | 69.0 | 58.7 | 1.3 | 6.9 |  | 6.1 | 36.6 | 35.5 |  |
 | OpenCoder-1.5B-Base | base | 1.91B | 53.0 | 49.4 | 68.8 | 56.3 | 0.7 | 4.6 |  | 5.0 | 29.9 | 29.6 |  |
-| OpenCoder-1.5B-Instruct | instruct | 1.91B | 68.3 | 65.2 | 72.2 | 62.2 | 3.4 | 12.2 | 8.4 | 7.3 | 24.4 | 28.1 | 33.3 |
-| Qwen3-1.7B | instruct | 2.03B | 71.3 | 65.2 | 56.9 | 49.2 | 3.7 | 9.2 | 9.2 | 14.3 | 40.9 | 35.6 | 26.2 |
+| OpenCoder-1.5B-Instruct | instruct | 1.91B | 68.3 | 65.2 | 72.2 | 62.2 | 3.4 | 12.2 | 8.4 | 7.3 | 24.4 | 28.1 | 35.7 |
+| Qwen3-1.7B | instruct | 2.03B | 71.3 | 65.2 | 56.9 | 49.2 | 3.7 | 9.2 | 9.2 | 14.3 | 40.9 | 35.6 | 28.6 |
 | phi-2 | base | 2.78B | 50.0 | 45.1 | 64.6 | 52.9 | 1.0 | 6.1 |  | 7.0 | 32.4 | 34.0 |  |
-| stable-code-3b | base | 2.80B | 30.5 | 26.8 | 55.0 | 45.5 | 1.7 | 12.2 |  | 7.6 | 34.1 | 31.8 |  |
+| stable-code-3b | base | 2.80B | 30.5 | 26.8 | 55.0 | 45.5 | 1.7 | 11.5 |  | 7.6 | 34.1 | 31.8 |  |
 | starcoder2-3b | base | 3.03B | 31.7 | 26.8 | 60.3 | 48.7 | 1.7 | 5.3 |  | 4.4 | 32.2 | 34.6 |  |
-| Qwen2.5-Coder-3B | base | 3.09B | 45.1 | 36.6 | 74.6 | 62.7 | 7.4 | 12.2 |  | 10.5 | 35.4 | 39.4 |  |
-| Qwen2.5-Coder-3B-Instruct | instruct | 3.09B | 82.9 | 79.9 | 74.1 | 62.2 | 10.7 | 13.0 | 14.5 | 15.2 | 44.2 | 44.1 | 38.1 |
+| Qwen2.5-Coder-3B | base | 3.09B | 45.1 | 36.6 | 74.6 | 62.7 | 7.4 | 11.5 |  | 10.5 | 35.4 | 39.4 |  |
+| Qwen2.5-Coder-3B-Instruct | instruct | 3.09B | 82.9 | 80.5 | 74.1 | 62.2 | 10.7 | 13.7 | 14.5 | 15.2 | 44.2 | 44.1 | 40.5 |
 | granite-3b-code-base-2k | base | 3.48B | 35.4 | 29.3 | 52.1 | 44.7 | 2.0 | 0.0 |  | 5.8 | 30.5 | 32.0 |  |
-| granite-3b-code-instruct-2k | instruct | 3.48B | 53.0 | 45.1 | 60.6 | 48.9 | 4.4 | 5.3 | 6.9 | 7.6 | 24.6 | 30.5 | 19.0 |
-| Qwen3-4B | instruct | 4.02B | 83.5 | 76.8 | 71.4 | 61.1 | 12.1 | 26.0 | 16.8 | 21.3 | 54.0 | 45.1 | 42.9 |
+| granite-3b-code-instruct-2k | instruct | 3.48B | 53.0 | 45.1 | 60.6 | 49.2 | 4.4 | 5.3 | 6.9 | 7.6 | 24.6 | 30.5 | 21.4 |
+| Qwen3-4B | instruct | 4.02B | 83.5 | 76.8 | 71.4 | 61.1 | 12.1 | 26.0 | 16.8 | 21.3 | 54.0 | 45.1 | 45.2 |
 | CodeLlama-7b-Python-hf | base | 6.74B | 38.4 | 34.1 | 60.8 | 48.1 | 7.4 | 10.7 |  | 5.8 | 37.0 | 36.0 |  |
 | deepseek-coder-6.7b-base | base | 6.74B | 43.3 | 38.4 | 69.0 | 54.5 | 10.7 | 9.9 |  | 9.1 | 42.5 | 43.5 |  |
-| deepseek-coder-6.7b-instruct | instruct | 6.74B | 76.8 | 72.0 | 75.7 | 65.6 | 16.4 | 16.8 | 14.5 | 12.3 | 36.2 | 39.9 | 42.9 |
+| deepseek-coder-6.7b-instruct | instruct | 6.74B | 76.8 | 72.0 | 75.7 | 65.6 | 16.4 | 16.8 | 14.5 | 12.3 | 36.2 | 39.9 | 45.2 |
 | starcoder2-7b | base | 7.17B | 36.0 | 31.1 | 56.9 | 47.9 | 5.4 | 7.6 |  | 5.8 | 35.0 | 36.4 |  |
 | Qwen2.5-Coder-7B | base | 7.62B | 62.8 | 57.3 | 78.3 | 64.0 | 12.4 | 19.1 |  | 14.0 | 46.5 | 51.5 |  |
-| Qwen2.5-Coder-7B-Instruct | instruct | 7.62B | 89.6 | 86.0 | 83.3 | 72.5 | 23.8 | 20.6 | 18.3 | 17.5 | 56.9 | 53.9 | 57.1 |
-| Qwen3-8B | instruct | 8.19B | 82.9 | 78.7 | 72.5 | 63.0 | 21.8 | 29.8 | 26.0 | 21.6 | 56.1 | 50.6 | 54.8 |
+| Qwen2.5-Coder-7B-Instruct | instruct | 7.62B | 89.6 | 86.0 | 83.3 | 72.5 | 23.8 | 21.4 | 18.3 | 17.5 | 56.9 | 53.9 | 61.9 |
+| Qwen3-8B | instruct | 8.19B | 82.9 | 78.7 | 72.5 | 63.0 | 21.8 | 29.0 | 26.0 | 21.6 | 56.1 | 50.6 | 57.1 |
 
 ## What the numbers say
 
@@ -92,8 +92,8 @@ All numbers are pass@1 in percent.
   Qwen3-0.6B 36.6, Qwen2.5-Coder-0.5B-Instruct 54.9.
 - On MBPP+ it scores 48.1, level with Qwen2.5-Coder-0.5B (48.4) and ahead of Qwen3-0.6B-Base (43.1).
 - On the hands-on tasks it solves 10 of 42 (23.8%). That is more than Qwen2.5-Coder-0.5B-Instruct
-  (9.5) and Qwen3-0.6B (11.9), the same as Yi-Coder-1.5B-Chat, and less than
-  deepseek-coder-1.3b-instruct (31.0) and Qwen3-4B (42.9).
+  (11.9) and Qwen3-0.6B (14.3), and less than Yi-Coder-1.5B-Chat (26.2),
+  deepseek-coder-1.3b-instruct (33.3) and Qwen3-4B (45.2).
 - The weak spots are the concept suite (1.7), BigCodeBench-Hard (2.3 and 3.8) and LiveCodeBench (1.5).
   They need library knowledge, longer context and multi-step algorithms. The 4,096-token run and the
   RL stages target these.
@@ -126,7 +126,7 @@ All numbers are pass@1 in percent.
   models: deepseek-coder-6.7b-base 38.4, CodeLlama-7b-Python 34.1 and starcoder2-7b 31.1.
   Qwen2.5-Coder-7B scores 57.3. Those are base models, so this compares a fine-tuned model with
   plain completion. The 7B instruct models are far ahead: Qwen2.5-Coder-7B-Instruct scores 86.0
-  and solves 24 of 42 hands-on tasks, Qwen3-8B 78.7 and 23, deepseek-coder-6.7b-instruct 72.0 and 18.
+  and solves 26 of 42 hands-on tasks, Qwen3-8B 78.7 and 24, deepseek-coder-6.7b-instruct 72.0 and 19.
 
 Scoring notes:
 
@@ -135,6 +135,11 @@ Scoring notes:
   LiveCodeBench answers failed as syntax errors.
 - granite-3b-code-base-2k's 0.0 on BigCodeBench-Hard complete is real: its programs run and fail the tests.
 - Scoring the same answers twice moved two cells by up to 0.7 points, from tests near their time limit.
+- Every answer was scored again on 28 Oct 2026 after a review of the scorer: LiveCodeBench programs
+  that read stdin through `open(0)` or the raw file descriptor now get real stdin, the two prose tasks on the hands-on set no longer need the answer to
+  parse as Python, and two more had their prompt or test fixed. Most instruct models gained one or
+  two hands-on tasks, Yi-Coder-1.5B gained 4.7 on LiveCodeBench, and a few BigCodeBench-Hard cells
+  moved by one problem. No Ophyx release number changed.
 
 ## Frontier API models
 
@@ -151,15 +156,15 @@ several days of the proxy's daily quota; GPT-5.5 and Gemini 3.1 Pro did not take
 
 | Model | HumanEval | HumanEval+ | Concept | Hands-on |
 |---|---|---|---|---|
-| GPT-5.5 | 98.8 | 93.9 |  | 95.2 (40 of 42) |
-| Claude Sonnet 5.5 | 98.8 | 95.7 | 95.3 | 90.5 (38) |
-| Gemini 3.1 Pro | 99.4 | 95.7 |  | 85.7 (36) |
-| Gemini 3.8 Flash | 99.4 | 93.9 | 91.6 | 90.5 (38) |
-| Gemma 4 31B | 99.4 | 95.1 | 77.5 | 92.9 (39) |
-| Claude Haiku 5.5 | 98.8 | 94.5 | 93.0 | 90.5 (38) |
-| GPT-5.4 mini | 93.9 | 89.6 | 83.2 | 92.9 (39) |
+| GPT-5.5 | 98.8 | 94.5 |  | 97.6 (41 of 42) |
+| Claude Sonnet 5.5 | 98.8 | 95.7 | 95.3 | 92.9 (39) |
+| Gemini 3.1 Pro | 99.4 | 95.7 |  | 88.1 (37) |
+| Gemini 3.8 Flash | 99.4 | 93.9 | 91.6 | 95.2 (40) |
+| Gemma 4 31B | 99.4 | 95.1 | 77.5 | 95.2 (40) |
+| Claude Haiku 5.5 | 98.8 | 94.5 | 93.0 | 95.2 (40) |
+| GPT-5.4 mini | 93.9 | 89.6 | 83.2 | 95.2 (40) |
 
-The lowest of them still passes 147 of 164 HumanEval+ problems, 231 of 298 concept tasks and 36
+The lowest of them still passes 147 of 164 HumanEval+ problems, 231 of 298 concept tasks and 37
 of 42 hands-on tasks; ophyx-350m-sft passes 58, 5 and 10.
 
 ## LiveCodeBench leaderboard on our 342 problems
