@@ -105,6 +105,14 @@ def compiles(code):
         return False
 
 
+def answer_of(task, text, stops):
+    """What gets tested: the extracted Python module, or for a "raw" task (SQL, shell, JavaScript, prose) the
+    reply as written, which the tests read from solution.py as text."""
+    if task.get("raw"):
+        return truncate(text, stops).strip("\n") + "\n"
+    return extract_module(text, stops)
+
+
 def extract_module(text, stops=CHAT_STOPS):
     """The Python module in a model output: cut at the stop strings, then unwrap ``` fences if any
     (preferring the longest block that compiles)."""
@@ -239,6 +247,9 @@ def score(tasks, solutions, cfg):
         need = tuple(int(x) for x in t.get("min_python", "3.0").split("."))
         if need > pyver:
             rec.update(status="skipped", seconds=0, tail=f"needs Python {t['min_python']}")
+        elif t.get("raw"):  # not Python: the tests read the answer as text
+            status, sec, tail, skips = run_tests(code, t["tests"], cfg)
+            rec.update(status=status if code.strip() else "empty", seconds=round(sec, 2), tail=tail, pytest_skips=skips)
         elif not rec["parses"] and t.get("prose_ok") and code.strip():  # a plain-text answer to a chat prompt
             rec.update(status="pass", seconds=0, tail="prose answer")
         elif not rec["parses"]:
@@ -312,7 +323,7 @@ def runs(cfg, tasks):
         sols = []
         for t in tasks:
             r = rows.get(t["task_id"], {})
-            sols.append(r["solution"] if "solution" in r else extract_module(r.get("completion", ""), stops))
+            sols.append(r["solution"] if "solution" in r else answer_of(t, r.get("completion", ""), stops))
         tag = cfg["tag"] or os.path.splitext(os.path.basename(cfg["completions"]))[0]
         yield tag, cfg["template"] if cfg["template"] != "auto" else "completions", sols
         return
@@ -327,7 +338,7 @@ def runs(cfg, tasks):
         prompts = [chat_prompt(t) if chat else plain_prompt(t) for t in tasks]
         log(f"{model_id}: {len(prompts)} prompts, template {'chat' if chat else 'plain'}")
         comps = generate(model_id, tok, prompts, chat, cfg)
-        sols = [extract_module(c, CHAT_STOPS if chat else PLAIN_STOPS) for c in comps]
+        sols = [answer_of(t, c, CHAT_STOPS if chat else PLAIN_STOPS) for t, c in zip(tasks, comps)]
         tag = cfg["tag"] if cfg["tag"] and len(models) == 1 else model_id.rstrip("/").replace("/", "__")
         yield tag, "chat" if chat else "plain", sols
 

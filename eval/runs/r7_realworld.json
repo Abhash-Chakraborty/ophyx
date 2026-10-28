@@ -1,0 +1,9 @@
+{"budget_s": 9000, "benches": ["realworld"], "models": [
+  {"id": "abhash-chakraborty/ophyx-350m-v2", "kind": "ours", "name": "ophyx-350m-v2", "max_len": 4096},
+  {"id": "abhash-chakraborty/ophyx-350m-sft", "kind": "ours", "name": "ophyx-350m-sft", "max_len": 2048},
+  {"id": "HuggingFaceTB/SmolLM2-360M-Instruct", "kind": "instruct"},
+  {"id": "Qwen/Qwen2.5-Coder-0.5B-Instruct", "kind": "instruct"},
+  {"id": "Qwen/Qwen3-0.6B", "kind": "instruct", "think": false},
+  {"id": "deepseek-ai/deepseek-coder-1.3b-instruct", "kind": "instruct"},
+  {"id": "Qwen/Qwen2.5-Coder-1.5B-Instruct", "kind": "instruct"},
+  {"id": "Qwen/Qwen2.5-Coder-7B-Instruct", "kind": "instruct", "tp": 2}]}

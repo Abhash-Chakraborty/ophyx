@@ -6,7 +6,8 @@ Every model answer runs in a child process with a wall-clock timeout, prlimit li
 empty environment and its own temp dir.
 
   humaneval, mbpp   EvalPlus 0.3.1 (installed from the kit's wheels), base and plus pass@1
-  concept, manual   eval/concept_suite/run.py on precomputed completions
+  concept, manual,  eval/concept_suite/run.py on precomputed completions
+  realworld
   crux_o, crux_i    the CRUXEval check: run `assert <gold> == <prediction>` after the function
   lcb               LiveCodeBench: stdin/stdout programs, or Solution().<fn>(*args) for LeetCode;
                     all public + private tests must pass; output compared line by line, numbers as Decimal
@@ -196,7 +197,7 @@ def evalplus_score(name, kind, ds, samples):
 
 
 def runpy_score(name, kind, bench, samples):
-    tasks = find("tasks.jsonl" if bench == "concept" else "manual.jsonl")
+    tasks = find("tasks.jsonl" if bench == "concept" else f"{bench}.jsonl")
     d = os.path.join(OUT, bench)
     os.makedirs(d, exist_ok=True)
     cp = os.path.join(d, f"{name}.completions.jsonl")
@@ -590,7 +591,7 @@ def main():
             try:
                 if bench in ("humaneval", "mbpp"):
                     r = evalplus_score(name, kind, bench, samples)
-                elif bench in ("concept", "manual"):
+                elif bench in ("concept", "manual", "realworld"):
                     r = runpy_score(name, kind, bench, samples)
                 elif bench in ("crux_o", "crux_i"):
                     r = crux_score(name, bench[-1], samples)

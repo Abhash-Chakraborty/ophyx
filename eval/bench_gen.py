@@ -34,6 +34,8 @@ import time
 CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("OPHYX_CONFIG", "{}"))
 OUT = CONFIG.get("out", "/kaggle/working" if os.path.isdir("/kaggle") else os.path.abspath("bench"))
 ALL_BENCHES = ["humaneval", "mbpp", "concept", "crux_o", "crux_i", "lcb", "bcb_complete", "bcb_instruct", "manual"]
+# opt-in (name it in "benches"): everyday tasks, some not in Python, from eval/realworld
+EXTRA_BENCHES = ["realworld"]
 DEFAULT_BENCHES = CONFIG.get("benches", ALL_BENCHES)
 T0 = time.time()
 
@@ -111,7 +113,7 @@ MODULE_STOPS = ["\nif __name__", '\n"""', "\n'''", "\n```", "\n# Test", "\n# Exa
 STDIN_STOPS = ['\n"""', "\n'''", "\n```", "\n# Test", "\n# Example", "\nassert "]
 OURS_STOPS = ["<|end|>", "<|user|>", "<|python|>"]
 MAX_NEW = {"humaneval": 512, "mbpp": 512, "concept": 1024, "crux_o": 160, "crux_i": 160, "lcb": 1536,
-           "bcb_complete": 1024, "bcb_instruct": 1024, "manual": 1536}
+           "bcb_complete": 1024, "bcb_instruct": 1024, "manual": 1536, "realworld": 1536}
 
 
 def log(*a):
@@ -136,7 +138,7 @@ def model_name(spec):
 def benches_for(spec):
     bs = spec.get("benches") or DEFAULT_BENCHES
     if spec["kind"] == "base":
-        bs = [b for b in bs if b not in ("bcb_instruct", "manual")]
+        bs = [b for b in bs if b not in ("bcb_instruct", "manual", "realworld")]
     return bs
 
 
@@ -242,8 +244,8 @@ def build(bench, pr):
     elif bench.startswith("bcb_"):
         for r in rows("bcb_hard.jsonl"):
             out.append((r["task_id"], *pr.bcb(bench[4:], r), {"entry_point": "task_func"}))
-    elif bench == "manual":
-        for r in rows("manual.jsonl"):
+    elif bench in ("manual", "realworld"):
+        for r in rows(f"{bench}.jsonl"):
             out.append((r["task_id"], *pr.manual(r), {}))
     return out[:CONFIG["limit"]] if CONFIG.get("limit") else out  # limit: smoke runs only
 
