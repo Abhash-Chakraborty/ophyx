@@ -87,6 +87,9 @@ answer ran in the same offline sandbox.
   models through Kaggle Benchmarks, and published leaderboard scores with sources.
 - [eval/HANDS_ON_REVIEW.md](eval/HANDS_ON_REVIEW.md): all 42 hands-on answers read by hand, and
   why 33 of them fail.
+- [eval/REALWORLD_REVIEW.md](eval/REALWORLD_REVIEW.md): 33 everyday tasks (logs, CSV, SQLite, async,
+  SQL, Bash, JavaScript). Ophyx gets 1 right; it answers everything in Python, even when asked for
+  another language. Qwen2.5-Coder-7B-Instruct gets 17.
 
 ## Running untrusted code
 
