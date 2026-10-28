@@ -33,7 +33,7 @@ All numbers are pass@1 in percent.
 | ophyx-125m-sft | ours | 0.13B | 17.7 | 16.5 | 43.1 | 36.8 | 0.0 | 0.0 | 0.0 | 0.0 | 8.5 | 10.6 | 9.5 |
 | SmolLM2-135M | base | 0.14B | 4.3 | 3.0 | 7.7 | 5.0 | 0.0 | 0.0 |  | 0.3 | 10.0 | 13.6 |  |
 | ophyx-350m-base | base | 0.35B | 32.9 | 31.7 | 49.7 | 42.3 | 0.0 | 0.0 |  | 0.3 | 28.5 | 20.9 |  |
-| ophyx-350m-ctx-base | base | 0.35B | 30.5 | 28.0 | 39.4 | 33.1 | 0.3 | 1.5 |  | 0.3 | 25.1 | 22.0 |  |
+| ophyx-350m-ctx-base | base | 0.35B | 30.5 | 28.0 | 39.4 | 33.1 | 0.3 | 2.3 |  | 0.3 | 25.1 | 22.0 |  |
 | ophyx-350m-ctxsoup-50 | base | 0.35B | 30.5 | 28.7 | 46.8 | 39.2 | 0.3 | 0.8 |  | 0.9 | 27.4 | 22.0 |  |
 | ophyx-350m-ctxsoup-70 | base | 0.35B | 31.1 | 29.3 | 43.1 | 35.7 | 0.3 | 0.8 |  | 0.0 | 26.8 | 22.2 |  |
 | ophyx-350m-dpo-p1 | ours | 0.35B | 39.0 | 37.2 | 57.9 | 48.7 | 1.0 | 3.1 | 3.1 | 1.5 | 24.8 | 19.1 | 21.4 |
@@ -60,9 +60,9 @@ All numbers are pass@1 in percent.
 | phi-1 | base | 1.42B | 52.4 | 46.3 | 27.8 | 20.6 | 0.0 | 4.6 |  | 1.8 | 13.5 | 22.1 |  |
 | phi-1_5 | base | 1.42B | 35.4 | 30.5 | 53.2 | 43.4 | 0.3 | 0.0 |  | 2.3 | 23.9 | 27.6 |  |
 | Yi-Coder-1.5B | base | 1.48B | 35.4 | 29.3 | 58.5 | 50.0 | 3.0 | 3.8 |  | 5.3 | 29.1 | 31.9 |  |
-| Yi-Coder-1.5B-Chat | instruct | 1.48B | 70.7 | 65.9 | 65.9 | 57.1 | 3.7 | 3.8 | 10.7 | 7.3 | 27.2 | 30.6 | 26.2 |
+| Yi-Coder-1.5B-Chat | instruct | 1.48B | 70.7 | 65.9 | 65.9 | 57.1 | 3.7 | 3.8 | 11.5 | 7.3 | 27.2 | 30.6 | 26.2 |
 | Qwen2.5-Coder-1.5B | base | 1.54B | 42.7 | 36.6 | 71.4 | 59.5 | 4.4 | 11.5 |  | 7.0 | 28.1 | 36.0 |  |
-| Qwen2.5-Coder-1.5B-Instruct | instruct | 1.54B | 70.1 | 65.2 | 69.6 | 59.5 | 6.4 | 6.1 | 3.1 | 5.6 | 29.6 | 33.6 | 28.6 |
+| Qwen2.5-Coder-1.5B-Instruct | instruct | 1.54B | 70.1 | 65.2 | 69.6 | 59.5 | 6.4 | 6.9 | 3.8 | 5.6 | 29.6 | 33.6 | 28.6 |
 | SmolLM2-1.7B | base | 1.71B | 23.2 | 17.7 | 46.0 | 36.2 | 0.0 | 0.8 |  | 2.3 | 27.0 | 27.1 |  |
 | SmolLM2-1.7B-Instruct | instruct | 1.71B | 36.0 | 29.3 | 55.0 | 45.0 | 1.3 | 0.8 | 3.1 | 2.6 | 28.8 | 27.6 | 28.6 |
 | Qwen3-1.7B-Base | base | 1.72B | 47.0 | 41.5 | 69.0 | 58.7 | 1.3 | 6.9 |  | 6.1 | 36.6 | 35.5 |  |
@@ -70,10 +70,10 @@ All numbers are pass@1 in percent.
 | OpenCoder-1.5B-Instruct | instruct | 1.91B | 68.3 | 65.2 | 72.2 | 62.2 | 3.4 | 12.2 | 8.4 | 7.3 | 24.4 | 28.1 | 35.7 |
 | Qwen3-1.7B | instruct | 2.03B | 71.3 | 65.2 | 56.9 | 49.2 | 3.7 | 9.2 | 9.2 | 14.3 | 40.9 | 35.6 | 28.6 |
 | phi-2 | base | 2.78B | 50.0 | 45.1 | 64.6 | 52.9 | 1.0 | 6.1 |  | 7.0 | 32.4 | 34.0 |  |
-| stable-code-3b | base | 2.80B | 30.5 | 26.8 | 55.0 | 45.5 | 1.7 | 11.5 |  | 7.6 | 34.1 | 31.8 |  |
+| stable-code-3b | base | 2.80B | 30.5 | 26.8 | 55.0 | 45.5 | 1.7 | 12.2 |  | 7.6 | 34.1 | 31.8 |  |
 | starcoder2-3b | base | 3.03B | 31.7 | 26.8 | 60.3 | 48.7 | 1.7 | 5.3 |  | 4.4 | 32.2 | 34.6 |  |
 | Qwen2.5-Coder-3B | base | 3.09B | 45.1 | 36.6 | 74.6 | 62.7 | 7.4 | 11.5 |  | 10.5 | 35.4 | 39.4 |  |
-| Qwen2.5-Coder-3B-Instruct | instruct | 3.09B | 82.9 | 80.5 | 74.1 | 62.2 | 10.7 | 13.7 | 14.5 | 15.2 | 44.2 | 44.1 | 40.5 |
+| Qwen2.5-Coder-3B-Instruct | instruct | 3.09B | 82.9 | 80.5 | 74.1 | 62.2 | 10.7 | 13.0 | 14.5 | 15.2 | 44.2 | 44.1 | 40.5 |
 | granite-3b-code-base-2k | base | 3.48B | 35.4 | 29.3 | 52.1 | 44.7 | 2.0 | 0.0 |  | 5.8 | 30.5 | 32.0 |  |
 | granite-3b-code-instruct-2k | instruct | 3.48B | 53.0 | 45.1 | 60.6 | 49.2 | 4.4 | 5.3 | 6.9 | 7.6 | 24.6 | 30.5 | 21.4 |
 | Qwen3-4B | instruct | 4.02B | 83.5 | 76.8 | 71.4 | 61.1 | 12.1 | 26.0 | 16.8 | 21.3 | 54.0 | 45.1 | 45.2 |
@@ -81,7 +81,7 @@ All numbers are pass@1 in percent.
 | deepseek-coder-6.7b-base | base | 6.74B | 43.3 | 38.4 | 69.0 | 54.5 | 10.7 | 9.9 |  | 9.1 | 42.5 | 43.5 |  |
 | deepseek-coder-6.7b-instruct | instruct | 6.74B | 76.8 | 72.0 | 75.7 | 65.6 | 16.4 | 16.8 | 14.5 | 12.3 | 36.2 | 39.9 | 45.2 |
 | starcoder2-7b | base | 7.17B | 36.0 | 31.1 | 56.9 | 47.9 | 5.4 | 7.6 |  | 5.8 | 35.0 | 36.4 |  |
-| Qwen2.5-Coder-7B | base | 7.62B | 62.8 | 57.3 | 78.3 | 64.0 | 12.4 | 19.1 |  | 14.0 | 46.5 | 51.5 |  |
+| Qwen2.5-Coder-7B | base | 7.62B | 62.8 | 57.3 | 78.3 | 64.0 | 12.4 | 18.3 |  | 14.0 | 46.5 | 51.5 |  |
 | Qwen2.5-Coder-7B-Instruct | instruct | 7.62B | 89.6 | 86.0 | 83.3 | 72.5 | 23.8 | 21.4 | 18.3 | 17.5 | 56.9 | 53.9 | 61.9 |
 | Qwen3-8B | instruct | 8.19B | 82.9 | 78.7 | 72.5 | 63.0 | 21.8 | 29.0 | 26.0 | 21.6 | 56.1 | 50.6 | 57.1 |
 
@@ -140,6 +140,12 @@ Scoring notes:
   parse as Python, and two more had their prompt or test fixed. Most instruct models gained one or
   two hands-on tasks, Yi-Coder-1.5B gained 4.7 on LiveCodeBench, and a few BigCodeBench-Hard cells
   moved by one problem. No Ophyx release number changed.
+- BigCodeBench-Hard was scored again the same day to match BigCodeBench's calibrated score. Our
+  sanitizer had dropped a `task_func` with no return statement, and only the prompt's imports went
+  in front of the answer; now the whole prompt does, with a stub `task_func`. Four cells gained one
+  problem. Two lost one, Qwen2.5-Coder-7B and -3B-Instruct on complete: their answers draw random
+  values, and the tests pass on some draws only (BigCodeBench/720 asks for humidity in 50 to 60, and
+  the 7B answer draws it from 40 to 60).
 
 ## Frontier API models
 
