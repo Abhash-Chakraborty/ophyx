@@ -31,11 +31,15 @@ import re
 from pathlib import Path
 
 
-def answer(langs=()):
+def answer(langs=(), must=None):
+    """The answer's code: the longest fenced block in one of langs, preferring blocks that contain
+    `must`, so a longer usage example after the solution isn't taken for it."""
     text = Path("solution.py").read_text()
     blocks = re.findall(r"```([\w+-]*)[^\n]*\n(.*?)(?:```|\Z)", text, re.S)
     if langs:
         blocks = [b for b in blocks if b[0].lower() in langs or not b[0]] or blocks
+    if must:
+        blocks = [b for b in blocks if must in b[1]] or blocks
     return max((b[1] for b in blocks), key=len) if blocks else text
 '''
 
@@ -337,6 +341,10 @@ class Resp:
         self.ok, self.text = code < 400, json.dumps(body)
     def json(self):
         return self._body
+    def raise_for_status(self):  # as in requests
+        if self.status_code >= 400:
+            import requests
+            raise requests.HTTPError(f"{self.status_code} Error", response=self)
 
 class Session:
     def __init__(self, pages):
@@ -1326,25 +1334,22 @@ import glob
 import os
 import shutil
 import subprocess
-import tempfile
 
 def node():
+    """The command that starts node, as a list."""
     found = shutil.which("node", path="/usr/bin:/bin:/usr/local/bin:/opt/conda/bin")
     found = found or next(iter(sorted(glob.glob("/home/*/.nvm/versions/node/*/bin/node"))), None)
-    if not found:  # Kaggle has no node: the eval dataset carries the official linux-x64 binary
-        shipped = sorted(glob.glob("/kaggle/input/**/node-v*-linux-x64", recursive=True))
-        if shipped and not os.access(shipped[-1], os.X_OK):  # datasets drop the executable bit
-            found = os.path.join(tempfile.mkdtemp(), "node")
-            shutil.copy(shipped[-1], found)
-            os.chmod(found, 0o755)
-        elif shipped:
-            found = shipped[-1]
-    assert found, "node is not installed in this session"
-    return found
+    if found:
+        return [found]
+    # Kaggle has no node: the eval dataset carries the official linux-x64 binary. Datasets drop the
+    # executable bit and the sandbox's file-size limit rules out a copy, so start it through the loader.
+    shipped = sorted(glob.glob("/kaggle/input/**/node-v*-linux-x64", recursive=True))
+    assert shipped, "node is not installed in this session"
+    return [shipped[-1]] if os.access(shipped[-1], os.X_OK) else ["/lib64/ld-linux-x86-64.so.2", shipped[-1]]
 
 def run_js(tmp_path, code, script):
     (tmp_path / "sol.js").write_text(code)
-    r = subprocess.run([node(), "-e", script], cwd=tmp_path, capture_output=True, text=True, timeout=20)
+    r = subprocess.run([*node(), "-e", script], cwd=tmp_path, capture_output=True, text=True, timeout=20)
     assert r.returncode == 0, r.stderr[-800:]
     return r.stdout.strip()
 '''
@@ -1356,7 +1361,7 @@ task("js_group_by", "javascript", """
 import json
 
 def test_group_by(tmp_path):
-    out = run_js(tmp_path, answer(("javascript", "js", "node")), """
+    out = run_js(tmp_path, answer(("javascript", "js", "node"), must="module.exports"), """
 const { groupBy } = require('./sol.js');
 const r = groupBy([{t: 'a', v: 1}, {t: 'b', v: 2}, {t: 'a', v: 3}], x => x.t);
 console.log(JSON.stringify(r));
@@ -1389,7 +1394,7 @@ task("js_parse_query", "javascript", """
 import json
 
 def test_parse(tmp_path):
-    out = run_js(tmp_path, answer(("javascript", "js", "node")), """
+    out = run_js(tmp_path, answer(("javascript", "js", "node"), must="module.exports"), """
 const { parseQuery } = require('./sol.js');
 console.log(JSON.stringify(parseQuery('?q=hello+world&tag=a&tag=b&flag&name=J%C3%BCrgen')));
 console.log(JSON.stringify(parseQuery('')));

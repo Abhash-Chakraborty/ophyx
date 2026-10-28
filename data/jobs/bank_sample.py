@@ -8,7 +8,8 @@ Score the samples with data/jobs/bank_judge.py on a CPU session with internet of
 CONFIG: model (HF id), name, n (samples per problem, default 8), temperature (0.8), top_p (0.95),
 max_new (1024), max_len (2048, the model's window), limit (problems, for smoke runs),
 include_inconsistent (false: problems whose tests can't reject wrong answers are left out),
-gpus (["0", "1"]: one vLLM process per GPU, each on half the problems), greedy (also add one
+gpus (["0", "1"]: one vLLM process per GPU, each on half the problems; ["0,1"]: one process with the
+model split over both, for a teacher too big for one T4's cache), budget_s (no new batches after it), greedy (also add one
 temperature-0 sample, default true, so pass@1 greedy comes out of the same run), bank_glob (default
 "verified/bank-*.jsonl"; "verified/unsolved-*.jsonl" for the problems no reference solves), and chat
 (false: the ophyx template; true: the model's own chat template, for a teacher such as
@@ -41,6 +42,8 @@ S_GPUS = CONFIG.get("gpus", ["0", "1"])
 S_OUT = _os.path.join(OUTW, "samples", S_NAME)
 STOPS = ["<|end|>", "<|user|>", "<|python|>"]
 S_CHAT = CONFIG.get("chat", False)
+S_BUDGET = CONFIG.get("budget_s")  # stop starting new batches after this many seconds (the session limit is 12 h)
+T_START = _time.time()
 TEACHER_SYSTEM = ("You are an expert competitive programmer. Answer with one complete Python 3 program in a single "
                   "```python code block, with no explanation.")
 
@@ -82,7 +85,7 @@ def sample_child(gi, gpus, recs, logf):
         from vllm import LLM, SamplingParams
         t0 = _time.time()
         llm = LLM(model=S_MODEL, dtype="float16", max_model_len=S_MAX_LEN, gpu_memory_utilization=0.88, seed=gi,
-                  enable_prefix_caching=True)
+                  enable_prefix_caching=True, tensor_parallel_size=len(gpus.split(",")))
         tok = llm.get_tokenizer()
         end_id = tok.eos_token_id if S_CHAT else tok.convert_tokens_to_ids("<|end|>")
         prompts, keep = [], []
@@ -107,6 +110,9 @@ def sample_child(gi, gpus, recs, logf):
         n_tok = 0
         with open(_os.path.join(S_OUT, f"bank-{gi}.jsonl"), "w") as f:
             for b in range(0, len(prompts), 512):
+                if S_BUDGET and _time.time() - T_START > S_BUDGET:
+                    print(f"gpu {gi}: time budget reached, stopping at {b}/{len(prompts)}", flush=True)
+                    break
                 chunk, rs = prompts[b:b + 512], keep[b:b + 512]
                 outs = llm.generate([{"prompt_token_ids": x} for x in chunk], [params(S_N, S_TEMP, x) for x in chunk],
                                     use_tqdm=False)
