@@ -1,6 +1,6 @@
 {
- "enabled": false,
- "after": "sft350m2-v1",
+ "enabled": true,
+ "after": "ctx350m-sft-v2",
  "script": "train/pretrain.py",
  "accel": "tpu",
  "timeout": 32400,
@@ -119,9 +119,9 @@
      "until": 1.0,
      "weights": {
       "v3_bank": 0.3,
-      "v3_expert": 0.03,
-      "v3_selfrepair": 0.01,
-      "sft_stage2": 0.36,
+      "v3_expert": 0.01,
+      "v3_selfrepair": 0.005,
+      "sft_stage2": 0.385,
       "sft_stage1": 0.12,
       "sft_repair": 0.08,
       "sft_bank": 0.04,
