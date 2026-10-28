@@ -10,8 +10,8 @@
     <img alt="HumanEval+ 43.9" src="https://shieldcn.dev/badge/HumanEval%2B-43.9-1e6b4f.svg?variant=secondary&mode=light" />
   </picture></a>
   <a href="https://github.com/Abhash-Chakraborty/ophyx/actions/workflows/ci.yml"><picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/ci/Abhash-Chakraborty/ophyx.svg?workflow=ci&variant=secondary&mode=dark" />
-    <img alt="CI status" src="https://shieldcn.dev/github/ci/Abhash-Chakraborty/ophyx.svg?workflow=ci&variant=secondary&mode=light" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/ci/Abhash-Chakraborty/ophyx.svg?workflow=ci.yml&variant=secondary&mode=dark" />
+    <img alt="CI status" src="https://shieldcn.dev/github/ci/Abhash-Chakraborty/ophyx.svg?workflow=ci.yml&variant=secondary&mode=light" />
   </picture></a>
   <a href="LICENSE"><picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/licence-Apache--2.0-blue.svg?variant=secondary&mode=dark" />
