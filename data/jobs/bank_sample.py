@@ -91,9 +91,10 @@ def sample_child(gi, gpus, recs, logf):
         prompts, keep = [], []
         for r in recs:
             if S_CHAT:
-                ids = tok.apply_chat_template([{"role": "system", "content": TEACHER_SYSTEM},
-                                               {"role": "user", "content": sft_row(r)["instruction"]}],
-                                              add_generation_prompt=True, tokenize=True)
+                text = tok.apply_chat_template([{"role": "system", "content": TEACHER_SYSTEM},
+                                                {"role": "user", "content": sft_row(r)["instruction"]}],
+                                               add_generation_prompt=True, tokenize=False)
+                ids = tok(text, add_special_tokens=False)["input_ids"]  # tokenize=True returns a dict in transformers 5
             else:
                 ids = tok(f"<|user|>\n{sft_row(r)['instruction']}\n<|python|>\n", add_special_tokens=False)["input_ids"]
             if len(ids) + 64 <= S_MAX_LEN:

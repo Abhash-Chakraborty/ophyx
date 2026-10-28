@@ -66,9 +66,9 @@ def verify(rec):
 
 
 def sft_row(rec):
-    """Statement -> the shortest passing solution, as the user would ask for it."""
+    """Statement -> the shortest passing solution (None for an unsolved problem), as the user would ask for it."""
     h = int(hashlib.sha1(rec["pid"].encode()).hexdigest()[:8], 16)
-    sol = min((rec["solutions"][i] for i in rec["passing"]), key=len)
+    sol = min((rec["solutions"][i] for i in rec.get("passing") or []), key=len, default=None)
     q = rec["question"].strip()
     if rec["fn_name"]:
         starter = (rec.get("starter_code") or "").strip()
