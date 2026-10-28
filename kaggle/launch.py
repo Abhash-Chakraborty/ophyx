@@ -10,6 +10,7 @@ Runs on the orchestration box (light: writes two small files and calls the Kaggl
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -59,6 +60,9 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-lint", action="store_true", help="skip the pre-push ruff check (not recommended)")
     a = ap.parse_args()
+    bad = [s for s in a.datasets + a.kernel_sources if not re.fullmatch(r"[\w.-]+(/[\w.-]+)?", s)]
+    if bad:  # Kaggle drops a malformed source without saying so, and the job runs without its input
+        sys.exit(f"not a Kaggle slug: {bad}")
 
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     cfg = json.loads(a.config)

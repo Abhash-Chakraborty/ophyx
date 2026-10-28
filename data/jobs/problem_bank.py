@@ -4,10 +4,22 @@ Appended after data/jobs/sft_build.py (CONFIG "library": true), which supplies t
 decontamination, non_english() and the HF helpers. This job only downloads and reshapes text; nothing
 here runs the solutions. data/jobs/verify_bank.py runs them, offline and without keys.
 
-Sources (train splits only; licences from the dataset cards, 21 Oct 2026):
-  deepmind/code_contests  CC-BY-4.0    stdin/stdout; public + private + generated tests; Python 3 = language 3
-  BAAI/TACO               Apache-2.0   stdin/stdout and call-based (fn_name); includes APPS and CodeContests
-  codeparrot/apps         MIT          the same format as TACO
+Sources (train splits only; licences from the dataset cards, 21 and 28 Oct 2026):
+  deepmind/code_contests     CC-BY-4.0    stdin/stdout; public + private + generated tests; Python 3 = language 3
+  BAAI/TACO                  Apache-2.0   stdin/stdout and call-based (fn_name); includes APPS and CodeContests
+  codeparrot/apps            MIT          the same format as TACO
+  newfacade/LeetCodeDataset  Apache-2.0   LeetCode problems with a Python solution and assert tests, which become
+                                          call-based tests when every argument is a literal (no tree or list nodes)
+  open-r1/codeforces         CC-BY-4.0    "verifiable" config: Codeforces statements with official tests and no
+                                          solutions; problems with a custom checker or interaction are left out
+LeetCode and Codeforces problems dated on or after `cutoff` (2025-02-01, where the LiveCodeBench window
+starts) are left out. CONFIG "sources" picks the loaders (default: the first three).
+
+CONFIG "ocr": true adds candidate solutions from nvidia/OpenCodeReasoning (CC-BY-4.0, written by
+DeepSeek-R1 and not checked against tests): split_1 rows by their TACO/APPS row index, split_0 rows by
+the exact normalised statement. They go after the source's own solutions and, like those, count only
+once verify_bank.py has seen them pass. CONFIG "keep_unsolved": true keeps problems that have tests but
+no Python 3 solution, so a teacher can be sampled on them (data/jobs/bank_sample.py, "chat": true).
 
 One record per problem (jsonl, /kaggle/working/bank/bank-NN.jsonl):
   pid, source, licence, url, difficulty (source label), level (1-5 or null), tags, question,
@@ -30,7 +42,11 @@ BANK_OUT = os.path.join(OUTW, "bank")
 MAX_TESTS = CONFIG.get("max_tests", 25)
 MAX_TEST_BYTES = CONFIG.get("max_test_bytes", 10_000)
 MAX_SOLUTIONS = CONFIG.get("max_solutions", 5)
-LICENCE = {"code_contests": "CC-BY-4.0", "taco": "Apache-2.0", "apps": "MIT"}
+LICENCE = {"code_contests": "CC-BY-4.0", "taco": "Apache-2.0", "apps": "MIT", "leetcode": "Apache-2.0",
+           "codeforces": "CC-BY-4.0"}
+CUTOFF = CONFIG.get("cutoff", "2025-02-01")
+KEEP_UNSOLVED = CONFIG.get("keep_unsolved", False)
+OCR_BY_INDEX, OCR_BY_QUESTION = {}, {}  # (dataset, row index) / sha1 of the normalised statement -> solutions
 BANK_STATS = collections.Counter()
 LEVEL_TACO = {"EASY": 1, "MEDIUM": 2, "MEDIUM_HARD": 3, "HARD": 4, "VERY_HARD": 5}
 LEVEL_APPS = {"introductory": 1, "interview": 2, "competition": 4}
@@ -105,7 +121,7 @@ def cc_level(rating):
     return 1 if rating < 1200 else 2 if rating < 1600 else 3 if rating < 2000 else 4 if rating < 2400 else 5
 
 
-def record(source, pid, question, solutions, fn_name, tests, **meta):
+def record(source, pid, question, solutions, fn_name, tests, ocr_key=None, **meta):
     BANK_STATS[f"{source}/rows"] += 1
     if not question or len(question) < 80:
         return BANK_STATS.update([f"{source}/question_too_short"])
@@ -115,13 +131,18 @@ def record(source, pid, question, solutions, fn_name, tests, **meta):
         return BANK_STATS.update([f"{source}/has_image"])
     if non_english(question):
         return BANK_STATS.update([f"{source}/non_english"])
-    sols = pick_solutions(solutions)
-    if not sols:
+    extra = OCR_BY_INDEX.get(ocr_key, []) + OCR_BY_QUESTION.get(qkey(question), []) if question else []
+    if extra:
+        BANK_STATS[f"{source}/ocr_matched"] += 1
+    sols = pick_solutions(list(solutions) + extra)
+    if not sols and not KEEP_UNSOLVED:
         return BANK_STATS.update([f"{source}/no_python3_solution"])
+    if not sols:
+        BANK_STATS[f"{source}/unsolved_kept"] += 1
     tests = pick_tests(tests)
     if not tests:
         return BANK_STATS.update([f"{source}/no_tests"])
-    hit, _ = contamination(question + "\n" + sols[0], question)
+    hit, _ = contamination(question + "\n" + (sols[0] if sols else ""), question)
     if hit:
         BANK_STATS[f"contaminated_by/{hit.split('/')[0]}"] += 1
         return BANK_STATS.update([f"{source}/contaminated"])
@@ -176,7 +197,9 @@ def code_contests():
 
 
 def taco_like(source, repo, files, reader):
+    base = 0  # row index in the whole train split, which OpenCodeReasoning's split_1 refers to
     for f in files:
+        i = -1
         for i, r in enumerate(reader(repo, f)):
             try:
                 sols = json.loads(r.get("solutions") or "[]")
@@ -193,10 +216,11 @@ def taco_like(source, repo, files, reader):
             except json.JSONDecodeError:
                 tags = []
             pid = r.get("problem_id", r.get("id", f"{os.path.basename(f).split('.')[0]}-{i}"))
-            rec = record(source, pid, r.get("question"), sols, fn, tests, url=r.get("url"), difficulty=diff,
-                         level=level, tags=tags, starter_code=r.get("starter_code") or "")
+            rec = record(source, pid, r.get("question"), sols, fn, tests, ocr_key=(source, base + i), url=r.get("url"),
+                         difficulty=diff, level=level, tags=tags, starter_code=r.get("starter_code") or "")
             if rec:
                 yield rec
+        base += i + 1
         log(f"{source} {f}: {BANK_STATS[f'{source}/kept']} kept so far")
 
 
@@ -226,6 +250,148 @@ def apps():
         finally:
             os.remove(local)
     yield from taco_like("apps", "codeparrot/apps", ["train.jsonl"], reader)
+
+
+LC_IMPORTS = {  # names LeetCode solutions use without importing them (the dataset's prompt imports them)
+    "typing": ["List", "Optional", "Dict", "Tuple", "Set"],
+    "collections": ["deque", "defaultdict", "Counter", "OrderedDict"],
+    "heapq": ["heappush", "heappop", "heapify", "heappushpop", "heapreplace", "nlargest", "nsmallest"],
+    "bisect": ["bisect_left", "bisect_right", "insort", "bisect"],
+    "functools": ["cache", "lru_cache", "reduce", "cmp_to_key"],
+    "itertools": ["accumulate", "permutations", "combinations", "product", "pairwise", "groupby", "chain", "count"],
+    "math": ["inf", "gcd", "lcm", "comb", "sqrt", "isqrt", "ceil", "floor", "log2", "factorial"],
+}
+
+
+def with_imports(code):
+    """Prepend `from m import a, b` lines for the helper names a LeetCode solution uses but never imports."""
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError, RecursionError):
+        return code
+    used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    defined = {n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
+    defined |= {a.asname or a.name for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names}
+    lines = [f"from {m} import {', '.join(x for x in names if x in used - defined)}"
+             for m, names in LC_IMPORTS.items() if any(x in used - defined for x in names)]
+    if "math" in used - defined:
+        lines.append("import math")
+    return ("\n".join(lines) + "\n\n" if lines else "") + code
+
+
+def lc_tests(test_src, starter):
+    """`assert candidate(a=1, b=[2]) == 3` lines -> call-based tests (JSON argument list, JSON result), in the
+    order of the starter signature. An assert with any non-literal part (TreeNode, ListNode...) is skipped."""
+    try:
+        sig = next(n for n in ast.walk(ast.parse(starter.rstrip() + "\n            pass\n"))
+                   if isinstance(n, ast.FunctionDef))
+        params = [a.arg for a in sig.args.args if a.arg != "self"]
+        tree = ast.parse(test_src)
+    except (SyntaxError, ValueError, StopIteration, RecursionError):
+        return []
+    out = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Assert) and isinstance(node.test, ast.Compare) and len(node.test.ops) == 1
+                and isinstance(node.test.ops[0], ast.Eq) and isinstance(node.test.left, ast.Call)):
+            continue
+        call = node.test.left
+        try:
+            kw = {k.arg: ast.literal_eval(k.value) for k in call.keywords}
+            args = [ast.literal_eval(a) for a in call.args] + [kw[p] for p in params[len(call.args):]]
+            want = ast.literal_eval(node.test.comparators[0])
+            out.append((json.dumps(args), json.dumps(want)))
+        except (ValueError, KeyError, TypeError, SyntaxError, RecursionError):
+            BANK_STATS["leetcode/test_not_literal"] += 1
+    return out
+
+
+def leetcode():
+    local = download("LeetCodeDataset-train.jsonl", repo="newfacade/LeetCodeDataset")
+    for k, line in enumerate(open(local)):
+        if SMOKE and k >= CONFIG.get("smoke_rows", 60):
+            break
+        r = json.loads(line)
+        if (r.get("estimated_date") or "9999") >= CUTOFF:
+            BANK_STATS["leetcode/after_cutoff"] += 1
+            continue
+        entry = r.get("entry_point") or ""
+        if not entry.startswith("Solution()."):
+            BANK_STATS["leetcode/not_a_method"] += 1
+            continue
+        tests = lc_tests(r.get("test") or "", r.get("starter_code") or "")
+        rec = record("leetcode", r["task_id"], r.get("problem_description"), [with_imports(r.get("completion") or "")],
+                     entry.split(".", 1)[1], tests, url=f"https://leetcode.com/problems/{r['task_id']}/",
+                     difficulty=r.get("difficulty"), level={"Easy": 1, "Medium": 2, "Hard": 4}.get(r.get("difficulty")),
+                     tags=list(r.get("tags") or []), starter_code=(r.get("starter_code") or "").rstrip() + "\n")
+        if rec:
+            yield rec
+    os.remove(local)
+    log(f"leetcode: {BANK_STATS['leetcode/kept']} kept")
+
+
+def cf_statement(r):
+    parts = [r.get("title") or "", r.get("description") or ""]
+    for head, key in (("Input", "input_format"), ("Output", "output_format")):
+        if r.get(key):
+            parts.append(f"{head}\n\n{r[key]}")
+    ex = r.get("examples") or []
+    if ex:
+        parts.append("Examples\n\n" + "\n\n".join(f"Input\n{e['input'].strip()}\n\nOutput\n{e['output'].strip()}" for e in ex))
+    if r.get("note"):
+        parts.append(f"Note\n\n{r['note']}")
+    return "\n\n".join(p.strip() for p in parts if p and p.strip())
+
+
+def codeforces():
+    from huggingface_hub import list_repo_files
+    files = sorted(f for f in list_repo_files("open-r1/codeforces", repo_type="dataset") if f.startswith("verifiable/train-"))
+    files = files[:1] if SMOKE else files
+    cutoff_ts = time.mktime(time.strptime(CUTOFF, "%Y-%m-%d"))
+    cols = ["id", "title", "description", "input_format", "output_format", "note", "examples", "official_tests",
+            "generated_checker", "interaction_format", "input_mode", "contest_start", "rating", "tags"]
+    for f in files:
+        for r in parquet_rows("open-r1/codeforces", f, cols):
+            if (r.get("contest_start") or 0) >= cutoff_ts:
+                BANK_STATS["codeforces/after_cutoff"] += 1
+                continue
+            if r.get("generated_checker") or r.get("interaction_format") or r.get("input_mode") != "stdio":
+                BANK_STATS["codeforces/checker_or_interactive"] += 1  # exact output comparison can't judge these
+                continue
+            tests = [(t["input"].replace("\r\n", "\n"), t["output"].replace("\r\n", "\n")) for t in r.get("official_tests") or []]
+            contest, index = (r["id"].split("/") + [""])[:2]
+            rec = record("codeforces", r["id"], cf_statement(r), [], None, tests,
+                         url=f"https://codeforces.com/problemset/problem/{contest}/{index}",
+                         difficulty=str(r.get("rating")), level=cc_level(r.get("rating")), tags=list(r.get("tags") or []),
+                         starter_code="")
+            if rec:
+                yield rec
+        log(f"codeforces {f}: {BANK_STATS['codeforces/kept']} kept so far")
+
+
+def load_ocr():
+    """nvidia/OpenCodeReasoning solutions: split_1 by (dataset, row index), split_0 by statement."""
+    from huggingface_hub import list_repo_files
+    files = sorted(f for f in list_repo_files("nvidia/OpenCodeReasoning", repo_type="dataset") if f.endswith(".parquet"))
+    files = files[:1] if SMOKE else files
+    n = 0
+    for f in files:
+        for r in parquet_rows("nvidia/OpenCodeReasoning", f, ["input", "solution", "dataset", "split", "index"]):
+            sol = r.get("solution") or ""
+            if not sol.strip() or r.get("split") not in (None, "train"):
+                continue
+            if r.get("index") not in (None, "") and r.get("input") == "-":
+                key = (r.get("dataset"), int(r["index"]))
+                bucket = OCR_BY_INDEX.setdefault(key, [])
+            else:
+                bucket = OCR_BY_QUESTION.setdefault(qkey(r.get("input") or ""), [])
+            if len(bucket) < 8:
+                bucket.append(sol)
+                n += 1
+        log(f"ocr {f}: {n} solutions, {len(OCR_BY_INDEX)} by index, {len(OCR_BY_QUESTION)} by statement")
+
+
+def qkey(q):
+    return hashlib.sha1(norm_question(q).encode()).hexdigest()
 
 
 # ---------------------------------------------------------------- dedup
@@ -298,8 +464,11 @@ def bank_main():
     global BENCH
     os.makedirs(BANK_OUT, exist_ok=True)
     BENCH, _ = build_bench_index()
+    if CONFIG.get("ocr"):
+        load_ocr()
     recs = []
-    for gen in (code_contests, taco, apps):
+    loaders = {"code_contests": code_contests, "taco": taco, "apps": apps, "leetcode": leetcode, "codeforces": codeforces}
+    for gen in (loaders[s] for s in CONFIG.get("sources", ["code_contests", "taco", "apps"])):
         recs += list(gen())
         log(f"{gen.__name__} done: {len(recs)} records in total, {dict(BANK_STATS)}")
     recs = dedup(recs)
@@ -315,6 +484,7 @@ def bank_main():
              "by_level": dict(collections.Counter(str(r.get("level")) for r in recs)),
              "tests_mean": round(float(np.mean([len(r["tests"]) for r in recs])), 1) if recs else 0,
              "solutions_mean": round(float(np.mean([len(r["solutions"]) for r in recs])), 2) if recs else 0,
+             "unsolved": sum(not r["solutions"] for r in recs),
              "licences": LICENCE, "counts": dict(sorted(BANK_STATS.items())), "benchmarks": getattr(bench_items, "report", {}),
              "minutes": round((time.time() - T0) / 60, 1)}
     json.dump(stats, open(os.path.join(BANK_OUT, "stats.json"), "w"), indent=1)

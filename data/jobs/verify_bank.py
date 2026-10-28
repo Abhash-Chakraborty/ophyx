@@ -11,6 +11,8 @@ A problem is kept when at least one solution passes every kept test. Output, und
                                 problems that accept several answers (a special judge), which exact
                                 output comparison can't check: pass-rate and RL jobs should skip them.
   sft_rows/bank-<shard>.jsonl   one SFT row per kept problem: the statement -> a passing solution
+  verified/unsolved-<shard>.jsonl  problems with tests where no solution passes (or none was given), for a
+                                teacher to try (data/jobs/bank_sample.py with "bank_glob": "verified/unsolved-*.jsonl")
   verified/stats-<shard>.json   counts by source, level and failure kind, and the time taken
 """
 
@@ -88,6 +90,7 @@ def main():
     kinds = collections.Counter()
     out_v = open(os.path.join(OUTW, "verified", f"bank-{SHARD}.jsonl"), "w")
     out_s = open(os.path.join(OUTW, "sft_rows", f"bank-{SHARD}.jsonl"), "w")
+    out_u = open(os.path.join(OUTW, "verified", f"unsolved-{SHARD}.jsonl"), "w")
     with cf.ThreadPoolExecutor(WORKERS) as ex:
         for n, rec in enumerate(ex.map(verify, recs), 1):
             kinds.update(s for s in rec["status"] if s != "pass")
@@ -101,10 +104,14 @@ def main():
                 st[f"level{rec.get('level')}/kept"] += 1
                 out_v.write(json.dumps(rec) + "\n")
                 out_s.write(json.dumps(sft_row(rec)) + "\n")
+            elif "budget" not in rec["status"]:
+                st[f"{key}/unsolved"] += 1
+                out_u.write(json.dumps(rec) + "\n")
             if n % 500 == 0:
                 log(f"{n}/{len(recs)}: kept {sum(v for k, v in st.items() if k.endswith('/kept') and not k.startswith('level'))}")
     out_v.close()
     out_s.close()
+    out_u.close()
     stats = {"shard": SHARD, "counts": dict(sorted(st.items())), "failure_kinds": dict(kinds),
              "minutes": round((time.time() - T0) / 60, 1)}
     json.dump(stats, open(os.path.join(OUTW, "verified", f"stats-{SHARD}.json"), "w"), indent=1)

@@ -49,7 +49,7 @@ def judge_problem(args):
 
 def main_judge():
     samples, files = load_samples()
-    banks = sorted(glob.glob(os.path.join(SRC, "**", "verified", "bank-*.jsonl"), recursive=True))
+    banks = sorted(glob.glob(os.path.join(SRC, "**", "verified", "*.jsonl"), recursive=True))  # bank-* and unsolved-*
     recs = [r for f in banks for r in map(json.loads, open(f)) if r["pid"] in samples]
     log(f"shard {SHARD}/{NSHARDS}: {len(recs)} problems with samples ({len(files)} sample files), {WORKERS} workers")
     os.makedirs(J_OUT, exist_ok=True)

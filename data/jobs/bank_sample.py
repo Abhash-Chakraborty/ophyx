@@ -9,7 +9,10 @@ CONFIG: model (HF id), name, n (samples per problem, default 8), temperature (0.
 max_new (1024), max_len (2048, the model's window), limit (problems, for smoke runs),
 include_inconsistent (false: problems whose tests can't reject wrong answers are left out),
 gpus (["0", "1"]: one vLLM process per GPU, each on half the problems), greedy (also add one
-temperature-0 sample, default true, so pass@1 greedy comes out of the same run).
+temperature-0 sample, default true, so pass@1 greedy comes out of the same run), bank_glob (default
+"verified/bank-*.jsonl"; "verified/unsolved-*.jsonl" for the problems no reference solves), and chat
+(false: the ophyx template; true: the model's own chat template, for a teacher such as
+Qwen/Qwen2.5-Coder-14B-Instruct-AWQ, whose answer is the longest ```python block in its reply).
 
 Output, under /kaggle/working/samples/<name>/:
   bank-<gpu>.jsonl   {pid, source, level, fn_name, prompt_tokens, samples: [code], finish: [reason],
@@ -37,10 +40,13 @@ S_GREEDY = CONFIG.get("greedy", True)
 S_GPUS = CONFIG.get("gpus", ["0", "1"])
 S_OUT = _os.path.join(OUTW, "samples", S_NAME)
 STOPS = ["<|end|>", "<|user|>", "<|python|>"]
+S_CHAT = CONFIG.get("chat", False)
+TEACHER_SYSTEM = ("You are an expert competitive programmer. Answer with one complete Python 3 program in a single "
+                  "```python code block, with no explanation.")
 
 
 def bank_problems():
-    files = sorted(_glob.glob(_os.path.join(SRC, "**", "verified", "bank-*.jsonl"), recursive=True))
+    files = sorted(_glob.glob(_os.path.join(SRC, "**", CONFIG.get("bank_glob", "verified/bank-*.jsonl")), recursive=True))
     recs = [r for f in files for r in map(_json.loads, open(f))]
     if not CONFIG.get("include_inconsistent"):
         recs = [r for r in recs if not r.get("inconsistent")]
@@ -51,7 +57,12 @@ def bank_problems():
 
 
 def strip_fence(text):
-    """The SFT target is a bare module, but a model may still wrap it in a ```python block."""
+    """The SFT target is a bare module, but a model may still wrap it in a ```python block. A chat teacher's
+    reply may also have prose around the code: take its longest fenced block."""
+    if S_CHAT:
+        import re as _re
+        blocks = _re.findall(r"```[ \t]*(?:python3?|py)?[ \t]*\n(.*?)(?:```|\Z)", text, _re.S)
+        return (max(blocks, key=len) if blocks else text).strip("\n") + "\n"
     t = text.strip("\n")
     if t.startswith("```"):
         t = t.split("\n", 1)[1] if "\n" in t else ""
@@ -73,10 +84,15 @@ def sample_child(gi, gpus, recs, logf):
         llm = LLM(model=S_MODEL, dtype="float16", max_model_len=S_MAX_LEN, gpu_memory_utilization=0.88, seed=gi,
                   enable_prefix_caching=True)
         tok = llm.get_tokenizer()
-        end_id = tok.convert_tokens_to_ids("<|end|>")
+        end_id = tok.eos_token_id if S_CHAT else tok.convert_tokens_to_ids("<|end|>")
         prompts, keep = [], []
         for r in recs:
-            ids = tok(f"<|user|>\n{sft_row(r)['instruction']}\n<|python|>\n", add_special_tokens=False)["input_ids"]
+            if S_CHAT:
+                ids = tok.apply_chat_template([{"role": "system", "content": TEACHER_SYSTEM},
+                                               {"role": "user", "content": sft_row(r)["instruction"]}],
+                                              add_generation_prompt=True, tokenize=True)
+            else:
+                ids = tok(f"<|user|>\n{sft_row(r)['instruction']}\n<|python|>\n", add_special_tokens=False)["input_ids"]
             if len(ids) + 64 <= S_MAX_LEN:
                 prompts.append(ids)
                 keep.append(r)
@@ -84,7 +100,7 @@ def sample_child(gi, gpus, recs, logf):
 
         def params(n, temp, ids):
             return SamplingParams(n=n, temperature=temp, top_p=S_TOP_P if temp > 0 else 1.0, seed=None,
-                                  max_tokens=min(S_MAX_NEW, S_MAX_LEN - len(ids) - 1), stop=STOPS,
+                                  max_tokens=min(S_MAX_NEW, S_MAX_LEN - len(ids) - 1), stop=None if S_CHAT else STOPS,
                                   stop_token_ids=[end_id], skip_special_tokens=False)
 
         t1 = _time.time()
