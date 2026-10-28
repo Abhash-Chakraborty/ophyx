@@ -339,7 +339,7 @@ def cf_statement(r):
         parts.append("Examples\n\n" + "\n\n".join(f"Input\n{e['input'].strip()}\n\nOutput\n{e['output'].strip()}" for e in ex))
     if r.get("note"):
         parts.append(f"Note\n\n{r['note']}")
-    return "\n\n".join(p.strip() for p in parts if p and p.strip())
+    return "\n\n".join(p.strip() for p in parts if p and p.strip()).replace("$$$", "$")  # Polygon's math markup
 
 
 def codeforces():
