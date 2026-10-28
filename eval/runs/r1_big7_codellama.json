@@ -1,0 +1,10 @@
+{
+ "budget_s": 30000,
+ "models": [
+  {
+   "id": "codellama/CodeLlama-7b-Python-hf",
+   "kind": "base",
+   "tp": 2
+  }
+ ]
+}

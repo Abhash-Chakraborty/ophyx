@@ -81,8 +81,9 @@ answer ran in the same offline sandbox.
 | Qwen2.5-Coder-0.5B-Instruct | 0.49B | 54.9 | 42.1 | 2.3 | 0.6 | 25.1 | 4 |
 | Qwen3-0.6B | 0.75B | 36.6 | 46.6 | 0.8 | 7.9 | 24.8 | 5 |
 | deepseek-coder-1.3b-instruct | 1.35B | 61.6 | 52.6 | 3.8 | 5.6 | 28.8 | 13 |
+| Qwen2.5-Coder-7B-Instruct | 7.62B | 86.0 | 72.5 | 16.9 | 17.5 | 53.9 | 24 |
 
-- [eval/R1_RESULTS.md](eval/R1_RESULTS.md): 48 models from 0.13B to 4B, frontier
+- [eval/R1_RESULTS.md](eval/R1_RESULTS.md): 55 models from 0.13B to 8B, frontier
   models through Kaggle Benchmarks, and published leaderboard scores with sources.
 - [eval/HANDS_ON_REVIEW.md](eval/HANDS_ON_REVIEW.md): all 42 hands-on answers read by hand, and
   why 33 of them fail.

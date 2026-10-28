@@ -1,7 +1,7 @@
 # R1 results
 
 Every open model below ran the same way on Kaggle's free T4s and was scored offline on Kaggle CPUs,
-in October 2026: 48 models from 0.13B to 4B parameters, ours included. Seven frontier API models
+in October 2026: 55 models from 0.13B to 8B parameters, ours included. Seven frontier API models
 answered two or three of the benchmarks through Kaggle Benchmarks and were scored the same way.
 
 ## How it was run
@@ -77,6 +77,13 @@ All numbers are pass@1 in percent.
 | granite-3b-code-base-2k | base | 3.48B | 35.4 | 29.3 | 52.1 | 44.7 | 2.0 | 0.0 |  | 5.8 | 30.5 | 32.0 |  |
 | granite-3b-code-instruct-2k | instruct | 3.48B | 53.0 | 45.1 | 60.6 | 48.9 | 4.4 | 5.3 | 6.9 | 7.6 | 24.6 | 30.5 | 19.0 |
 | Qwen3-4B | instruct | 4.02B | 83.5 | 76.8 | 71.4 | 61.1 | 12.1 | 26.0 | 16.8 | 21.3 | 54.0 | 45.1 | 42.9 |
+| CodeLlama-7b-Python-hf | base | 6.74B | 38.4 | 34.1 | 60.8 | 48.1 | 7.4 | 10.7 |  | 5.8 | 37.0 | 36.0 |  |
+| deepseek-coder-6.7b-base | base | 6.74B | 43.3 | 38.4 | 69.0 | 54.5 | 10.7 | 9.9 |  | 9.1 | 42.5 | 43.5 |  |
+| deepseek-coder-6.7b-instruct | instruct | 6.74B | 76.8 | 72.0 | 75.7 | 65.6 | 16.4 | 16.8 | 14.5 | 12.3 | 36.2 | 39.9 | 42.9 |
+| starcoder2-7b | base | 7.17B | 36.0 | 31.1 | 56.9 | 47.9 | 5.4 | 7.6 |  | 5.8 | 35.0 | 36.4 |  |
+| Qwen2.5-Coder-7B | base | 7.62B | 62.8 | 57.3 | 78.3 | 64.0 | 12.4 | 19.1 |  | 14.0 | 46.5 | 51.5 |  |
+| Qwen2.5-Coder-7B-Instruct | instruct | 7.62B | 89.6 | 86.0 | 83.3 | 72.5 | 23.8 | 20.6 | 18.3 | 17.5 | 56.9 | 53.9 | 57.1 |
+| Qwen3-8B | instruct | 8.19B | 82.9 | 78.7 | 72.5 | 63.0 | 21.8 | 29.8 | 26.0 | 21.6 | 56.1 | 50.6 | 54.8 |
 
 ## What the numbers say
 
@@ -108,11 +115,18 @@ All numbers are pass@1 in percent.
   hands-on tasks (8). Averaged 70/30 with SFT v1, it scores 41.5 on HumanEval+, the best of our
   models, and stays within 1.3 points of SFT v1 on MBPP+, concept and BigCodeBench-Hard. CRUX-I
   (21.1) and the hands-on tasks (9) are still lower.
-- GRPO p4 ran on that average: one pass over 1,451 bank problems whose sampled pass rate was
-  between 1/8 and 6/8, about 5 hours per learning rate on two T4s. At lr 2e-6 it is level with or
+- GRPO p4 ran on that average: one pass over 1,399 bank problems whose sampled pass rate was
+  between 1/8 and 6/8, about 5.4 hours per learning rate on one T4 each. At lr 2e-6 it is level with or
   ahead of the average on every benchmark: HumanEval+ 43.9, MBPP+ 47.4, BigCodeBench-Hard 3.8 and
   4.6, LiveCodeBench 2.0, 9 hands-on tasks. Against ophyx-350m-sft that is +8.5 on HumanEval+ and
   lower on CRUX-I (20.6 against 24.9), MBPP+ (-0.7) and the hands-on tasks (one fewer).
+
+- The 7B and 8B models show how far the size class is from the next one up. On HumanEval+,
+  ophyx-350m-v2 (the table's ophyx-350m-grpo-p4-lr2e6, 43.9) is ahead of three of the four 7B base
+  models: deepseek-coder-6.7b-base 38.4, CodeLlama-7b-Python 34.1 and starcoder2-7b 31.1.
+  Qwen2.5-Coder-7B scores 57.3. Those are base models, so this compares a fine-tuned model with
+  plain completion. The 7B instruct models are far ahead: Qwen2.5-Coder-7B-Instruct scores 86.0
+  and solves 24 of 42 hands-on tasks, Qwen3-8B 78.7 and 23, deepseek-coder-6.7b-instruct 72.0 and 18.
 
 Scoring notes:
 
