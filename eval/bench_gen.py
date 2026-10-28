@@ -13,11 +13,14 @@ CONFIG:
   out      default /kaggle/working
 
 Prompt formats, chosen to match how each family is usually reported:
-  base      plain completion (EvalPlus base prompts, BigCodeBench "complete", CRUXEval few-shot)
+  base      plain completion (EvalPlus base prompts, BigCodeBench "complete", CRUXEval few-shot, the
+            MultiPL-E prompt with its stop tokens, the DS-1000 prompt up to </code>)
   instruct  the model's chat template; EvalPlus/BigCodeBench use EvalPlus's instruction and response
-            prefix; LiveCodeBench uses its official system and format prompt
+            prefix; LiveCodeBench uses its official system and format prompt; MultiPL-E asks for the whole
+            function in that language in one fenced block; DS-1000 uses its system prompt for chat models
   ours      the ophyx SFT template <|user|>\\n...\\n<|python|>\\n, answer ends at <|end|>;
-            the function signature (HumanEval, BigCodeBench) or starter code (LiveCodeBench) is prefilled
+            the function signature (HumanEval, BigCodeBench) or starter code (LiveCodeBench) is prefilled.
+            MultiPL-E gets the instruct prompt; the template starts a Python answer, so it scores near 0
 
 Tiny models run two at a time, one per T4, each in its own forked process (vLLM frees GPU memory
 reliably only on exit). Models with "tp": 2 use both GPUs. A model vLLM can't load falls back to transformers.
@@ -34,8 +37,9 @@ import time
 CONFIG = globals().get("CONFIG") or json.loads(os.environ.get("OPHYX_CONFIG", "{}"))
 OUT = CONFIG.get("out", "/kaggle/working" if os.path.isdir("/kaggle") else os.path.abspath("bench"))
 ALL_BENCHES = ["humaneval", "mbpp", "concept", "crux_o", "crux_i", "lcb", "bcb_complete", "bcb_instruct", "manual"]
-# opt-in (name it in "benches"): everyday tasks, some not in Python, from eval/realworld
-EXTRA_BENCHES = ["realworld"]
+# opt-in (name it in "benches"): everyday tasks, some not in Python, from eval/realworld; MultiPL-E HumanEval
+# in JavaScript, C++ and Bash; all 1,140 BigCodeBench tasks; DS-1000
+EXTRA_BENCHES = ["realworld", "mple_js", "mple_cpp", "mple_sh", "bcbf_complete", "bcbf_instruct", "ds1000"]
 DEFAULT_BENCHES = CONFIG.get("benches", ALL_BENCHES)
 T0 = time.time()
 
@@ -106,6 +110,12 @@ assert f(??) == {output}
 [/PYTHON]
 [ANSWER]
 '''
+MPLE_LANG = {"js": ("JavaScript", "javascript"), "cpp": ("C++", "cpp"), "sh": ("Bash", "bash")}
+MPLE_INSTR = ("Complete the following {lang} function. Write the whole function, with its signature, in one "
+              "```{tag} code block.\n```{tag}\n{prompt}\n```")
+DS1000_SYS = ("Write a short code following the given format and indentation. Place the executed code between "
+              "<code> and </code> tags, without any other non-executable things.")
+DS1000_STOPS = ["</code>", "# SOLUTION END", "\nEND SOLUTION"]
 # A base model keeps writing after the solution; cut at the first new top-level block.
 HE_STOPS = ["\nclass ", "\ndef ", "\n#", "\nif __name__", "\nprint(", "\nassert ", "\n```"]
 MBPP_STOPS = ["\nassert ", '\n"""', "\nif __name__", "\nprint(", "\n# Test", "\n```", "\n\n\n\n"]
@@ -113,7 +123,8 @@ MODULE_STOPS = ["\nif __name__", '\n"""', "\n'''", "\n```", "\n# Test", "\n# Exa
 STDIN_STOPS = ['\n"""', "\n'''", "\n```", "\n# Test", "\n# Example", "\nassert "]
 OURS_STOPS = ["<|end|>", "<|user|>", "<|python|>"]
 MAX_NEW = {"humaneval": 512, "mbpp": 512, "concept": 1024, "crux_o": 160, "crux_i": 160, "lcb": 1536,
-           "bcb_complete": 1024, "bcb_instruct": 1024, "manual": 1536, "realworld": 1536}
+           "bcb_complete": 1024, "bcb_instruct": 1024, "manual": 1536, "realworld": 1536, "mple_js": 1024,
+           "mple_cpp": 1024, "mple_sh": 1024, "bcbf_complete": 1024, "bcbf_instruct": 1024, "ds1000": 1024}
 
 
 def log(*a):
@@ -138,7 +149,7 @@ def model_name(spec):
 def benches_for(spec):
     bs = spec.get("benches") or DEFAULT_BENCHES
     if spec["kind"] == "base":
-        bs = [b for b in bs if b not in ("bcb_instruct", "manual", "realworld")]
+        bs = [b for b in bs if b not in ("bcb_instruct", "bcbf_instruct", "manual", "realworld")]
     return bs
 
 
@@ -220,6 +231,22 @@ class Prompter:
         pre = r["code_prompt"].rstrip()
         return self.ours(r["instruct_prompt"].strip(), pre), ["\n```"] + OURS_STOPS, pre
 
+    def mple(self, lang, r):
+        if self.kind == "base":
+            return r["prompt"], r["stop_tokens"], r["prompt"]
+        name, tag = MPLE_LANG[lang]
+        task = MPLE_INSTR.format(lang=name, tag=tag, prompt=r["prompt"].strip())
+        if self.kind == "instruct":
+            return self.chat(task, f"```{tag}\n"), ["\n```"], ""
+        return self.ours(task), ["\n```"] + OURS_STOPS, ""
+
+    def ds1000(self, r):
+        if self.kind == "base":
+            return r["prompt"], DS1000_STOPS, ""
+        if self.kind == "instruct":
+            return self.chat(r["prompt"], system=DS1000_SYS), ["</code>"], ""
+        return self.ours(r["prompt"]), ["\n```"] + DS1000_STOPS + OURS_STOPS, ""
+
     def manual(self, r):
         if self.kind == "instruct":
             return self.chat(r["prompt"]), [], ""
@@ -241,9 +268,16 @@ def build(bench, pr):
     elif bench == "lcb":
         for r in rows("lcb.jsonl"):
             out.append((r["task_id"], *pr.lcb(r), {}))
-    elif bench.startswith("bcb_"):
-        for r in rows("bcb_hard.jsonl"):
-            out.append((r["task_id"], *pr.bcb(bench[4:], r), {"entry_point": "task_func"}))
+    elif bench.startswith(("bcb_", "bcbf_")):
+        family, split = bench.split("_")
+        for r in rows("bcb_hard.jsonl" if family == "bcb" else "bcb_full.jsonl"):
+            out.append((r["task_id"], *pr.bcb(split, r), {"entry_point": "task_func"}))
+    elif bench.startswith("mple_"):
+        for r in rows(f"{bench}.jsonl"):
+            out.append((r["task_id"], *pr.mple(bench[5:], r), {}))
+    elif bench == "ds1000":
+        for r in rows("ds1000.jsonl"):
+            out.append((r["task_id"], *pr.ds1000(r), {}))
     elif bench in ("manual", "realworld"):
         for r in rows(f"{bench}.jsonl"):
             out.append((r["task_id"], *pr.manual(r), {}))

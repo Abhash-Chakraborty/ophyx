@@ -1,0 +1,10 @@
+{"budget_s": 14400, "benches": ["mple_js", "mple_cpp", "mple_sh", "bcbf_complete", "bcbf_instruct", "ds1000"], "models": [
+  {"id": "abhash-chakraborty/ophyx-350m-v2", "kind": "ours", "name": "ophyx-350m-v2", "max_len": 4096},
+  {"id": "HuggingFaceTB/SmolLM2-360M-Instruct", "kind": "instruct"},
+  {"id": "Qwen/Qwen2.5-Coder-0.5B-Instruct", "kind": "instruct"},
+  {"id": "Qwen/Qwen2.5-Coder-0.5B", "kind": "base"},
+  {"id": "Qwen/Qwen3-0.6B", "kind": "instruct", "think": false},
+  {"id": "deepseek-ai/deepseek-coder-1.3b-instruct", "kind": "instruct"},
+  {"id": "deepseek-ai/deepseek-coder-1.3b-base", "kind": "base"},
+  {"id": "Qwen/Qwen2.5-Coder-1.5B-Instruct", "kind": "instruct"},
+  {"id": "Qwen/Qwen2.5-Coder-7B-Instruct", "kind": "instruct", "tp": 2}]}

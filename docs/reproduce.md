@@ -97,9 +97,20 @@ python kaggle/launch.py eval/bench_exec.py ophyx-bench-exec-x --accel cpu --time
 python eval/bench_report.py results.json --md eval/R1_RESULTS.md
 ```
 
-`ophyx-evaldata` is a Kaggle dataset with the concept suite (`eval/concept_suite`) and the
-hands-on set (`eval/manual`). A model of your own is attached as a kernel source and named by a glob,
-for example `"/kaggle/input/**/grpo/p4-lr2e6/final"`.
+`ophyx-evaldata` is a Kaggle dataset with the concept suite (`eval/concept_suite`), the
+hands-on set (`eval/manual`), the real-world set and a node binary for the JavaScript tests. A model of
+your own is attached as a kernel source and named by a glob, for example
+`"/kaggle/input/**/grpo/p4-lr2e6/final"`.
+
+MultiPL-E (`mple_js`, `mple_cpp`, `mple_sh`), all of BigCodeBench (`bcbf_complete`, `bcbf_instruct`)
+and DS-1000 (`ds1000`) are opt-in: name them in `"benches"`, as `eval/runs/r8_more.json` does. To check
+the scorers without a GPU run, put `eval/bench_smoke.py` in front of `bench_exec.py`: it scores the
+reference solutions and a set of wrong answers.
+
+```bash
+python kaggle/launch.py eval/bench_exec.py ophyx-bench-smoke --include eval/bench_smoke.py --accel cpu \
+    --no-internet --config '{"benches": ["mple_js", "ds1000"]}' --datasets ophyx-evaldata --kernel-sources ophyx-bench-kit
+```
 
 ### 5. Search, DPO and RL
 

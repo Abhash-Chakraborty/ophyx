@@ -11,6 +11,12 @@ internet).
   kit/lcb.jsonl                         LiveCodeBench problems from test5 + test6 (Oct 2024 to Apr 2025)
   kit/lcb_tests/<qid>.json              their public + private tests
   kit/bcb_hard.jsonl                    BigCodeBench-Hard v0.1.4 (148 tasks)
+  kit/bcb_full.jsonl                    BigCodeBench v0.1.4, every task (1,140), same fields
+  kit/mple_{js,cpp,sh}.jsonl            MultiPL-E HumanEval in JavaScript, C++ and Bash (prompt, tests,
+                                        stop_tokens); smoke_ref is the first passing StarCoder2-15B or
+                                        DeepSeek-Coder-7B completion from nuprl/MultiPL-E-completions, kept
+                                        only to smoke-test the scorer, since MultiPL-E has no reference solutions
+  kit/ds1000.jsonl                      DS-1000 (1,000 problems: prompt, reference_code, code_context, metadata)
   kit/wheels/                           evalplus and its pure-Python dependencies
   kit/manifest.json                     counts and versions
 
@@ -119,18 +125,58 @@ def lcb():
     write_jsonl("lcb.jsonl", rows)
 
 
-def bcb_hard():
+def hf_parquet(repo, path):
     import pandas as pd
     from huggingface_hub import hf_hub_download
-    p = hf_hub_download("bigcode/bigcodebench-hard", "data/v0.1.4-00000-of-00001.parquet", repo_type="dataset")
-    df = pd.read_parquet(p)
+    return pd.read_parquet(hf_hub_download(repo, path, repo_type="dataset")).to_dict("records")
+
+
+def bcb(repo, name):
     keep = ["task_id", "complete_prompt", "instruct_prompt", "canonical_solution", "code_prompt", "test",
             "entry_point", "libs"]
-    rows = [{k: (r[k] if k != "libs" else str(r[k])) for k in keep} for r in df.to_dict("records")]
-    write_jsonl("bcb_hard.jsonl", rows[:LIMIT] if LIMIT else rows)
+    rows = [{k: (r[k] if k != "libs" else str(r[k])) for k in keep}
+            for r in hf_parquet(repo, "data/v0.1.4-00000-of-00001.parquet")]
+    write_jsonl(name, rows[:LIMIT] if LIMIT else rows)
 
 
-for name, fn in (("evalplus", evalplus), ("cruxeval", cruxeval), ("lcb", lcb), ("bcb_hard", bcb_hard)):
+def bcb_hard():
+    bcb("bigcode/bigcodebench-hard", "bcb_hard.jsonl")
+
+
+def bcb_full():
+    bcb("bigcode/bigcodebench", "bcb_full.jsonl")
+
+
+MPLE_LANGS = ["js", "cpp", "sh"]
+MPLE_REFS = ["starcoder2_15b", "deepseekcoder1.5_7b_base"]  # base-model runs in nuprl/MultiPL-E-completions
+
+
+def mple():
+    for lang in MPLE_LANGS:
+        refs = {}
+        for model in MPLE_REFS:
+            exp = f"humaneval.{lang}.{model}.0.2.reworded"
+            for r in hf_parquet("nuprl/MultiPL-E-completions", f"{exp}/test-00000-of-00001.parquet"):
+                ok = [c for c, st in zip(r["completions"], r["statuses"]) if st == "OK"]
+                if ok and r["problem"] not in refs:
+                    refs[r["problem"]] = ok[0]
+        rows = [{"task_id": r["name"], "language": r["language"], "prompt": r["prompt"], "tests": r["tests"],
+                 "stop_tokens": list(r["stop_tokens"]), "smoke_ref": refs.get(r["name"])}
+                for r in hf_parquet("nuprl/MultiPL-E", f"humaneval-{lang}/test-00000-of-00001.parquet")]
+        manifest[f"mple_{lang}_smoke_refs"] = sum(r["smoke_ref"] is not None for r in rows)
+        write_jsonl(f"mple_{lang}.jsonl", rows[:LIMIT] if LIMIT else rows)
+
+
+def ds1000():
+    rows = [{"task_id": str(r["metadata"]["problem_id"]), "prompt": r["prompt"], "reference_code": r["reference_code"],
+             "code_context": r["code_context"], "library": r["metadata"]["library"],
+             "perturbation": r["metadata"]["perturbation_type"]}
+            for r in hf_lines("xlangai/DS-1000", "test.jsonl")]
+    write_jsonl("ds1000.jsonl", rows)
+
+
+for name, fn in (("evalplus", evalplus), ("cruxeval", cruxeval), ("lcb", lcb), ("bcb_hard", bcb_hard),
+                 ("bcb_full", bcb_full), ("mple", mple), ("ds1000", ds1000)):
     if name in SKIP:
         continue
     t = time.time()

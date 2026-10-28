@@ -11,13 +11,23 @@ empty environment and its own temp dir.
   crux_o, crux_i    the CRUXEval check: run `assert <gold> == <prediction>` after the function
   lcb               LiveCodeBench: stdin/stdout programs, or Solution().<fn>(*args) for LeetCode;
                     all public + private tests must pass; output compared line by line, numbers as Decimal
-  bcb_*             BigCodeBench-Hard: the solution (plus code_prompt imports) with the task's unittest
-                    tests. "canonical" scores the reference solutions, and pass@1 is also reported over
-                    the tasks whose reference passes here, since some tasks need the network or a missing library
+  bcb_*, bcbf_*     BigCodeBench-Hard (bcb_*) and full BigCodeBench (bcbf_*), scored as BigCodeBench's calibrated
+                    default: code_prompt with a stub task_func, then the answer (sanitized by BigCodeBench's rule,
+                    which keeps functions without a return), with the task's unittest tests. "canonical" scores the reference solutions, and
+                    pass@1 is also reported over the tasks whose reference passes here, since some tasks need
+                    the network or a missing library
+  mple_js, mple_cpp MultiPL-E HumanEval: prompt + completion + tests as MultiPL-E builds them (a chat answer's
+  mple_sh           whole function, after the prompt's #includes); node from ophyx-evaldata, g++ -std=c++17
+                    (compiled with more memory than the program gets), bash
+  ds1000            DS-1000: the answer cut as its postprocess does, put into code_context's test_execution
+                    (and test_string); pass@1 is also reported over the problems whose reference passes here
 
 CONFIG: models (names to score; default all found), skip_models, benches, shard / nshards (split
-the models across kernels), jobs (parallel children, default 4), canonical (default true: every shard needs the runnable set; an attached bcb_runnable.json from an earlier
-run is reused instead, so every shard scores the same tasks, unless recompute_canonical is set).
+the models across kernels), jobs (parallel children, default 4), canonical (default true: the runnable
+sets of BigCodeBench-Hard, full BigCodeBench and DS-1000, each computed the first time a model's answers
+need it; an attached bcb_runnable.json, bcbf_runnable.json or ds1000_runnable.json from an earlier run is
+reused instead, so every shard scores the same tasks, unless recompute_canonical is set), sample_roots
+(more directories to search for samples/<model>/meta.json, used by eval/bench_smoke.py).
 """
 
 import concurrent.futures as cf
@@ -144,6 +154,23 @@ def sanitize(code, entry):
     from evalplus.sanitize import sanitize as sz
     try:
         return sz(code, entry)
+    except Exception:
+        return code
+
+
+def bcb_sanitize(code):
+    """BigCodeBench's sanitizer: EvalPlus's, without the rule that drops a function with no return statement
+    (a task_func that only plots or writes files would vanish)."""
+    import types
+
+    import evalplus.sanitize as es
+    g = {**vars(es), "has_return_statement": lambda node: True}
+    for name in ("extract_target_code_or_empty", "sanitize"):
+        f = getattr(es, name)
+        g[name] = types.FunctionType(f.__code__, g, name, f.__defaults__)
+        g[name].__kwdefaults__ = f.__kwdefaults__
+    try:
+        return g["sanitize"](code, "task_func")
     except Exception:
         return code
 
@@ -467,12 +494,24 @@ def lcb_score(name, kind, samples):
 
 def bcb_code(kind, s, task):
     text = s["completion"] if kind == "instruct" else s["prefill"] + s["completion"]
-    code = sanitize(extract_code(text) if kind == "instruct" else text, "task_func")
-    imports = [ln for ln in task["code_prompt"].split("\n") if ln.startswith(("import ", "from "))]
-    return "\n".join(imports) + "\n\n" + code  # the task's own imports, as BigCodeBench's calibrated score does
+    code = bcb_sanitize(extract_code(text) if kind == "instruct" else text)
+    # BigCodeBench's calibrated score: the whole prompt (imports, constants, classes the tests use) with a stub
+    # task_func, then the answer, whose task_func replaces it
+    return task["code_prompt"] + "\n    pass\n" + code
+
+
+ROOT_AT_START = set(os.listdir("/"))
+
+
+def clear_strays():
+    """Remove top-level directories a test created and left behind: BigCodeBench/832 writes under
+    /non/existent/path/, which 288, 350 and 1101 expect not to exist."""
+    for name in set(os.listdir("/")) - ROOT_AT_START:
+        shutil.rmtree(os.path.join("/", name), ignore_errors=True)
 
 
 def bcb_run(code, task):
+    clear_strays()
     d = workdir()
     try:
         open(os.path.join(d, "test_bcb.py"), "w").write(code + "\n\n" + task["test"] + "\n")
@@ -482,8 +521,8 @@ def bcb_run(code, task):
         shutil.rmtree(d, ignore_errors=True)
 
 
-def bcb_score(name, kind, split, samples, ok_ids):
-    tasks = {t["task_id"]: t for t in rows_of(find("bcb_hard.jsonl"))}
+def bcb_score(name, kind, split, samples, ok_ids, kit="bcb_hard.jsonl", tag="bcb"):
+    tasks = {t["task_id"]: t for t in rows_of(find(kit))}
 
     def one(s):
         t = tasks[s["task_id"]]
@@ -491,7 +530,11 @@ def bcb_score(name, kind, split, samples, ok_ids):
         return {"task_id": s["task_id"], "status": st, "tail": tail}
 
     recs = parallel(one, samples)
-    _dump(f"bcb/{name}-{split}.jsonl", recs)
+    _dump(f"{tag}/{name}-{split}.jsonl", recs)
+    return pass_rates(recs, ok_ids)
+
+
+def pass_rates(recs, ok_ids):
     n = len(recs)
     passed = {r["task_id"] for r in recs if r["status"] == "pass"}
     res = {"n": n, "pass@1": round(100 * len(passed) / max(n, 1), 1)}
@@ -501,8 +544,8 @@ def bcb_score(name, kind, split, samples, ok_ids):
     return res
 
 
-def bcb_canonical():
-    tasks = rows_of(find("bcb_hard.jsonl"))
+def bcb_canonical(kit="bcb_hard.jsonl", tag="bcb"):
+    tasks = rows_of(find(kit))
 
     def one(t):
         code = t["code_prompt"] + "\n" + t["canonical_solution"]
@@ -510,10 +553,188 @@ def bcb_canonical():
         return t["task_id"], st, tail
 
     res = parallel(one, tasks)
-    _dump("bcb/canonical.jsonl", [{"task_id": a, "status": b, "tail": c} for a, b, c in res])
+    _dump(f"{tag}/canonical.jsonl", [{"task_id": a, "status": b, "tail": c} for a, b, c in res])
     ok = {a for a, b, _ in res if b == "pass"}
-    log(f"bcb canonical: {len(ok)}/{len(tasks)} reference solutions pass in this sandbox")
-    return ok
+    log(f"{tag} canonical: {len(ok)}/{len(tasks)} reference solutions pass in this sandbox")
+    return ok, len(tasks)
+
+
+# ---------------------------------------------------------------- MultiPL-E
+
+MPLE_TAGS = {"js": ("js", "javascript", "node"), "cpp": ("cpp", "c++", "cc"), "sh": ("sh", "bash", "shell")}
+MPLE_FILE = {"js": "prog.js", "cpp": "prog.cpp", "sh": "prog.sh"}
+ANY_FENCE_RE = re.compile(r"```[ \t]*([\w+#-]*)[ \t]*\n(.*?)(?:\n```|\Z)", re.S)
+
+
+def node():
+    """node, or the official binary that ophyx-evaldata carries: Kaggle has no node, and datasets drop the
+    executable bit, so it starts through the loader."""
+    found = shutil.which("node", path="/usr/bin:/bin:/usr/local/bin")
+    if found:
+        return [found]
+    shipped = sorted(glob.glob(os.path.join(INPUT, "**", "node-v*-linux-x64"), recursive=True))
+    if not shipped:
+        raise FileNotFoundError("node")
+    return [shipped[-1]] if os.access(shipped[-1], os.X_OK) else ["/lib64/ld-linux-x86-64.so.2", shipped[-1]]
+
+
+def mple_entry(tests):
+    """The function the tests call: `candidate = name;` (JavaScript, C++) or the call inside candidate() (Bash)."""
+    m = re.search(r"candidate = (\w+)", tests) or re.search(r"candidate\(\) \{\s*(\w+)", tests)
+    return m.group(1) if m else None
+
+
+def mple_extract(lang, text, entry):
+    """A chat answer's code: the longest block in the language (or untagged) that names the function, else the
+    longest such block, else any block; with no fence, the text itself (the prompt opened the block)."""
+    blocks = [(t.lower(), b) for t, b in ANY_FENCE_RE.findall(text)]
+    if not blocks:
+        return text
+    mine = [b for t, b in blocks if t in MPLE_TAGS[lang] or not t]
+    named = [b for b in mine if entry and entry in b]
+    return max(named or mine or [b for _, b in blocks], key=len)
+
+
+def drop_main(code):
+    """A C++ answer's own main(): the tests bring theirs."""
+    m = re.search(r"^[ \t]*int\s+main\s*\([^)]*\)\s*\{", code, re.M)
+    if not m:
+        return code
+    depth = 0
+    for i in range(m.end() - 1, len(code)):
+        depth += {"{": 1, "}": -1}.get(code[i], 0)
+        if depth == 0:
+            return code[:m.start()] + code[i + 1:]
+    return code[:m.start()]
+
+
+def mple_program(lang, kind, s, task):
+    """The file to run. A base model continues the prompt, which MultiPL-E's tests then close (C++, Bash) and call.
+    A chat answer is a whole function: it goes after the prompt's #include lines, and the tests lose the brace
+    that would have closed the prompt's function."""
+    if kind == "base":
+        return s["prefill"] + s["completion"] + "\n" + task["tests"]
+    code = mple_extract(lang, s["completion"], mple_entry(task["tests"]))
+    tests = task["tests"]
+    if lang in ("cpp", "sh") and tests.lstrip().startswith("}"):
+        tests = tests.lstrip()[1:]
+    if lang == "cpp":
+        code = "".join(ln + "\n" for ln in task["prompt"].split("\n") if ln.startswith("#include")) + drop_main(code)
+    return code + "\n" + tests
+
+
+def mple_run(lang, program):
+    d = workdir()
+    try:
+        src = MPLE_FILE[lang]
+        open(os.path.join(d, src), "w").write(program)
+        if lang == "cpp":
+            st, _, out = sandbox(["g++", "-std=c++17", "-o", "prog", src], d, timeout=60, mem_gb=4)
+            if st != "pass":
+                return ("compile_error" if st == "fail" else st), out[-300:]
+            cmd = ["./prog"]
+        else:
+            cmd = node() + [src] if lang == "js" else ["bash", src]
+        st, _, out = sandbox(cmd, d, timeout=15, mem_gb=2)
+        return st, out[-300:]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def mple_score(name, kind, lang, samples):
+    tasks = {t["task_id"]: t for t in rows_of(find(f"mple_{lang}.jsonl"))}
+
+    def one(s):
+        st, tail = mple_run(lang, mple_program(lang, kind, s, tasks[s["task_id"]]))
+        return {"task_id": s["task_id"], "status": st, "tail": tail}
+
+    recs = parallel(one, samples)
+    _dump(f"mple/{name}-{lang}.jsonl", recs)
+    res = pass_rates(recs, None)
+    if lang == "cpp":
+        res["compile_errors"] = sum(r["status"] == "compile_error" for r in recs)
+    return res
+
+
+# ---------------------------------------------------------------- DS-1000
+
+
+def ds1000_code(text):
+    """DS-1000's postprocess (cut at </code>, drop <code>, cut at END SOLUTION), taking the fenced block when a
+    chat model writes prose around it."""
+    text = text.split("</code>")[0]
+    m = FENCE_RE.search(text)
+    if m:
+        text = m.group(1)
+    return text.split("\nEND SOLUTION")[0].split("# SOLUTION END")[0].replace("<code>", "")
+
+
+def ds1000_run(code, task):
+    ctx = task["code_context"]
+    program = ctx + f"\ncode = {code!r}\ntest_execution(code)\n" + ("test_string(code)\n" if "test_string(" in ctx else "")
+    d = workdir()
+    try:
+        open(os.path.join(d, "test_ds.py"), "w").write(program)
+        st, _, out = sandbox([sys.executable, "-I", "test_ds.py"], d, timeout=120, mem_gb=8)
+        return st, out[-300:]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def ds1000_score(name, kind, samples, ok_ids):
+    tasks = {t["task_id"]: t for t in rows_of(find("ds1000.jsonl"))}
+
+    def one(s):
+        t = tasks[s["task_id"]]
+        text = s["completion"] if kind == "instruct" else s["prefill"] + s["completion"]
+        st, tail = ds1000_run(ds1000_code(text), t)
+        return {"task_id": s["task_id"], "library": t["library"], "status": st, "tail": tail}
+
+    recs = parallel(one, samples)
+    _dump(f"ds1000/{name}.jsonl", recs)
+    res = pass_rates(recs, ok_ids)
+    by = {}
+    for r in recs:
+        by.setdefault(r["library"], []).append(r["status"] == "pass")
+    res["by_library"] = {k: {"n": len(v), "pass@1": round(100 * sum(v) / len(v), 1)} for k, v in sorted(by.items())}
+    return res
+
+
+def ds1000_canonical():
+    tasks = rows_of(find("ds1000.jsonl"))
+    res = parallel(lambda t: (t["task_id"], *ds1000_run(t["reference_code"], t)), tasks)
+    _dump("ds1000/canonical.jsonl", [{"task_id": a, "status": b, "tail": c} for a, b, c in res])
+    ok = {a for a, b, _ in res if b == "pass"}
+    log(f"ds1000 canonical: {len(ok)}/{len(tasks)} reference solutions pass in this sandbox")
+    return ok, len(tasks)
+
+
+# family: (runnable-set file, the key in results["canonical"], how to compute it)
+CANONICAL = {"bcb": ("bcb_runnable.json", "bcb_hard", bcb_canonical),
+             "bcbf": ("bcbf_runnable.json", "bcb_full", lambda: bcb_canonical("bcb_full.jsonl", "bcbf")),
+             "ds1000": ("ds1000_runnable.json", "ds1000", ds1000_canonical)}
+RUNNABLE = {}
+
+
+def runnable(family, results):
+    """The tasks whose reference passes in this sandbox, for one family; None when canonical is off and no
+    earlier set is attached. Computed once per kernel, the first time a model's answers need it."""
+    if family in RUNNABLE:
+        return RUNNABLE[family]
+    fname, key, compute = CANONICAL[family]
+    ok_ids = None
+    prior = sorted(glob.glob(os.path.join(INPUT, "**", fname), recursive=True))
+    if prior and not CONFIG.get("recompute_canonical"):  # one runnable set for every shard and every rerun
+        ok_ids = set(json.load(open(prior[0])))
+        log(f"{family}: {len(ok_ids)} runnable tasks from {prior[0]}")
+    elif CONFIG.get("canonical", True):
+        ok_ids, n = compute()
+        results.setdefault("canonical", {})[key] = {"n": n, "pass@1": round(100 * len(ok_ids) / n, 1),
+                                                    "n_runnable": len(ok_ids)}
+    if ok_ids is not None:
+        json.dump(sorted(ok_ids), open(os.path.join(OUT, fname), "w"))
+    RUNNABLE[family] = ok_ids
+    return ok_ids
 
 
 def _dump(rel, recs):
@@ -536,11 +757,17 @@ def setup():
     os.makedirs(cache, exist_ok=True)
     for f in glob.glob(os.path.join(kit, "evalplus_cache", "*")):
         shutil.copy(f, cache)
+    try:  # the first start reads node off the dataset mount, which once took longer than a 20 s test allows
+        subprocess.run(node() + ["-e", "0"], timeout=300, capture_output=True)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
 
 
 def sample_dirs():
     found = {}
-    for meta in sorted(glob.glob(os.path.join(INPUT, "**", "samples", "*", "meta.json"), recursive=True)):
+    metas = [m for root in [INPUT, *CONFIG.get("sample_roots", [])]
+             for m in sorted(glob.glob(os.path.join(root, "**", "samples", "*", "meta.json"), recursive=True))]
+    for meta in metas:
         m = json.load(open(meta))
         d = os.path.dirname(meta)
         if m["name"] in found:  # the same model from two generation runs: keep the one with more benches
@@ -566,16 +793,6 @@ def main():
     res_path = os.path.join(OUT, "results.json")
     results = json.load(open(res_path)) if os.path.exists(res_path) else {}
     benches = CONFIG.get("benches")
-    ok_ids = None
-    prior = sorted(glob.glob(os.path.join(INPUT, "**", "bcb_runnable.json"), recursive=True))
-    if prior and not CONFIG.get("recompute_canonical"):  # one runnable set for every shard and every rerun
-        ok_ids = set(json.load(open(prior[0])))
-        log(f"bcb: {len(ok_ids)} runnable tasks from {prior[0]}")
-        json.dump(sorted(ok_ids), open(os.path.join(OUT, "bcb_runnable.json"), "w"))
-    elif CONFIG.get("canonical", True):
-        ok_ids = bcb_canonical()
-        results["canonical"] = {"bcb_hard": {"n": 148, "pass@1": round(100 * len(ok_ids) / 148, 1)}}
-        json.dump(sorted(ok_ids), open(os.path.join(OUT, "bcb_runnable.json"), "w"))
     for name in names:
         d, meta = models[name]
         kind = meta["kind"]
@@ -598,7 +815,13 @@ def main():
                 elif bench == "lcb":
                     r = lcb_score(name, kind, samples)
                 elif bench.startswith("bcb_"):
-                    r = bcb_score(name, kind, bench[4:], samples, ok_ids)
+                    r = bcb_score(name, kind, bench[4:], samples, runnable("bcb", results))
+                elif bench.startswith("bcbf_"):
+                    r = bcb_score(name, kind, bench[5:], samples, runnable("bcbf", results), "bcb_full.jsonl", "bcbf")
+                elif bench.startswith("mple_"):
+                    r = mple_score(name, kind, bench[5:], samples)
+                elif bench == "ds1000":
+                    r = ds1000_score(name, kind, samples, runnable("ds1000", results))
                 else:
                     continue
             except Exception as e:

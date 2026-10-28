@@ -2,7 +2,8 @@
 
     python eval/bench_report.py results-a.json results-b.json ... --md eval/R1_RESULTS.md --json bench.json
 
-Params come from the HF model cards when known (PARAMS below); a model's row lists every benchmark it ran.
+Params come from the HF model cards when known (PARAMS below); a model's row lists every benchmark it ran,
+and the Markdown table leaves out a column no model has a score in.
 """
 
 import argparse
@@ -26,7 +27,9 @@ PARAMS = {  # billions, from the safetensors metadata on Hugging Face (21 Oct 20
 COLS = [("humaneval", "base", "HumanEval"), ("humaneval", "plus", "HumanEval+"), ("mbpp", "base", "MBPP"),
         ("mbpp", "plus", "MBPP+"), ("concept", "pass@1", "Concept"), ("bcb_complete", "pass@1_runnable", "BCB-H complete"),
         ("bcb_instruct", "pass@1_runnable", "BCB-H instruct"), ("lcb", "pass@1", "LCB"), ("crux_i", "pass@1", "CRUX-I"),
-        ("crux_o", "pass@1", "CRUX-O"), ("manual", "pass@1", "Hands-on")]
+        ("crux_o", "pass@1", "CRUX-O"), ("manual", "pass@1", "Hands-on"), ("bcbf_complete", "pass@1_runnable", "BCB complete"),
+        ("bcbf_instruct", "pass@1_runnable", "BCB instruct"), ("ds1000", "pass@1_runnable", "DS-1000"),
+        ("mple_js", "pass@1", "MultiPL-E JS"), ("mple_cpp", "pass@1", "MultiPL-E C++"), ("mple_sh", "pass@1", "MultiPL-E Bash")]
 
 
 def main():
@@ -64,11 +67,12 @@ def main():
     if a.json:
         json.dump({"rows": rows, "canonical": merged.get("_canonical")}, open(a.json, "w"), indent=1)
     if a.md:
-        head = "| Model | Kind | Params | " + " | ".join(c[2] for c in COLS) + " |"
-        lines = [head, "|" + "---|" * (3 + len(COLS))]
+        cols = [c for c in COLS if any(x[c[2]] is not None for x in rows)]
+        head = "| Model | Kind | Params | " + " | ".join(c[2] for c in cols) + " |"
+        lines = [head, "|" + "---|" * (3 + len(cols))]
         for x in rows:
             cells = [x["model"], x["kind"] or "", f"{x['params_b']:.2f}B" if x["params_b"] else ""]
-            cells += ["" if x[c[2]] is None else f"{x[c[2]]:.1f}" for c in COLS]
+            cells += ["" if x[c[2]] is None else f"{x[c[2]]:.1f}" for c in cols]
             lines.append("| " + " | ".join(cells) + " |")
         open(a.md, "w").write("\n".join(lines) + "\n")
     print(f"{len(rows)} models")
