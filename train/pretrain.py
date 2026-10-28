@@ -21,7 +21,7 @@ CONFIG keys (all optional except data):
   export_hf       write a Hugging Face Qwen3 checkpoint when the run completes
   wandb           project name, or null
   hf_data         {"repo", "patterns", "dir"}: download data files from an HF dataset before reading globs
-  init_from       weights to start from (SFT): checkpoint dir/glob or "hf://<repo>/<run>/latest"
+  init_from       weights to start from (SFT): checkpoint dir/glob, "hf://<repo>/<run>/latest" or "hfmodel://<repo>"
 """
 
 import glob
@@ -704,8 +704,36 @@ def fetch_hf_data():
     log(f"hf_data: {n / 1e9:.2f} GB from {spec['repo']} into {d} in {time.time() - t:.0f}s")
 
 
+def import_hf(path, like_params):
+    """The inverse of export_hf: a Qwen3 model.safetensors (one file, tied embeddings) -> our param tree."""
+    from safetensors.numpy import load_file
+
+    t = load_file(os.path.join(path, "model.safetensors"))
+    names = {"attn_norm": "input_layernorm", "mlp_norm": "post_attention_layernorm", "q_norm": "self_attn.q_norm",
+             "k_norm": "self_attn.k_norm", "wq": "self_attn.q_proj", "wk": "self_attn.k_proj", "wv": "self_attn.v_proj",
+             "wo": "self_attn.o_proj", "w_gate": "mlp.gate_proj", "w_up": "mlp.up_proj", "w_down": "mlp.down_proj"}
+    L = like_params["layers"]["wq"].shape[0]
+
+    def stack(k):
+        w = [t[f"model.layers.{i}.{names[k]}.weight"] for i in range(L)]
+        return np.stack([x.T if x.ndim == 2 else x for x in w]).astype(np.float32)
+
+    new = {"embed": t["model.embed_tokens.weight"].astype(np.float32),
+           "final_norm": t["model.norm.weight"].astype(np.float32),
+           "layers": {k: stack(k) for k in like_params["layers"]}}
+    for a, b in zip(jax.tree_util.tree_leaves(new), jax.tree_util.tree_leaves(like_params)):
+        assert a.shape == b.shape, f"init_from shape mismatch {a.shape} vs {b.shape}"
+    return new
+
+
 def load_params(src, like_params):
-    """Weights only from a checkpoint dir (or glob), or "hf://<repo>/<run>/latest" (the trainer's HF backup)."""
+    """Weights only from a checkpoint dir (or glob), "hf://<repo>/<run>/latest" (the trainer's HF backup), or
+    "hfmodel://<repo>" (an exported Hugging Face model, such as a released or averaged one)."""
+    if src.startswith("hfmodel://"):
+        from huggingface_hub import snapshot_download
+        d = snapshot_download(src[10:], allow_patterns=["model.safetensors", "config.json"], token=KEYS.get("HF_TOKEN"),
+                              local_dir=os.path.join("/kaggle/tmp" if KAGGLE else out_dir(), "init_hf"))
+        return import_hf(d, like_params)
     if src.startswith("hf://"):
         from huggingface_hub import snapshot_download
         repo, prefix = src[5:].split("/", 2)[:2], src[5:].split("/", 2)[2]
