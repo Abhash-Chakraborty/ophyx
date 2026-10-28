@@ -2,7 +2,7 @@
 
 Runs on the orchestration box. It is network-bound (one HTTP call at a time per worker, a few per
 second in total) and needs no GPU. Raw generations are written as gzipped JSONL batches and pushed
-to the private Kaggle dataset `pycoder-synth-raw`, where a keyless, offline Kaggle session executes
+to the private Kaggle dataset `ophyx-synth-raw`, where a keyless, offline Kaggle session executes
 them (data/synth/verify.py). Generated code is never executed here.
 
   python data/synth/generate.py --n 2000 --out ~/.cache/ophyx-synth            # pilot
@@ -224,7 +224,7 @@ def main():
     ap.add_argument("--batch", type=int, default=1000)
     ap.add_argument("--daily-token-cap", type=float, default=150e6)
     ap.add_argument("--upload-every", type=int, default=0, help="upload after every k batches (0 = only at the end)")
-    ap.add_argument("--dataset", default=None, help="Kaggle dataset to push batches to, e.g. abhashchakraborty/pycoder-synth-raw")
+    ap.add_argument("--dataset", default=None, help="Kaggle dataset to push batches to, e.g. abhashchakraborty/ophyx-synth-raw")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     env = load_env()

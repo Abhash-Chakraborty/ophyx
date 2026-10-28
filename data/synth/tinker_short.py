@@ -1,9 +1,9 @@
-"""Short verified exercises from a Tinker-hosted teacher (paid, hard dollar cap). Runs on the orchestration box.
+"""Short verified exercises from a Tinker-hosted teacher (paid, dollar cap checked per batch). Runs on the orchestration box.
 
 Each sample is one small module: a docstring stating the task the way a user would ask it, a solution of one
 to three functions (or one small class), and 4-8 pytest tests. Short on purpose: it matches HumanEval/MBPP-style
 work and fits the 2,048-token SFT window. Generated code is never executed here; batches go to the private
-Kaggle dataset `pycoder-synth-tinker`, where data/synth/verify.py runs them offline with
+Kaggle dataset `ophyx-synth-tinker`, where data/synth/verify.py runs them offline with
 {"keep_failures": true}.
 
   python data/synth/tinker_short.py gen --n 2000 --budget 1.0        # stops at $1.00 total spend
@@ -189,7 +189,7 @@ def main():
     ap.add_argument("--out", default=os.path.expanduser("~/.cache/ophyx-synth-tinker/raw"))
     ap.add_argument("--batch", type=int, default=250)
     ap.add_argument("--workers", type=int, default=16)
-    ap.add_argument("--dataset", default="abhashchakraborty/pycoder-synth-tinker")
+    ap.add_argument("--dataset", default="abhashchakraborty/ophyx-synth-tinker")
     ap.add_argument("--no-upload", action="store_true")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
@@ -210,9 +210,10 @@ def main():
             repair_prompt(r), 0.4) for r in failed[se[0]:se[1]]]
         name_for = lambda se: f"r{int(time.time())}-{se[0]:05d}"
     print(f"{a.mode}: {len(work)} batches; spent so far ${state['spent']:.3f} of ${a.budget:.2f}", flush=True)
+    last_cost = 0.0
     for se in work:
-        if state["spent"] >= a.budget:
-            print(f"budget reached (${state['spent']:.3f}); stopping", flush=True)
+        if state["spent"] + last_cost > a.budget:  # spend is only known per batch, so stop before overshooting
+            print(f"budget reached (${state['spent']:.3f}, next batch ~${last_cost:.3f}); stopping", flush=True)
             break
         jobs = jobs_for(se)
         t0 = time.time()
@@ -222,6 +223,7 @@ def main():
             f.writelines(json.dumps(r) + "\n" for r in REJECTS)
         REJECTS.clear()
         state["spent"] += cost
+        last_cost = cost
         if a.mode == "gen":
             state["next"] = se[1]
         else:

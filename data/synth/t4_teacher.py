@@ -3,6 +3,9 @@
 Phase 1 (this version): measure throughput and output quality for candidate teachers, so we can
 decide how much synthetic data the T4 quota can buy. Outputs samples in the same batch format as
 the API generator, for the offline verifier.
+
+CONFIG: n_per_model, models ([[repo, tensor_parallel], ...]), plus "library": true and "curriculum" (the
+contents of data/curriculum.json) for data/synth/generate.py.
 """
 
 import subprocess as _sp

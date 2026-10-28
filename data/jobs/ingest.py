@@ -58,7 +58,7 @@ def load_keys():
         return {}
     paths = glob.glob("/kaggle/input/**/keys.json", recursive=True)
     if not paths:
-        raise SystemExit("keys.json not found: attach the pycoder-keys dataset")
+        raise SystemExit("keys.json not found: attach the ophyx-keys dataset")
     with open(paths[0]) as f:
         return json.load(f)
 
@@ -949,7 +949,7 @@ def job_synth(uploader, pool):
     import gzip as _gz
 
     files = sorted(p for p in glob.glob("/kaggle/input/**/verified/**/batch-*", recursive=True)
-                   if os.path.isfile(p) and not p.endswith(".stats.json"))
+                   if os.path.isfile(p) and not p.endswith(".stats.json") and ".failed." not in os.path.basename(p))
     if SMOKE:
         files = sorted(glob.glob(os.path.join(WORK, "verified", "batch-*.jsonl")))
     totals = {}

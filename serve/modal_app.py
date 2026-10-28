@@ -38,7 +38,7 @@ def download():
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .pip_install("torch==2.6.0", "transformers==4.51.3", "fastapi[standard]==0.115.12", "huggingface_hub==0.30.2")
-    .env({"OPHYX_MODEL": MODEL_REPO})
+    .env({"OPHYX_MODEL": MODEL_REPO, "OPHYX_ORIGINS": ",".join(ALLOWED_ORIGINS)})  # the container re-imports this file
     .run_function(download, secrets=[modal.Secret.from_name("ophyx-hf")])
 )
 app = modal.App("ophyx-demo", image=image)
@@ -61,6 +61,8 @@ class Ophyx:
 
     def allowed(self, ip):
         now = time.monotonic()
+        if len(self.buckets) > 10_000:  # a bucket refills in a minute; older ones carry no state
+            self.buckets = {k: v for k, v in self.buckets.items() if now - v[1] < 60}
         tokens, last = self.buckets.get(ip, (PER_IP_PER_MIN, now))
         tokens = min(PER_IP_PER_MIN, tokens + (now - last) * PER_IP_PER_MIN / 60)
         ok = tokens >= 1
@@ -75,7 +77,14 @@ class Ophyx:
         from fastapi import FastAPI, HTTPException, Request
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import StreamingResponse
-        from transformers import TextIteratorStreamer
+        from transformers import StoppingCriteria, StoppingCriteriaList, TextIteratorStreamer
+
+        class Stop(StoppingCriteria):
+            def __init__(self, event):
+                self.event = event
+
+            def __call__(self, input_ids, scores, **kw):
+                return self.event.is_set()
 
         api = FastAPI()
         api.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_methods=["GET", "POST"],
@@ -87,20 +96,27 @@ class Ophyx:
 
         @api.post("/generate")
         async def generate(req: Request):
-            ip = req.headers.get("x-forwarded-for", req.client.host if req.client else "?").split(",")[0].strip()
+            # the proxy appends the address it saw; earlier entries come from the client and can be anything
+            ip = req.headers.get("x-forwarded-for", req.client.host if req.client else "?").split(",")[-1].strip()
             if not self.allowed(ip):
                 raise HTTPException(429, "Too many requests. Try again in a minute.")
-            body = await req.json()
-            prompt = str(body.get("prompt", "")).strip()
+            try:
+                body = await req.json()
+                assert isinstance(body, dict)
+                prompt = str(body.get("prompt", "")).strip()
+                max_new = max(1, min(int(body.get("max_tokens", 512)), MAX_NEW_TOKENS))
+                temperature = max(0.0, min(float(body.get("temperature", 0.2)), 1.5))
+            except (ValueError, TypeError, AssertionError):
+                raise HTTPException(400, "send a JSON object: prompt, and optionally max_tokens and temperature")
             if not prompt:
                 raise HTTPException(400, "prompt is empty")
-            max_new = max(1, min(int(body.get("max_tokens", 512)), MAX_NEW_TOKENS))
-            temperature = max(0.0, min(float(body.get("temperature", 0.2)), 1.5))
             ids = self.tok(f"<|user|>\n{prompt}\n<|python|>\n", return_tensors="pt")["input_ids"]
             if ids.shape[1] > MAX_PROMPT_TOKENS:
                 raise HTTPException(413, f"prompt is too long ({ids.shape[1]} tokens, max {MAX_PROMPT_TOKENS})")
             streamer = TextIteratorStreamer(self.tok, skip_prompt=True, skip_special_tokens=True, timeout=REQUEST_TIMEOUT_S)
+            stop = threading.Event()  # set when the client leaves or time runs out, so the GPU stops too
             kw = dict(input_ids=ids.to("cuda"), max_new_tokens=min(max_new, self.ctx - ids.shape[1]), streamer=streamer,
+                      stopping_criteria=StoppingCriteriaList([Stop(stop)]),
                       eos_token_id=self.stop_ids, pad_token_id=self.end_id,
                       do_sample=temperature > 0, temperature=temperature or None, top_p=0.95 if temperature > 0 else None)
 
@@ -113,12 +129,15 @@ class Ophyx:
 
             def events():
                 n = 0
-                for chunk in streamer:
-                    n += 1
-                    yield f"data: {json.dumps({'text': chunk})}\n\n"
-                    if time.time() - t0 > REQUEST_TIMEOUT_S:
-                        break
-                yield f"data: {json.dumps({'done': True, 'seconds': round(time.time() - t0, 2), 'chunks': n})}\n\n"
+                try:
+                    for chunk in streamer:
+                        n += 1
+                        yield f"data: {json.dumps({'text': chunk})}\n\n"
+                        if time.time() - t0 > REQUEST_TIMEOUT_S:
+                            break
+                    yield f"data: {json.dumps({'done': True, 'seconds': round(time.time() - t0, 2), 'chunks': n})}\n\n"
+                finally:
+                    stop.set()
 
             return StreamingResponse(events(), media_type="text/event-stream")
 

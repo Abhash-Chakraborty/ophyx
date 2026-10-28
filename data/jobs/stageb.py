@@ -207,7 +207,9 @@ def bench_items():
                     n += 1
                     yield f"{name}/{r.get(idf, i) if idf else i}", "\n".join(parts)
             report[name] = n
-        except Exception as e:
+        except Exception as e:  # a benchmark that didn't load would leave its overlaps in the data
+            if not (SMOKE or CONFIG.get("allow_missing_bench")):
+                raise
             report[name] = f"failed: {type(e).__name__}: {str(e)[:200]}"
         log("benchmark", name, report[name])
     bench_items.report = report

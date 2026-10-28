@@ -15,10 +15,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 T = []
 
 
-def task(slug, area, prompt, tests, reference, difficulty=2, entry_points=()):
+def task(slug, area, prompt, tests, reference, difficulty=2, entry_points=(), prose_ok=False):
+    """prose_ok: the prompt doesn't ask for code, so a plain-text answer passes (code must still import)."""
     T.append({"task_id": f"manual/{slug}", "area": area, "leaf": slug, "difficulty": difficulty,
               "prompt": textwrap.dedent(prompt).strip(), "entry_points": list(entry_points),
-              "tests": textwrap.dedent(tests).strip() + "\n", "reference": textwrap.dedent(reference).strip() + "\n"})
+              "tests": textwrap.dedent(tests).strip() + "\n", "reference": textwrap.dedent(reference).strip() + "\n",
+              **({"prose_ok": True} if prose_ok else {})})
 
 
 IMPORTS_ONLY = """
@@ -743,7 +745,7 @@ task("off_topic_hi", "off_topic", """
 
 Describe what you need, paste an error message, or share code you want changed.
 """
-''', difficulty=1)
+''', difficulty=1, prose_ok=True)
 
 task("explain_recursion", "off_topic", """
     explain recursion to a beginner
@@ -758,7 +760,7 @@ def factorial(n):
     if n <= 1:  # base case
         return 1
     return n * factorial(n - 1)  # the same problem, one step smaller
-''', difficulty=1)
+''', difficulty=1, prose_ok=True)
 
 # ---------------------------------------------------------------- patterns and the standard library
 
@@ -890,12 +892,15 @@ task("requests_json", "web", """
     error status, and also when the request times out.
 """, """
 import pytest
+import json
 import requests
 from solution import fetch_user
 
 class Resp:
     def __init__(self, code, body=None):
         self.status_code, self._body = code, body
+        self.ok, self.reason, self.headers = code < 400, "", {"Content-Type": "application/json"}
+        self.text = json.dumps(body)
     def json(self):
         return self._body
     def raise_for_status(self):
@@ -1507,8 +1512,9 @@ task("json_schema_lite", "data", """
     Write `validate(data, schema)` for a tiny schema format: a schema is a Python type (int, str,
     float, bool, list, dict), a list with one schema (every element must match it), or a dict mapping
     keys to schemas (all keys required, extra keys allowed; a key ending in "?" is optional). Return a
-    list of error strings like "user.age: expected int, got str" (paths joined with ".", list indexes
-    as [i]); empty if valid. bool must not count as int.
+    list of error strings like "user.age: expected int, got str" or, for a required key that is
+    absent, "user.age: missing" (paths joined with ".", list indexes as [i]); empty if valid. bool must
+    not count as int.
 """, """
 from solution import validate
 

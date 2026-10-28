@@ -3,8 +3,8 @@
 The script gets a `CONFIG = {...}` preamble, so one source file serves every shard.
 Runs on the orchestration box (light: writes two small files and calls the Kaggle CLI).
 
-  python kaggle/launch.py data/jobs/ingest.py pycoder-data-stack-edu-0 \
-      --config '{"job": "stack_edu", "shard": 0, "nshards": 3}' --datasets pycoder-keys --timeout 28800
+  python kaggle/launch.py data/jobs/ingest.py ophyx-data-stack-edu-0 \
+      --config '{"job": "stack_edu", "shard": 0, "nshards": 3}' --datasets ophyx-keys --timeout 28800
 """
 
 import argparse
@@ -48,7 +48,7 @@ def lint(path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("script")
-    ap.add_argument("name", help="kernel slug, e.g. pycoder-data-stack-edu-0")
+    ap.add_argument("name", help="kernel slug, e.g. ophyx-data-stack-edu-0")
     ap.add_argument("--config", default="{}")
     ap.add_argument("--accel", choices=ACCEL, default="cpu")
     ap.add_argument("--timeout", type=int, default=12 * 3600)
@@ -98,9 +98,11 @@ def main():
     if ACCEL[a.accel]:
         cmd += ["--accelerator", ACCEL[a.accel]]
     r = subprocess.run(cmd, env=env, capture_output=True, text=True)
-    print((r.stdout + r.stderr).strip().splitlines()[-1] if (r.stdout + r.stderr).strip() else "no output")
+    out = (r.stdout + r.stderr).strip()
+    print(out.splitlines()[-1] if out else "no output")
     shutil.rmtree(build, ignore_errors=True)
-    sys.exit(r.returncode)
+    # the kaggle CLI exits 0 when Kaggle refuses a push (quota, bad source) and only prints the error
+    sys.exit(r.returncode or (1 if "push error" in out.lower() else 0))
 
 
 if __name__ == "__main__":

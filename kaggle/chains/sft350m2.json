@@ -9,7 +9,7 @@
   "ophyx-train-sft350m2-b"
  ],
  "datasets": [
-  "pycoder-keys"
+  "ophyx-keys"
  ],
  "config": {
   "vocab": 32768,

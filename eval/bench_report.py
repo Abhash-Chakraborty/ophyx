@@ -7,6 +7,7 @@ Params come from the HF model cards when known (PARAMS below); a model's row lis
 
 import argparse
 import json
+import sys
 
 PARAMS = {  # billions, from the safetensors metadata on Hugging Face (21 Oct 2026)
     "ophyx-350m-sft": 0.349, "ophyx-350m-base": 0.349, "ophyx-125m-sft": 0.126, "ophyx-125m-base": 0.126,
@@ -40,7 +41,14 @@ def main():
             if name == "canonical":
                 merged.setdefault("_canonical", r)
                 continue
-            merged.setdefault(name, {}).update(r)
+            # a bench that errored in a later file must not hide a good result from an earlier one
+            merged.setdefault(name, {}).update({k: v for k, v in r.items()
+                                                if not (isinstance(v, dict) and "error" in v and k in merged[name])})
+            for bench, v in r.items():
+                if isinstance(v, dict) and "n_runnable" in v:
+                    seen = merged.setdefault("_n_runnable", {}).setdefault(bench, v["n_runnable"])
+                    if seen != v["n_runnable"]:
+                        sys.exit(f"{bench}: {name} was scored on {v['n_runnable']} runnable tasks, others on {seen}")
     rows = []
     for name, r in merged.items():
         if name.startswith("_"):

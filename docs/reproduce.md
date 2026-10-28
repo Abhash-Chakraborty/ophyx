@@ -16,7 +16,7 @@ which only writes a script, calls the Kaggle CLI and reads results. Nothing here
    grep -rlE "abhash-chakraborty/ophyx-(runs|data)" data train kaggle
    ```
 3. **A private Kaggle dataset** holding `keys.json` = `{"HF_TOKEN": "..."}`. The author's is called
-   `pycoder-keys`; the commands below use that name. Attach it only to sessions that run no model
+   `ophyx-keys`; the commands below use that name. Attach it only to sessions that run no model
    output.
 4. Optional: `NTFY_TOPIC` for phone notifications from the watchdog, and the same three values as
    GitHub Actions secrets if the watchdog should run there.
@@ -35,9 +35,11 @@ python kaggle/launch.py <script> <kernel-slug> --accel cpu|t4|tpu --timeout <sec
 it), lints the assembled file with ruff, and pushes it. `--dry-run` builds the kernel folder without
 pushing. Outputs come back with `kaggle kernels output <user>/<slug> -p <dir>`.
 
-One rule holds for every job: a session that executes model-written code gets `--no-internet` and
-no keys. Model weights and wheels reach it through `data/jobs/relay_in.py`, a separate session that
-downloads them and runs nothing.
+One rule holds for every job: a session that executes model-written code gets no keys, and every
+session that runs the trained model's code also gets `--no-internet`. Model weights and wheels reach
+those sessions through `data/jobs/relay_in.py`, a separate session that downloads them and runs
+nothing. The one session with internet on is `data/synth/t4_generate.py`, which runs the public
+teacher model's code next to the teacher, because it installs vLLM from PyPI.
 
 ## Stages
 
@@ -83,19 +85,19 @@ Hugging Face model.
 
 ```bash
 # once: download every public test set into a kernel output
-python kaggle/launch.py eval/bench_kit.py pycoder-bench-kit --accel cpu
+python kaggle/launch.py eval/bench_kit.py ophyx-bench-kit --accel cpu
 
 # generate answers on 2x T4 (configs in eval/runs/)
 python kaggle/launch.py eval/bench_gen.py ophyx-bench-gen-x --accel t4 --timeout 43200 \
-    --config "$(cat eval/runs/r3_sft2.json)" --datasets pycoder-evaldata --kernel-sources pycoder-bench-kit
+    --config "$(cat eval/runs/r3_sft2.json)" --datasets ophyx-evaldata --kernel-sources ophyx-bench-kit
 
 # score them offline, then merge the results
 python kaggle/launch.py eval/bench_exec.py ophyx-bench-exec-x --accel cpu --timeout 43200 --no-internet \
-    --config '{"jobs": 4}' --datasets pycoder-evaldata --kernel-sources pycoder-bench-kit ophyx-bench-gen-x
+    --config '{"jobs": 4}' --datasets ophyx-evaldata --kernel-sources ophyx-bench-kit ophyx-bench-gen-x
 python eval/bench_report.py results.json --md eval/R1_RESULTS.md
 ```
 
-`pycoder-evaldata` is a Kaggle dataset with the concept suite (`eval/concept_suite`) and the
+`ophyx-evaldata` is a Kaggle dataset with the concept suite (`eval/concept_suite`) and the
 hands-on set (`eval/manual`). A model of your own is attached as a kernel source and named by a glob,
 for example `"/kaggle/input/**/grpo/p4-lr2e6/final"`.
 

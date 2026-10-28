@@ -1,6 +1,6 @@
 """Bring models and Python wheels into a Kaggle output, for sessions that must run with internet off.
 
-Kaggle CPU, internet on, keys attached (pycoder-keys); it runs no model or generated code. Attach this
+Kaggle CPU, internet on, keys attached (ophyx-keys); it runs no model or generated code. Attach this
 kernel's output to an offline session (GRPO, sandboxed scoring) as a kernel source.
 
 CONFIG: models [{"repo": "abhash-chakraborty/ophyx-350m-sft", "dir": "ophyx-350m-sft"}],

@@ -197,12 +197,23 @@ def run_tests(code, tests, cfg):
         t = time.time()
         p = subprocess.Popen(cmd, cwd=d, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              stdin=subprocess.DEVNULL, start_new_session=True)
+
+        def kill():  # the whole group: background children must not outlive the answer or hold the pipe open
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
         try:
             out, _ = p.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
-            os.killpg(p.pid, signal.SIGKILL)
-            p.communicate()
+            kill()
+            try:
+                p.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                p.stdout.close()
             return "timeout", timeout, "", 0
+        kill()
         out = out.decode(errors="replace")
         status = "pass" if p.returncode == 0 else "fail"
         skips = int(m.group(1)) if (m := SKIPPED_RE.search(out[-500:])) else 0
@@ -228,6 +239,8 @@ def score(tasks, solutions, cfg):
         need = tuple(int(x) for x in t.get("min_python", "3.0").split("."))
         if need > pyver:
             rec.update(status="skipped", seconds=0, tail=f"needs Python {t['min_python']}")
+        elif not rec["parses"] and t.get("prose_ok") and code.strip():  # a plain-text answer to a chat prompt
+            rec.update(status="pass", seconds=0, tail="prose answer")
         elif not rec["parses"]:
             rec.update(status="syntax_error" if code.strip() else "empty", seconds=0, tail="")
         else:

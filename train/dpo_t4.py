@@ -1,6 +1,6 @@
 """DPO on pass/fail pairs from bank_judge.py. Kaggle T4, keys attached; it runs no generated code.
 
-Attach pycoder-keys and the bank-judge outputs (judged/<name>/pairs-*.jsonl). The pairs are the
+Attach ophyx-keys and the bank-judge outputs (judged/<name>/pairs-*.jsonl). The pairs are the
 model's own samples for one problem: chosen passed every test, rejected failed one. Training uses
 the SFT template, so prompts end with "<|python|>\\n" and both answers end with <|end|>.
 

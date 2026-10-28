@@ -1566,10 +1566,10 @@ def test_existing_none_value_restored():
 
 def test_os_environ(monkeypatch):
     import os
-    monkeypatch.setenv("PYCODER_TEST_VAR", "orig")
-    with patched(os.environ, PYCODER_TEST_VAR="tmp", PYCODER_OTHER="1"):
-        assert os.environ["PYCODER_TEST_VAR"] == "tmp"
-    assert os.environ["PYCODER_TEST_VAR"] == "orig" and "PYCODER_OTHER" not in os.environ
+    monkeypatch.setenv("OPHYX_TEST_VAR", "orig")
+    with patched(os.environ, OPHYX_TEST_VAR="tmp", OPHYX_OTHER="1"):
+        assert os.environ["OPHYX_TEST_VAR"] == "tmp"
+    assert os.environ["OPHYX_TEST_VAR"] == "orig" and "OPHYX_OTHER" not in os.environ
 @@@ task parameter_kinds leaf=16 diff=3 entry=make_url
 @@@ prompt
 Write `make_url(host, /, *path, scheme="https", port=None, **query) -> str` that uses every kind of parameter on purpose: `host` is positional-only (so a query parameter may itself be called `host`), any number of path segments are positional, `scheme` and `port` are keyword-only, and the remaining keyword arguments become the query string in the order given. Build `scheme://host[:port]/seg1/seg2?k=v&...`, quoting each path segment with `urllib.parse.quote(seg, safe="")` and encoding the query with `urllib.parse.urlencode`. With no path the URL ends in `/`. A query value of None is omitted. A port must be an int in 1-65535, else `ValueError`.

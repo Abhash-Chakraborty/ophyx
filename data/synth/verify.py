@@ -1,7 +1,7 @@
 """Execute synthetic samples in a sandbox and keep only the ones that pass. Kaggle CPU, offline, no keys.
 
-Attach the `pycoder-synth-raw` dataset. Each sample runs in its own temporary directory as a
-subprocess with CPU, memory, file-size and process limits, a wall-clock timeout, an empty
+Attach the `ophyx-synth-raw` dataset. Each sample runs in its own temporary directory as a
+subprocess with CPU, memory, file-size and open-file limits, a wall-clock timeout, an empty
 environment, and no network (the session has internet off and no secrets attached).
 
   textbook          `python module.py` must exit 0 (its asserts check its own claims)
@@ -78,6 +78,10 @@ def run(code, kind):
             os.killpg(p.pid, signal.SIGKILL)
             p.communicate()
             return {"ok": False, "why": "timeout"}
+        try:  # whatever the program left running in its process group goes too
+            os.killpg(p.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
         out = out.decode(errors="replace")[-3000:]
         sec = round(time.time() - t, 2)
         if kind == "textbook":

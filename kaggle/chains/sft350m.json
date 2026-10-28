@@ -5,11 +5,11 @@
  "accel": "tpu",
  "timeout": 32400,
  "kernels": [
-  "pycoder-train-sft350m-a",
-  "pycoder-train-sft350m-b"
+  "ophyx-train-sft350m-a",
+  "ophyx-train-sft350m-b"
  ],
  "datasets": [
-  "pycoder-keys"
+  "ophyx-keys"
  ],
  "config": {
   "vocab": 32768,

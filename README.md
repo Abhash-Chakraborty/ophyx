@@ -94,7 +94,11 @@ Benchmarks, the problem bank and the RL reward all run code a model wrote. That 
 in a Kaggle session with internet off and no keys attached, in a child process with a wall-clock
 timeout, `prlimit` CPU, memory and file limits, an empty environment and its own temp dir. Sessions
 that need a token (uploads, downloads of private repos) run no generated code. Models and wheels
-reach the offline sessions through `data/jobs/relay_in.py`.
+reach the offline sessions through `data/jobs/relay_in.py`. In the problem-bank judge and the RL
+reward, each answer also runs as its own Unix user with a process cap, and everything it leaves
+behind is killed. One job is different: synthetic exercise generation (`data/synth/t4_generate.py`)
+runs the public teacher model's code in the teacher's own session, which has internet on for vLLM
+but holds no keys.
 
 ## Repository layout
 
@@ -107,7 +111,7 @@ reach the offline sessions through `data/jobs/relay_in.py`.
 | `kaggle/` | `launch.py` (push any script as a Kaggle kernel), `watchdog.py` and `chains/` (multi-session training), tools |
 | `serve/` | A Modal endpoint for a demo: scales to zero, rate-limited per IP |
 | `docs/` | [The plan](docs/plan.md), [the data](docs/data.md), [the training regime](docs/training.md) and [how to reproduce it](docs/reproduce.md) |
-| `tests/` | CPU tests for the scoring helpers, averaging, the launcher and the task sets |
+| `tests/` | CPU tests for the scoring helpers, averaging, the launcher, the watchdog and the task sets |
 
 ## Develop
 
@@ -143,8 +147,6 @@ in `kaggle/chains/` is disabled.
 
 - The tokenised training data and the intermediate checkpoints live in private Hugging Face repos.
   The jobs that build them are all here.
-- Some Kaggle datasets and kernels keep the project's earlier name, `pycoder-*`, because Kaggle
-  can't rename them.
 - The model is weak at what the hands-on set measures: it adds its own tests to answers, often
   returns quiet bugs unfixed, and misses details in long prompts. See the
   [hands-on review](eval/HANDS_ON_REVIEW.md).

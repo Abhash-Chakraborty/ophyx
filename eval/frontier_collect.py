@@ -37,6 +37,9 @@ def main():
     ap.add_argument("--prompts", required=True)
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
+    def weak(r):
+        return not r.get("response") or r.get("finish") == "length"
+
     prompts = {(r["bench"], r["task_id"]): r for r in map(json.loads, open(a.prompts))}
     got = collections.defaultdict(dict)  # (model, bench) -> task_id -> reply; later runs fill gaps of earlier ones
     for d in a.runs:
@@ -44,7 +47,9 @@ def main():
             model, bench = os.path.basename(os.path.dirname(f)), os.path.basename(f)[:-6]
             for r in map(json.loads, open(f)):
                 if "response" in r and (bench, r["task_id"]) in prompts:
-                    got[(model, bench)].setdefault(r["task_id"], r)
+                    old = got[(model, bench)].get(r["task_id"])
+                    if old is None or (weak(old) and not weak(r)):  # a re-ask replaces an empty or cut-off reply
+                        got[(model, bench)][r["task_id"]] = r
     missing = collections.Counter()
     for (model, bench), replies in sorted(got.items()):
         mdir = os.path.join(a.out, "samples", model)

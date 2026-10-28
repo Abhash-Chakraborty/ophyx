@@ -2,7 +2,7 @@
 
 Appended after data/jobs/verify_bank.py by the launcher (CONFIG "library": true), which supplies the
 prompt wording (sft_row) so the questions read exactly as in the bank SFT set. Attach the
-verify-bank kernel outputs (verified/bank-*.jsonl) and pycoder-keys when the model repo is private.
+verify-bank kernel outputs (verified/bank-*.jsonl) and ophyx-keys when the model repo is private.
 Score the samples with data/jobs/bank_judge.py on a CPU session with internet off and no keys.
 
 CONFIG: model (HF id), name, n (samples per problem, default 8), temperature (0.8), top_p (0.95),

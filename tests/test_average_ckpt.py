@@ -44,3 +44,12 @@ def test_mismatched_tensors_stop(tmp_path):
         assert "tensor names differ" in str(e)
     else:
         raise AssertionError("expected SystemExit")
+
+
+def test_weights_must_match_checkpoints(tmp_path):
+    import pytest
+    cfg = {"model_type": "qwen3"}
+    make_ckpt(tmp_path / "a", 1.0, cfg)
+    make_ckpt(tmp_path / "b", 3.0, cfg)
+    with pytest.raises(SystemExit):
+        avg.average([str(tmp_path / "a"), str(tmp_path / "b")], [1.0], str(tmp_path / "out"))

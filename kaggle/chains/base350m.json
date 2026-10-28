@@ -7,15 +7,15 @@
  "accel": "tpu",
  "timeout": 32400,
  "kernels": [
-  "pycoder-train-base350m-a",
-  "pycoder-train-base350m-b"
+  "ophyx-train-base350m-a",
+  "ophyx-train-base350m-b"
  ],
  "datasets": [
-  "pycoder-keys"
+  "ophyx-keys"
  ],
  "kernel_sources": [
-  "pycoder-tokens-v1",
-  "pycoder-tokens-v2"
+  "ophyx-tokens-v1",
+  "ophyx-tokens-v2"
  ],
  "config": {
   "vocab": 32768,

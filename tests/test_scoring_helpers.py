@@ -45,3 +45,24 @@ def test_extract_module_stops_at_end_token(run):
 
 def test_chat_prompt_template(run):
     assert run.chat_prompt({"prompt": "Add two numbers."}) == "<|user|>\nAdd two numbers.\n<|python|>\n"
+
+
+def test_trim_special_leaves_plain_words_in_code(bx):
+    code = 'import sys\nprint("usage: wc.py <filename>")\n'
+    out, cut = bx.trim_special([{"completion": code}])
+    assert cut == 0 and out[0]["completion"] == code
+    out, cut = bx.trim_special([{"completion": "x = 1\n<filename>b.py\ny = 2"}])
+    assert cut == 1 and out[0]["completion"] == "x = 1\n"
+
+
+def test_same_lines_compares_numbers_as_decimals(bx):
+    assert bx._same_lines("1.50 2\n", "1.5 2")
+    assert not bx._same_lines("1.5 3", "1.5 2")
+    assert not bx._same_lines("1\n2", "1")
+
+
+def test_sandbox_keeps_long_stdout_and_drops_stderr(bx, tmp_path):
+    import sys
+    code = "import sys\nprint('x' * 5000)\nprint('noise', file=sys.stderr)\n"
+    st, _, out = bx.sandbox([sys.executable, "-c", code], str(tmp_path), timeout=20, stdout_only=True)
+    assert st == "pass" and out.strip() == "x" * 5000

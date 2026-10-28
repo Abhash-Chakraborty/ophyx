@@ -27,7 +27,7 @@ COLS = [  # label, benchmark, variant (exact), source note
 NOTES = [
     "EvalPlus: leaderboard results.json, last modified 2024-12-26, greedy, mostly instruct prompts.",
     "BigCodeBench-Hard: leaderboard, last modified 2025-04-16, all 148 tasks. Our own runs also report the 131 tasks "
-    "whose reference solution passes in our offline sandbox; compare against our all-148 number.",
+    "whose reference solution passes in our offline sandbox; our columns count the same runnable tasks.",
     "LiveCodeBench: leaderboard per-problem data (2025-08-01), recomputed for the Feb-May 2025 window.",
     "CRUXEval: leaderboard data.csv (2024-12-06), T=0.2 with n=10; our runs are greedy, so they are close but not identical.",
     "Rows from model cards and papers are left out here: they use their own prompts and windows.",

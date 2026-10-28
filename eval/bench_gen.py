@@ -1,6 +1,6 @@
 """Generate answers for every benchmark with vLLM on Kaggle's 2x T4, greedy. Runs no generated code.
 
-The kit (eval/bench_kit.py output) and the private eval data (Kaggle dataset pycoder-evaldata: the
+The kit (eval/bench_kit.py output) and the private eval data (Kaggle dataset ophyx-evaldata: the
 concept suite and the hands-on prompts) are attached as inputs. Answers go to
 <out>/samples/<model>/<bench>.jsonl; eval/bench_exec.py scores them offline, with no keys.
 

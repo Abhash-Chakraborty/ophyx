@@ -68,7 +68,7 @@ def g_problems():
     rates = {}
     name = CONFIG.get("judged_name", "ophyx-350m-sft")
     files = _glob.glob(_os.path.join(SRC, "**", "judged", name, "bank-*.jsonl"), recursive=True)
-    if not files:  # outputs judged before the rename sit under judged/pycoder-base350m-sft/
+    if not files:  # older judge runs used another model name
         names = {f.split(_os.sep)[-2] for f in _glob.glob(_os.path.join(SRC, "**", "judged", "*", "bank-*.jsonl"), recursive=True)}
         if len(names) > 1:
             raise SystemExit(f"no judged/{name}/ but several others {sorted(names)}: set judged_name")
@@ -282,6 +282,8 @@ def g_main():
     for r, p in zip(runs, procs):
         p.join()
         log(f"{r['name']} exit {p.exitcode}; log tail:\n" + open(_os.path.join(G_OUT, f"log-{r['name']}.txt")).read()[-3000:])
+    if any(p.exitcode for p in procs):  # otherwise the kernel shows COMPLETE when a run crashed
+        _sys.exit(1)
 
 
 if __name__ == "__main__":

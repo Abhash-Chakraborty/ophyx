@@ -23,11 +23,12 @@ ap.add_argument("--data-version", default="v1")
 ap.add_argument("--push", default=None, help="private HF model repo to upload the export to")
 args = ap.parse_args()
 
-env = {}
-for line in open(os.path.join(ROOT, ".env")):
-    if "=" in line and not line.startswith("#"):
-        k, v = line.strip().split("=", 1)
-        env[k] = v.strip("'\"")
+env = dict(os.environ)
+if os.path.exists(os.path.join(ROOT, ".env")):
+    for line in open(os.path.join(ROOT, ".env")):
+        if "=" in line and not line.startswith("#"):
+            k, v = line.strip().split("=", 1)
+            env.setdefault(k, v.strip("'\""))
 token = env.get("HF_TOKEN")
 
 from huggingface_hub import HfApi, hf_hub_download, snapshot_download  # noqa: E402

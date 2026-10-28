@@ -1,6 +1,6 @@
 {
-  "id": "abhashchakraborty/pycoder-tpu-speedtest",
-  "title": "pycoder-tpu-speedtest",
+  "id": "abhashchakraborty/ophyx-tpu-speedtest",
+  "title": "ophyx-tpu-speedtest",
   "code_file": "speedtest.py",
   "language": "python",
   "kernel_type": "script",

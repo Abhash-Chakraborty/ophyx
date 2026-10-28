@@ -1,6 +1,6 @@
 """Score bench_gen.py answers offline: a Kaggle CPU kernel with no internet and no keys.
 
-Inputs (attached): the kit (eval/bench_kit.py output), the private eval data (pycoder-evaldata: the
+Inputs (attached): the kit (eval/bench_kit.py output), the private eval data (ophyx-evaldata: the
 concept suite, its run.py and the hands-on prompts) and one or more bench_gen kernels' outputs.
 Every model answer runs in a child process with a wall-clock timeout, prlimit limits, nice 19, an
 empty environment and its own temp dir.
@@ -15,7 +15,8 @@ empty environment and its own temp dir.
                     the tasks whose reference passes here, since some tasks need the network or a missing library
 
 CONFIG: models (names to score; default all found), skip_models, benches, shard / nshards (split
-the models across kernels), jobs (parallel children, default 4), canonical (default true: every shard needs the runnable set).
+the models across kernels), jobs (parallel children, default 4), canonical (default true: every shard needs the runnable set; an attached bcb_runnable.json from an earlier
+run is reused instead, so every shard scores the same tasks, unless recompute_canonical is set).
 """
 
 import concurrent.futures as cf
@@ -73,9 +74,10 @@ def rows_of(path):
 
 
 # Repo-format markers some base models write as plain text (starcoder2's <file_sep>, stable-code's
-# <repo_continuation>): vLLM keeps them, since the tokenizer doesn't mark them special
-SPECIAL_RE = re.compile(r"<(?:file_sep|repo_continuation|\|endoftext\||\|fim_\w+\||fim_\w+|filename|gh_stars|reponame"
-                        r"|issue_\w+|jupyter_\w+|empty_output|commit_\w+)>")
+# <repo_continuation>): vLLM keeps them, since the tokenizer doesn't mark them special. Plain words like
+# <filename> also turn up in ordinary code ("usage: wc.py <filename>"), so those count only at a line start.
+SPECIAL_RE = re.compile(r"<(?:file_sep|repo_continuation|\|endoftext\||\|fim_\w+\||fim_\w+|issue_\w+|jupyter_\w+"
+                        r"|empty_output|commit_\w+)>|(?m:^<(?:filename|gh_stars|reponame)>)")
 
 
 def trim_special(samples):
@@ -89,7 +91,9 @@ def trim_special(samples):
     return samples, cut
 
 
-def sandbox(cmd, cwd, timeout, stdin=None, mem_gb=4, extra_env=None):
+def sandbox(cmd, cwd, timeout, stdin=None, mem_gb=4, extra_env=None, stdout_only=False):
+    """Run cmd in its own session; returns (status, seconds, output). stdout_only: drop stderr and keep all
+    of stdout (for answers compared against expected output), instead of the last 2,000 chars of both."""
     """Run cmd in cwd with limits; returns (status, seconds, output tail)."""
     if PRLIMIT:
         cmd = [PRLIMIT, f"--cpu={int(timeout) + 1}", f"--as={mem_gb << 30}", f"--fsize={100 << 20}", "--nofile=512",
@@ -99,21 +103,31 @@ def sandbox(cmd, cwd, timeout, stdin=None, mem_gb=4, extra_env=None):
            "PYTHONDONTWRITEBYTECODE": "1", "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
            "MPLBACKEND": "Agg", "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", **(extra_env or {})}
     t = time.time()
-    p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL if stdout_only else subprocess.STDOUT,
                          stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL, start_new_session=True)
+
+    def kill():  # the whole group: background children must not outlive the answer or hold the pipe open
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
     try:
         out, _ = p.communicate(input=stdin.encode() if stdin is not None else None, timeout=timeout)
     except subprocess.TimeoutExpired:
-        os.killpg(p.pid, signal.SIGKILL)
-        p.communicate()
+        kill()
+        try:
+            p.communicate(timeout=10)
+        except subprocess.TimeoutExpired:  # a child that left the group still holds the pipe
+            p.stdout.close()
         return "timeout", timeout, ""
     except Exception as e:
-        try:
-            os.killpg(p.pid, signal.SIGKILL)
-        except Exception:
-            pass
+        kill()
         return "error", time.time() - t, str(e)[:300]
-    return ("pass" if p.returncode == 0 else "fail"), time.time() - t, out.decode(errors="replace")[-2000:]
+    kill()
+    out = out.decode(errors="replace")
+    return ("pass" if p.returncode == 0 else "fail"), time.time() - t, out if stdout_only else out[-2000:]
 
 
 def workdir():
@@ -383,7 +397,8 @@ def lcb_one(code, meta, tests):
         open(os.path.join(d, "solution.py"), "w").write(code)
         if not call and any(s in code for s in LCB_SUBPROC):  # reads fd 0 directly: one process per test
             for i, t in enumerate(tests):
-                st, _, out = sandbox([sys.executable, "-I", "solution.py"], d, timeout=8, stdin=t["input"])
+                st, _, out = sandbox([sys.executable, "-I", "solution.py"], d, timeout=8, stdin=t["input"],
+                                     stdout_only=True)
                 if st != "pass" or not _same_lines(out, t["output"]):
                     return "fail", f"test {i}"
             return "pass", ""
@@ -401,7 +416,27 @@ def lcb_one(code, meta, tests):
 
 
 def _same_lines(out, exp):
-    return [x.strip() for x in out.strip().split("\n")] == [x.strip() for x in exp.strip().split("\n")]
+    """The same comparison as same() in LCB_CHILD: line by line, numbers compared as decimals."""
+    from decimal import Decimal, InvalidOperation
+    a = [x.strip() for x in out.strip().split("\n")]
+    b = [x.strip() for x in exp.strip().split("\n")]
+    if a == b:
+        return True
+    if len(a) != len(b):
+        return False
+    for x, y in zip(a, b):
+        xs, ys = x.split(), y.split()
+        if len(xs) != len(ys):
+            return False
+        for u, v in zip(xs, ys):
+            if u == v:
+                continue
+            try:
+                if Decimal(u) != Decimal(v):
+                    return False
+            except (InvalidOperation, ValueError):
+                return False
+    return True
 
 
 def lcb_score(name, kind, samples):
@@ -506,7 +541,14 @@ def sample_dirs():
     found = {}
     for meta in sorted(glob.glob(os.path.join(INPUT, "**", "samples", "*", "meta.json"), recursive=True)):
         m = json.load(open(meta))
-        found[m["name"]] = (os.path.dirname(meta), m)
+        d = os.path.dirname(meta)
+        if m["name"] in found:  # the same model from two generation runs: keep the one with more benches
+            old = found[m["name"]][0]
+            n_old, n_new = len(glob.glob(os.path.join(old, "*.jsonl"))), len(glob.glob(os.path.join(d, "*.jsonl")))
+            log(f"{m['name']}: samples in {old} and {d}; using the one with more benches")
+            if n_new <= n_old:
+                continue
+        found[m["name"]] = (d, m)
     return found
 
 
@@ -524,7 +566,12 @@ def main():
     results = json.load(open(res_path)) if os.path.exists(res_path) else {}
     benches = CONFIG.get("benches")
     ok_ids = None
-    if CONFIG.get("canonical", True):
+    prior = sorted(glob.glob(os.path.join(INPUT, "**", "bcb_runnable.json"), recursive=True))
+    if prior and not CONFIG.get("recompute_canonical"):  # one runnable set for every shard and every rerun
+        ok_ids = set(json.load(open(prior[0])))
+        log(f"bcb: {len(ok_ids)} runnable tasks from {prior[0]}")
+        json.dump(sorted(ok_ids), open(os.path.join(OUT, "bcb_runnable.json"), "w"))
+    elif CONFIG.get("canonical", True):
         ok_ids = bcb_canonical()
         results["canonical"] = {"bcb_hard": {"n": 148, "pass@1": round(100 * len(ok_ids) / 148, 1)}}
         json.dump(sorted(ok_ids), open(os.path.join(OUT, "bcb_runnable.json"), "w"))

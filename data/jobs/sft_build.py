@@ -3,7 +3,7 @@
 CONFIG keys:
   stage       "stage1" (OpenCoder-LLM/opc-sft-stage1, our stage 3a) or "stage2" (opc-sft-stage2, stage 3b), or
               "synth": our verified short exercises (data/synth/tinker_short.py -> verify.py), read from
-              synth_glob (default: verified batches attached from the pycoder-verify-tinker session), or
+              synth_glob (default: verified batches attached from the ophyx-verify-tinker session), or
               "repair" / "bank": rows prepared by bug_inject.py / verify_bank.py, read from rows_glob
               (default /kaggle/input/**/sft_rows/<stage>-*.jsonl), parts of `chunk` rows, or
               "expert" / "selfrepair": rows from bank_judge.py (a passing sample of our own model, and the
@@ -126,7 +126,7 @@ def load_keys():
     if p:
         return json.load(open(p[0]))
     if not SMOKE:
-        raise SystemExit("keys.json not found: attach the pycoder-keys dataset")
+        raise SystemExit("keys.json not found: attach the ophyx-keys dataset")
     return {"HF_TOKEN": os.environ.get("HF_TOKEN", "")}
 
 
@@ -298,7 +298,9 @@ def bench_items():
                     n += 1
                     yield f"{name}/{r.get(idf, i) if idf else i}", "\n".join(parts)
             report[name] = n
-        except Exception as e:
+        except Exception as e:  # a benchmark that didn't load would leave its overlaps in the data
+            if not (SMOKE or CONFIG.get("allow_missing_bench")):
+                raise
             report[name] = f"failed: {type(e).__name__}: {str(e)[:200]}"
         log("benchmark", name, report[name])
     bench_items.report = report
@@ -1069,9 +1071,11 @@ def file_rows():
     for p in paths:
         for line in open(p):
             r = json.loads(line)
-            if r["seq_id"] in seen_ids:
+            # seq_ids repeat across models' judged outputs (expert rows are <pid>-x0), so dedup on the content
+            key = hashlib.sha1(f"{r['instruction']}\x00{r['output']}".encode()).hexdigest()
+            if key in seen_ids:
                 continue
-            seen_ids.add(r["seq_id"])
+            seen_ids.add(key)
             rows.append(r)
     log(f"{STAGE}: {len(rows)} rows from {len(paths)} files")
     return rows

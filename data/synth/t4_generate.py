@@ -10,7 +10,12 @@ Per chunk of specs:
   4. passing samples go to /kaggle/working/verified/batch-t4-<start>.jsonl; every repaired one also
      yields a bug-fix pair (broken code, error, fixed code) for the "bugfix" bucket
 
-CONFIG: start (first spec index), count, chunk, budget_s, model, tp.
+CONFIG: start (first spec index), count, chunk, budget_s, model, tp, plus "library": true and "curriculum"
+(the contents of data/curriculum.json) for data/synth/generate.py.
+
+This is the one job that runs model-written code with internet on: the teacher's code runs in the session
+that hosts the teacher, which needs PyPI for vLLM. No keys are attached, and the code runs under the same
+sandbox as data/synth/verify.py.
 """
 
 import concurrent.futures as _cf
@@ -108,7 +113,8 @@ for c0 in range(START, START + COUNT, CHUNK):
         rres = list(pool.map(lambda x: run(x[3], x[0]["kind"]), fixed))
         for (sp, code, tail, new), r in zip(fixed, rres):
             if r["ok"]:
-                kept.append({**sp, "code": new, "repaired": True, "verify": {"passed": r.get("passed")}})
+                kept.append({**sp, "code": new, "repaired": True, "verify": {"passed": r.get("passed")},
+                             "repair_of": sp["i"], "broken_code": code, "error": tail[-1500:]})
                 bugfix.append({**sp, "kind": "bugfix", "broken": code, "error": tail[-1500:], "code": new})
             else:
                 bump("repair_failed")

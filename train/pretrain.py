@@ -456,11 +456,11 @@ class Data:
                 if b.get("aligned"):
                     starts = [np.flatnonzero(np.asarray(t) == USER_ID) for t in maps]
                     starts = [st[st < len(t) - seq - 1] for st, t in zip(starts, maps)]
-                kept = [i for i, k in enumerate(keep) if k]
-                self.extra[name] = ([masks[i] for i in kept], [starts[i] for i in kept] if starts else None)
                 if starts:  # sample files by number of usable example starts
                     sizes = np.array([len(st) for st in starts], dtype=np.int64)
-                    keep = sizes > 0
+                    keep = keep & (sizes > 0)
+                kept = [i for i, k in enumerate(keep) if k]  # the same files as the token maps below, in order
+                self.extra[name] = ([masks[i] for i in kept], [starts[i] for i in kept] if starts else None)
             self.buckets.append((name, float(b["weight"]), [m for m, k in zip(maps, keep) if k], sizes[keep]))
             log(f"data bucket {name}: {len(files)} shards, {sum(len(m) for m in maps) / 1e6:.1f}M tokens, weight {b['weight']}"
                 + (" (masked" + (", example-aligned)" if b.get("aligned") else ")") if b.get("mask_glob") else ""))
@@ -867,8 +867,11 @@ def train(data=None):
     log(f"{n_params / 1e6:.1f}M parameters")
     if start >= total_steps:  # already finished: nothing to train, don't re-save or re-export
         log(f"run already finished at step {start}; skipping")
-        return params, {"step": start, "total_steps": total_steps, "finished": True, "reason": "already_done",
-                        "hours": 0.0, "tokens_per_s": None, "n_params": n_params, "final_loss": None}
+        status = {"step": start, "total_steps": total_steps, "finished": True, "reason": "already_done",
+                  "hours": 0.0, "tokens_per_s": None, "n_params": n_params, "final_loss": None}
+        json.dump(status, open(os.path.join(out_dir(), "status.json"), "w"))
+        publish_status(status)  # the session that finished may have failed to publish; the watchdog waits on this
+        return params, status
 
     set_phase("training", step=start)
     use_wandb = bool(cfg("wandb", None)) and KEYS.get("WANDB_API_KEY")
@@ -937,6 +940,10 @@ def train(data=None):
             stop_reason = "session_steps"
             break
         if cfg("save", True) and time.time() - last_ckpt > cfg("ckpt_every_s", 1800):
+            if not math.isfinite(float(ce)):  # loss is only logged every log_every steps; never back up a NaN
+                stop_reason = "nan"
+                log("non-finite loss before a checkpoint, stopping without saving", {"step": step})
+                break
             hf_backup(save_ckpt((params, opt_state), step, {"n_params": n_params}), step)
             last_ckpt = time.time()
         if time.time() > deadline:

@@ -2,7 +2,7 @@
 
 Kaggle CPU, internet off, no keys. Appended after data/jobs/judge.py by the launcher. Attach the
 verify_bank outputs (verified/bank-*.jsonl, plus the ruff wheel from the problem-bank output) and the
-pycoder-verify-tinker output (verified/batch-*.jsonl: exercises whose module carries its own pytest tests).
+ophyx-verify-tinker output (verified/batch-*.jsonl: exercises whose module carries its own pytest tests).
 
 Each source program is first formatted with ruff (line length 88, as sft_build.py does), so the broken
 code in the prompt and the fixed module in the answer differ only by the bug. Then one AST node is
@@ -543,6 +543,9 @@ def do_bank(rec):
                 continue
         if fail.get("kind") not in ("runtime_error", "wrong_answer", "timeout"):
             out.append((f"other_{fail.get('kind')}", kind))
+            continue
+        if fail.get("i", -1) < 0:  # the whole runner timed out: there is no failing test to show
+            out.append(("runner_timeout", kind))
             continue
         prompt = bank_prompt(rec, m, fail, rng)
         if not prompt:

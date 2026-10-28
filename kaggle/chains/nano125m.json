@@ -4,14 +4,14 @@
  "accel": "tpu",
  "timeout": 32400,
  "kernels": [
-  "pycoder-train-nano125m-a",
-  "pycoder-train-nano125m-b"
+  "ophyx-train-nano125m-a",
+  "ophyx-train-nano125m-b"
  ],
  "datasets": [
-  "pycoder-keys"
+  "ophyx-keys"
  ],
  "kernel_sources": [
-  "pycoder-tokens-v1"
+  "ophyx-tokens-v1"
  ],
  "config": {
   "vocab": 32768,

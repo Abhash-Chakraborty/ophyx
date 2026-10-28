@@ -22,6 +22,7 @@ import signal as _signal
 import subprocess as _subprocess
 import sys as _sys
 import tempfile as _tempfile
+import threading as _threading
 import time as _time
 
 _PRLIMIT = _shutil.which("prlimit")
@@ -205,16 +206,18 @@ done()
 
 
 _UIDS = None  # free sandbox uids for drop=True, one per running sandbox; JUDGE_UID_BASE keeps processes apart
+_UIDS_LOCK = _threading.Lock()
 
 
 def _uid_get():
     global _UIDS
     import queue
-    if _UIDS is None:
-        _UIDS = queue.Queue()
-        base = int(_os.environ.get("JUDGE_UID_BASE", "61000"))
-        for u in range(base, base + 128):
-            _UIDS.put(u)
+    with _UIDS_LOCK:  # judge() runs from thread pools; two threads must not each build a pool of the same uids
+        if _UIDS is None:
+            _UIDS = queue.Queue()
+            base = int(_os.environ.get("JUDGE_UID_BASE", "61000"))
+            for u in range(base, base + 128):
+                _UIDS.put(u)
     return _UIDS.get()
 
 
@@ -242,7 +245,7 @@ def _sandbox_run(cmd, d, wall_s, cpu_s, mem=2 << 30, drop=False):
     if drop and _os.geteuid() == 0:
         uid = _uid_get()
         try:
-            _os.chmod(d, 0o777)
+            _os.chown(d, uid, uid)  # its own dir only: other sandboxes can't read its tests or swap its result
             return _sandbox_run_as(cmd, d, wall_s, cpu_s, mem, {"user": uid, "group": uid, "extra_groups": []},
                                    ["--nproc=8"])
         finally:

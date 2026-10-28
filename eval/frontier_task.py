@@ -1,6 +1,6 @@
 """Kaggle Benchmarks task: frontier and open API models answer ophyx's benchmark prompts.
 
-Pushed with `kaggle b t push <name> -f frontier_task.py -d abhashchakraborty/pycoder-frontier-prompts`,
+Pushed with `kaggle b t push <name> -f frontier_task.py -d abhashchakraborty/ophyx-frontier-prompts`,
 which runs it once on Kaggle's infrastructure (the model proxy and the AI quota only work there).
 It writes every reply to /kaggle/working/<model>/<bench>.jsonl; `kaggle b t download` brings them
 back, eval/frontier_collect.py turns them into bench_gen-style samples, and bench_exec.py scores

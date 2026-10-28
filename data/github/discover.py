@@ -58,8 +58,8 @@ def get(url, min_gap=[0.0]):
                 reset = int(e.headers.get("X-RateLimit-Reset") or time.time() + 60)
                 time.sleep(max(5, reset - time.time() + 2))
                 continue
-            if e.code == 422:
-                return None
+            if e.code in (404, 422):  # a definite answer (gone, or past the search window), not a failure
+                return {}
             time.sleep(5 * (attempt + 1))
         except Exception:
             time.sleep(5 * (attempt + 1))
@@ -96,14 +96,17 @@ def main():
             key = f"{lo}-{hi}"
             if key in done:
                 continue
-            n_new = 0
+            n_new, failed = 0, False
             for page in range(1, 11):
                 q = f"language:Python fork:false archived:false stars:{lo}..{hi} pushed:>={a.pushed_after}"
                 url = "https://api.github.com/search/repositories?" + urllib.parse.urlencode(
                     {"q": q, "sort": "stars", "order": "desc", "per_page": 100, "page": page})
                 search_gap[0] = max(search_gap[0], time.time() + 2.1)  # search API: 30 requests/min
                 j = get(url, search_gap)
-                items = (j or {}).get("items", [])
+                if j is None:  # the API gave up: leave the slice open so a rerun fetches it again
+                    failed = True
+                    break
+                items = j.get("items", [])
                 for r in items:
                     if r["full_name"] in seen:
                         continue
@@ -120,6 +123,9 @@ def main():
                 if len(items) < 100:
                     break
             out.flush()
+            if failed:
+                print(f"[{time.strftime('%H:%M:%S')}] stars {key}: API failed, will retry next run", flush=True)
+                continue
             done.add(key)
             json.dump(sorted(done), open(done_p, "w"))
             print(f"[{time.strftime('%H:%M:%S')}] stars {key}: +{n_new} (total {len(seen)})", flush=True)
@@ -134,7 +140,9 @@ def main():
     print(f"{len(cands)} candidates; {len(survivors)} pass licence/size/junk; checking language share", flush=True)
     with open(keep_p, "a") as out:
         for k, c in enumerate(survivors):
-            langs = get(f"https://api.github.com/repos/{c['full_name']}/languages") or {}
+            langs = get(f"https://api.github.com/repos/{c['full_name']}/languages")
+            if langs is None:  # unknown, not zero: a rerun checks it again
+                continue
             total = sum(langs.values()) or 1
             c["python_share"] = round(langs.get("Python", 0) / total, 3)
             c["keep"] = c["python_share"] >= 0.6

@@ -17,6 +17,7 @@ State lives next to the checkpoint backup on HF: <run>/status.json (written by t
 import glob
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -53,10 +54,14 @@ def kernel_status(slug):
     e = {**os.environ, "KAGGLE_API_TOKEN": env_or_dotenv("KAGGLE_API_TOKEN") or ""}
     r = subprocess.run([KAGGLE, "kernels", "status", f"{USER}/{slug}"], capture_output=True, text=True, env=e)
     out = (r.stdout + r.stderr).strip()
-    for s in ("QUEUED", "RUNNING", "COMPLETE", "ERROR", "CANCEL"):
-        if s in out.upper():
-            return s
-    return "NONE"  # never pushed, or not found
+    m = re.search(r'has status "(?:KernelWorkerStatus\.)?([A-Z_]+)"', out)
+    if r.returncode == 0 and m:
+        for s in ("QUEUED", "RUNNING", "COMPLETE", "ERROR", "CANCEL"):
+            if m.group(1).startswith(s):
+                return s
+    if "404" in out or "not found" in out.lower() or "cannot access kernel" in out.lower():
+        return "NONE"  # never pushed (Kaggle answers a missing kernel with a permission error)
+    return "UNKNOWN"  # an API error (429, 5xx): the kernel may well be running
 
 
 class HF:
@@ -71,8 +76,11 @@ class HF:
             p = hf_hub_download(self.repo, f"{self.run}/{name}", token=env_or_dotenv("HF_TOKEN"),
                                 force_download=True, cache_dir=tempfile.mkdtemp())
             return json.load(open(p))
-        except Exception:
-            return None
+        except Exception as e:  # only a missing file means "no state yet"; anything else must not reset a chain
+            from huggingface_hub.utils import EntryNotFoundError
+            if isinstance(e, EntryNotFoundError) or getattr(getattr(e, "response", None), "status_code", None) == 404:
+                return None
+            raise
 
     def write(self, name, obj):
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
@@ -113,7 +121,7 @@ def check(chain_path):
         return
     statuses = {k: kernel_status(k) for k in chain["kernels"]}
     print(f"{name}: {statuses}, state {state}")
-    if any(s in ("QUEUED", "RUNNING") for s in statuses.values()):
+    if any(s in ("QUEUED", "RUNNING", "UNKNOWN") for s in statuses.values()):
         return
     status = hf.read("status.json")
     if status and status.get("finished"):
@@ -126,6 +134,7 @@ def check(chain_path):
         hf.write("chain_state.json", state)
         notify(f"{run}: stopped on NaN loss", json.dumps(status), "warning")
         return
+    old_last_step, old_failures = state.get("last_step", -1), state["failures"]
     if state["last"] is not None:
         last_status = statuses[chain["kernels"][state["last"]]]
         progressed = status is not None and status.get("step", -1) > state.get("last_step", -1)
@@ -146,8 +155,8 @@ def check(chain_path):
         state.update(last=which, sessions=state["sessions"] + 1, pushed_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
         hf.write("chain_state.json", state)
         notify(f"{run}: session {state['sessions']} queued", f"{chain['kernels'][which]} (step {status and status.get('step')})", "rocket")
-    else:
-        state["failures"] += 1
+    else:  # the last session is judged again next hour, so put its step back and count nothing new
+        state.update(last_step=old_last_step, failures=old_failures)
         hf.write("chain_state.json", state)
         notify(f"{run}: push failed", "kaggle kernels push returned an error; will retry next hour", "warning")
 

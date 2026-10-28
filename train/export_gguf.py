@@ -209,6 +209,11 @@ def main():
     log("logprob check", json.dumps(check["logprobs"]))
     json.dump(check, open(os.path.join(OUT, "check.json"), "w"), indent=1)
     log("check", json.dumps(check)[:3000])
+    # don't publish files that tokenise differently or drift from the transformers model (q8_0 drifts ~0.2)
+    limits = {"f32": 0.05, "f16": 0.05, "q8_0": 0.5}
+    bad = [t for t, lp in check["logprobs"].items() if "error" in lp or lp["max_abs_logprob_diff"] > limits.get(t, 0.5)]
+    if not check["tokens_all_match"] or bad:
+        raise SystemExit(f"GGUF check failed (tokens match: {check['tokens_all_match']}, log-prob drift: {bad}); not uploading")
     if CONFIG.get("out_repo"):
         from huggingface_hub import HfApi
         api = HfApi()

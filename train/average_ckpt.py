@@ -3,7 +3,7 @@
     python train/average_ckpt.py dirA dirB [dirC ...] --out merged [--weights 0.5 0.5]
 
 On Kaggle, run it as a script with CONFIG {"models": [HF ids or dirs], "weights": [...], "out_repo": ...}
-and pycoder-keys attached. Every tensor is averaged in float32 and saved as float32. Config,
+and ophyx-keys attached. Every tensor is averaged in float32 and saved as float32. Config,
 tokenizer and generation config come from the first checkpoint. Shapes and tensor names must match
 exactly, or it stops.
 """
@@ -28,6 +28,8 @@ def load_dir(d):
 
 
 def average(dirs, weights, out):
+    if weights and len(weights) != len(dirs):
+        raise SystemExit(f"{len(dirs)} checkpoints but {len(weights)} weights")
     w = np.array(weights if weights else [1.0] * len(dirs), dtype=np.float64)
     w = w / w.sum()
     acc, dtypes = None, {}
