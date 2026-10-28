@@ -1,0 +1,788 @@
+{
+ "source": "https://github.com/SWE-bench/swe-bench.github.io/blob/master/data/leaderboards.json",
+ "page": "https://www.swebench.com/",
+ "file_last_commit": "2026-09-01",
+ "fetched": "2026-10-28",
+ "note": "SWE-bench Verified, 500 tasks, % resolved. Rows tagged 'Mini: x' ran in mini-SWE-agent (bash only), the leaderboard's same-harness comparison; the others are each team's own agent.",
+ "rows": [
+  {
+   "name": "Claude 4.5 Opus (high)",
+   "model_display": "Claude 4.5 Opus",
+   "resolved": 76.8,
+   "date": "2026-02-17",
+   "tags": [
+    "Model: claude-4-5-opus",
+    "Org: Anthropic",
+    "System: Attempts - 1",
+    "Mini: 2.0.0"
+   ]
+  },
+  {
+   "name": "Gemini 3 Flash (high)",
+   "model_display": "Gemini 3 Flash",
+   "resolved": 75.8,
+   "date": "2026-02-17",
+   "tags": [
+    "Model: gemini-3-flash-preview",
+    "Org: Google DeepMind",
+    "System: Attempts - 1",
+    "Mini: 2.0.0"
+   ]
+  },
+  {
+   "name": "MiniMax M2.5 (high)",
+   "model_display": "MiniMax M2.5",
+   "resolved": 75.8,
+   "date": "2026-02-17",
+   "tags": [
+    "Model: minimax-m2.5",
+    "Org: Minimax",
+    "System: Attempts - 1",
+    "Mini: 2.0.0"
+   ]
+  },
+  {
+   "name": "Claude 4.6 Opus",
+   "model_display": "Claude 4.6 Opus",
+   "resolved": 75.6,
+   "date": "2026-02-17",
+   "tags": [
+    "Model: claude-opus-4-6",
+    "Org: Anthropic",
+    "System: Attempts - 1",
+    "Mini: 2.0.0"
+   ]
+  },
+  {
+   "name": "Claude 4.5 Opus (20251101) (medium)",
+   "model_display": "Claude 4.5 Opus",
+   "resolved": 74.4,
+   "date": "2025-11-24",
+   "tags": [
+    "Model: claude-opus-4-5-20251101",
+    "Org: Anthropic",
+    "System: Attempts - 1",
+    "Mini: 1.16.0"
+   ]
+  },
+  {
+   "name": "Gemini 3 Pro Preview (2025-11-18)",
+   "model_display": "Gemini 3 Pro Preview",
+   "resolved": 74.2,
+   "date": "2025-11-18",
+   "tags": [
+    "Model: gemini-3-pro-preview",
+    "Org: Google DeepMind",
+    "System: Attempts - 1",
+    "Mini: 1.15.0"
+   ]
+  },
+  {
+   "name": "GLM 5 (high)",
+   "model_display": "GLM 5",
+   "resolved": 72.8,
+   "date": "2026-02-17",
+   "tags": [
+    "Model: glm-5",
+    "Org: Z-AI",
+    "System: Attempts - 1",
+    "Mini: 2.0.0"
+   ]
+  },
+  {
+   "name": "GPT 5.2 (high)",
+   "model_display": "GPT 5.2",
+   "resolved": 72.8,
+   "date": "2026-02-17",
+   "tags": [
+    "Model: gpt-5-2",
+    "Org: OpenAI",
+    "System: Attempts - 1",
+    "Mini: 2.0.0"
+   ]
+  },
+  {
+   "name": "GPT 5.2 Codex",
+   "model_display": "GPT 5.2 Codex",
+   "resolved": 72.8,
+   "date": "2026-02-19",
+   "tags": [
+    "Model: gpt-5-2-codex",
+    "Org: OpenAI",
+    "System: Attempts - 1",
+    "Mini: 2.0.0"
+   ]
+  },
+  {
+   "name": "GPT 5.2 (2025-12-11) (high)",
+   "model_display": "GPT 5.2",
+   "resolved": 71.8,
+   "date": "2025-12-11",
+   "tags": [
+    "Model: gpt-5.2-2025-12-11",
+    "Org: OpenAI",
+    "System: Attempts - 1",
+    "Mini: 1.17.2"
+   ]
+  },
+  {
+   "name": "Claude 4.5 Sonnet (high)",
+   "model_display": "Claude 4.5 Sonnet",
+   "resolved": 71.4,
+   "date": "2026-02-17",
+   "tags": [
+    "Model: claude-sonnet-4-5-20250929",
+    "Org: Anthropic",
+    "System: Attempts - 1",
+    "Mini: 2.0.0"
+   ]
+  },
+  {
+   "name": "Kimi K2.5 (high)",
+   "model_display": "Kimi K2.5",
+   "resolved": 70.8,
+   "date": "2026-02-17",
+   "tags": [
+    "Model: kimi-k2.5",
+    "Org: Moonshot AI",
+    "System: Attempts - 1",
+    "Mini: 2.0.0"
+   ]
+  },
+  {
+   "name": "Claude 4.5 Sonnet (20250929)",
+   "model_display": "Claude 4.5 Sonnet",
+   "resolved": 70.6,
+   "date": "2025-09-29",
+   "tags": [
+    "Model: claude-sonnet-4-5-20250929",
+    "Org: Anthropic",
+    "System: Attempts - 1",
+    "Mini: 1.13.3"
+   ]
+  },
+  {
+   "name": "DeepSeek V3.2 (high)",
+   "model_display": "DeepSeek V3.2",
+   "resolved": 70.0,
+   "date": "2026-02-17",
+   "tags": [
+    "Model: deepseek-v3.2",
+    "Org: DeepSeek",
+    "System: Attempts - 1",
+    "Mini: 2.0.0"
+   ]
+  },
+  {
+   "name": "OpenHands + Qwen3-Coder-480B-A35B-Instruct",
+   "model_display": "Qwen3-Coder-480B-A35B-Instruct",
+   "resolved": 69.6,
+   "date": "2025-08-05",
+   "tags": [
+    "Model: https://huggingface.co/Qwen/Qwen3-Coder-480B-A35B-Instruct",
+    "Org: Qwen",
+    "Org: OpenHands",
+    "System: Attempts - 1"
+   ]
+  },
+  {
+   "name": "Gemini 3 Pro",
+   "model_display": "Gemini 3 Pro",
+   "resolved": 69.6,
+   "date": "2026-02-26",
+   "tags": [
+    "Model: gemini-3-pro-preview",
+    "Org: Google DeepMind",
+    "System: Attempts - 1",
+    "Mini: 2.0.0"
+   ]
+  },
+  {
+   "name": "GPT 5.2 (2025-12-11)",
+   "model_display": "GPT 5.2",
+   "resolved": 69.0,
+   "date": "2025-12-11",
+   "tags": [
+    "Model: gpt-5.2-2025-12-11",
+    "Org: OpenAI",
+    "System: Attempts - 1",
+    "Mini: 1.17.2"
+   ]
+  },
+  {
+   "name": "Claude 4 Opus (20250514)",
+   "model_display": "Claude 4 Opus",
+   "resolved": 67.6,
+   "date": "2025-08-02",
+   "tags": [
+    "Model: claude-4-opus-20250514",
+    "Org: Anthropic",
+    "System: Attempts - 1",
+    "Mini: 1.0.0"
+   ]
+  },
+  {
+   "name": "Claude 4.5 Haiku (high)",
+   "model_display": "Claude 4.5 Haiku",
+   "resolved": 66.6,
+   "date": "2026-02-17",
+   "tags": [
+    "Model: claude-haiku-4-5-20251001",
+    "Org: Anthropic",
+    "System: Attempts - 1",
+    "Mini: 2.0.0"
+   ]
+  },
+  {
+   "name": "GPT 5.1 (2025-11-13) (medium)",
+   "model_display": "GPT 5.1",
+   "resolved": 66.0,
+   "date": "2025-11-20",
+   "tags": [
+    "Model: gpt-5.1-2025-11-13",
+    "Org: OpenAI",
+    "System: Attempts - 1",
+    "Mini: 1.15.0"
+   ]
+  },
+  {
+   "name": "GPT 5.1 Codex (medium)",
+   "model_display": "GPT 5.1 Codex",
+   "resolved": 66.0,
+   "date": "2025-11-24",
+   "tags": [
+    "Model: gpt-5.1-codex",
+    "Org: OpenAI",
+    "System: Attempts - 1",
+    "Mini: 1.16.0"
+   ]
+  },
+  {
+   "name": "GPT 5 (2025-08-07) (medium)",
+   "model_display": "GPT 5",
+   "resolved": 65.0,
+   "date": "2025-08-07",
+   "tags": [
+    "Model: gpt-5-2025-08-07",
+    "Org: OpenAI",
+    "System: Attempts - 1",
+    "Mini: 1.7.0"
+   ]
+  },
+  {
+   "name": "Claude 4 Sonnet (20250514)",
+   "model_display": "Claude 4 Sonnet",
+   "resolved": 64.93,
+   "date": "2025-07-26",
+   "tags": [
+    "Model: claude-4-sonnet-20250514",
+    "Org: Anthropic",
+    "System: Attempts - 1",
+    "Mini: 1.0.0"
+   ]
+  },
+  {
+   "name": "Kimi K2 Thinking",
+   "model_display": "Kimi K2 Thinking",
+   "resolved": 63.4,
+   "date": "2025-12-10",
+   "tags": [
+    "Model: Kimi-K2-Thinking",
+    "Org: Moonshot AI",
+    "System: Attempts - 1",
+    "Mini: 1.17.2"
+   ]
+  },
+  {
+   "name": "MiniMax M2",
+   "model_display": "MiniMax M2",
+   "resolved": 61.0,
+   "date": "2025-11-24",
+   "tags": [
+    "Model: minimax-m2",
+    "Org: Minimax",
+    "System: Attempts - 1",
+    "Mini: 1.17.0"
+   ]
+  },
+  {
+   "name": "EntroPO + R2E + Qwen3-Coder-30B-A3B-Instruct",
+   "model_display": "Qwen3-Coder-30B-A3B-Instruct",
+   "resolved": 60.4,
+   "date": "2025-09-01",
+   "tags": [
+    "Model: Qwen3-Coder-30B-A3B-Instruct",
+    "Org: 42-b3yond-6ug",
+    "System: Attempts - 2+"
+   ]
+  },
+  {
+   "name": "DeepSeek V3.2 Reasoner",
+   "model_display": "DeepSeek V3.2 Reasoner",
+   "resolved": 60.0,
+   "date": "2025-12-01",
+   "tags": [
+    "Model: deepseek-v3.2-reasoner",
+    "Org: deepseek",
+    "System: Attempts - 1",
+    "Mini: 1.17.1"
+   ]
+  },
+  {
+   "name": "GPT 5 mini (2025-08-07) (medium)",
+   "model_display": "GPT 5 mini",
+   "resolved": 59.8,
+   "date": "2025-08-07",
+   "tags": [
+    "Model: gpt-5-mini-2025-08-07",
+    "Org: OpenAI",
+    "System: Attempts - 1",
+    "Mini: 1.7.0"
+   ]
+  },
+  {
+   "name": "o3 (2025-04-16)",
+   "model_display": "o3",
+   "resolved": 58.4,
+   "date": "2025-07-26",
+   "tags": [
+    "Model: o3-20250416",
+    "Org: OpenAI",
+    "System: Attempts - 1",
+    "Mini: 1.0.0"
+   ]
+  },
+  {
+   "name": "Devstral Small (2512)",
+   "model_display": "Devstral Small (2512)",
+   "resolved": 56.4,
+   "date": "2025-12-09",
+   "tags": [
+    "Model: devstral-small-2512",
+    "Org: mistral",
+    "System: Attempts - 1",
+    "Mini: 1.17.2"
+   ]
+  },
+  {
+   "name": "GPT 5 mini",
+   "model_display": "GPT 5 mini",
+   "resolved": 56.2,
+   "date": "2026-02-17",
+   "tags": [
+    "Model: gpt-5-mini-2025-08-07",
+    "Org: OpenAI",
+    "System: Attempts - 1",
+    "Mini: 2.0.0"
+   ]
+  },
+  {
+   "name": "Qwen3-Coder 480B/A35B Instruct",
+   "model_display": "Qwen3-Coder 480B/A35B Instruct",
+   "resolved": 55.4,
+   "date": "2025-08-02",
+   "tags": [
+    "Model: Qwen3-Coder-480B-A35B-Instruct",
+    "Org: Qwen",
+    "System: Attempts - 1",
+    "Mini: 1.0.0"
+   ]
+  },
+  {
+   "name": "GLM 4.6 (T=1)",
+   "model_display": "GLM 4.6",
+   "resolved": 55.4,
+   "date": "2025-12-01",
+   "tags": [
+    "Model: glm-4.6",
+    "Org: Z.ai",
+    "System: Attempts - 1",
+    "Mini: 1.17.1"
+   ]
+  },
+  {
+   "name": "GLM 4.5 (2025-08-22)",
+   "model_display": "GLM 4.5",
+   "resolved": 54.2,
+   "date": "2025-08-22",
+   "tags": [
+    "Model: GLM-4.5",
+    "Org: Z.ai",
+    "System: Attempts - 1",
+    "Mini: 1.9.1"
+   ]
+  },
+  {
+   "name": "Devstral (2512)",
+   "model_display": "Devstral (2512)",
+   "resolved": 53.8,
+   "date": "2025-12-09",
+   "tags": [
+    "Model: devstral-2512",
+    "Org: mistral",
+    "System: Attempts - 1",
+    "Mini: 1.17.2"
+   ]
+  },
+  {
+   "name": "FrogBoss-32B-2510",
+   "model_display": "Frogboss 32B 2510",
+   "resolved": 53.6,
+   "date": "2025-11-10",
+   "tags": [
+    "Model: FrogBoss-32B-2510",
+    "Org: Microsoft",
+    "System: Attempts - 1"
+   ]
+  },
+  {
+   "name": "Gemini 2.5 Pro (2025-05-06)",
+   "model_display": "Gemini 2.5 Pro",
+   "resolved": 53.6,
+   "date": "2025-07-26",
+   "tags": [
+    "Model: gemini-2.5-pro",
+    "Org: Google DeepMind",
+    "System: Attempts - 1",
+    "Mini: 1.0.0"
+   ]
+  },
+  {
+   "name": "Claude 3.7 Sonnet (20250219)",
+   "model_display": "Claude 3.7 Sonnet",
+   "resolved": 52.8,
+   "date": "2025-07-20",
+   "tags": [
+    "Model: claude-3-7-sonnet-20250219",
+    "Org: Anthropic",
+    "System: Attempts - 1",
+    "Mini: 0.0.0"
+   ]
+  },
+  {
+   "name": "EntroPO + R2E + Qwen3-Coder-30B-A3B-Instruct",
+   "model_display": "Qwen3-Coder-30B-A3B-Instruct",
+   "resolved": 52.2,
+   "date": "2025-09-01",
+   "tags": [
+    "Model: Qwen3-Coder-30B-A3B-Instruct",
+    "Org: 42-b3yond-6ug",
+    "System: Attempts - 1"
+   ]
+  },
+  {
+   "name": "OpenHands + Qwen3-Coder-30B-A3B-Instruct",
+   "model_display": "Qwen3-Coder-30B-A3B-Instruct",
+   "resolved": 51.6,
+   "date": "2025-08-05",
+   "tags": [
+    "Model: https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct",
+    "Org: Qwen",
+    "Org: OpenHands",
+    "System: Attempts - 1"
+   ]
+  },
+  {
+   "name": "Skywork-SWE-32B + TTS(Bo8)",
+   "model_display": "TTS(Bo8)",
+   "resolved": 47.0,
+   "date": "2025-06-16",
+   "tags": [
+    "Model: Qwen2.5-Coder-32B-Instruct",
+    "Org: Skywork AI",
+    "System: Attempts - 2+"
+   ]
+  },
+  {
+   "name": "FrogMini-14B-2510",
+   "model_display": "Frogmini 14B 2510",
+   "resolved": 45.0,
+   "date": "2025-11-10",
+   "tags": [
+    "Model: FrogMini-14B-2510",
+    "Org: Microsoft",
+    "System: Attempts - 1"
+   ]
+  },
+  {
+   "name": "o4-mini (2025-04-16)",
+   "model_display": "o4-mini",
+   "resolved": 45.0,
+   "date": "2025-07-26",
+   "tags": [
+    "Model: o4-mini-20250416",
+    "Org: OpenAI",
+    "System: Attempts - 1",
+    "Mini: 1.0.0"
+   ]
+  },
+  {
+   "name": "Kimi K2 Instruct",
+   "model_display": "Kimi K2 Instruct",
+   "resolved": 43.8,
+   "date": "2025-08-07",
+   "tags": [
+    "Model: Kimi-K2-Instruct",
+    "Org: Moonshot AI",
+    "System: Attempts - 1",
+    "Mini: 1.7.0"
+   ]
+  },
+  {
+   "name": "SWE-RL (Llama3-SWE-RL-70B + Agentless Mini) (20250226)",
+   "model_display": "Llama3-SWE-RL-70B",
+   "resolved": 41.2,
+   "date": "2025-02-26",
+   "tags": [
+    "Model: Llama3-SWE-RL-70B",
+    "Model_size: 70",
+    "Org: Agentless",
+    "System: Attempts - 2+"
+   ]
+  },
+  {
+   "name": "Nebius AI Qwen 2.5 72B Generator + LLama 3.1 70B Critic",
+   "model_display": "Multiple",
+   "resolved": 40.6,
+   "date": "2024-11-13",
+   "tags": [
+    "Model: Llama 3.1",
+    "Model: Qwen 2.5",
+    "System: Attempts - 2+"
+   ]
+  },
+  {
+   "name": "SWE-agent + SWE-agent-LM-32B",
+   "model_display": "SWE-agent-LM-32B",
+   "resolved": 40.2,
+   "date": "2025-05-11",
+   "tags": [
+    "Model: Qwen 2.5",
+    "Org: SWE-agent",
+    "System: Attempts - 1"
+   ]
+  },
+  {
+   "name": "GPT 4.1 (2025-04-14)",
+   "model_display": "GPT 4.1",
+   "resolved": 39.58,
+   "date": "2025-07-26",
+   "tags": [
+    "Model: gpt-4.1-20250414",
+    "Org: OpenAI",
+    "System: Attempts - 1",
+    "Mini: 1.0.0"
+   ]
+  },
+  {
+   "name": "Skywork-SWE-32B",
+   "model_display": "Qwen2.5 Coder 32B Instruct",
+   "resolved": 38.0,
+   "date": "2025-06-16",
+   "tags": [
+    "Model: Qwen2.5-Coder-32B-Instruct",
+    "Org: Skywork AI",
+    "System: Attempts - 1"
+   ]
+  },
+  {
+   "name": "GPT 5 nano (2025-08-07) (medium)",
+   "model_display": "GPT 5 nano",
+   "resolved": 34.8,
+   "date": "2025-08-07",
+   "tags": [
+    "Model: gpt-5-nano-2025-08-07",
+    "Org: OpenAI",
+    "System: Attempts - 1",
+    "Mini: 1.7.0"
+   ]
+  },
+  {
+   "name": "SWE-Fixer (Qwen2.5-7b retriever + Qwen2.5-72b editor)",
+   "model_display": "Qwen2.5 (7B + 72B)",
+   "resolved": 32.8,
+   "date": "2025-03-06",
+   "tags": [
+    "Model: Qwen 2.5",
+    "System: Attempts - 1"
+   ]
+  },
+  {
+   "name": "SWE-Fixer (Qwen2.5-7b retriever + Qwen2.5-72b editor) 20241128",
+   "model_display": "Qwen2.5 (7B + 72B)",
+   "resolved": 30.2,
+   "date": "2024-11-28",
+   "tags": [
+    "Model: Qwen 2.5",
+    "System: Attempts - 2+"
+   ]
+  },
+  {
+   "name": "Lingma Agent + Lingma SWE-GPT 72b (v0925)",
+   "model_display": "Lingma SWE-GPT 72b (v0925)",
+   "resolved": 28.8,
+   "date": "2024-10-02",
+   "tags": [
+    "Org: Alibaba",
+    "System: Attempts - 2+"
+   ]
+  },
+  {
+   "name": "Gemini 2.5 Flash (2025-04-17)",
+   "model_display": "Gemini 2.5 Flash",
+   "resolved": 28.73,
+   "date": "2025-07-26",
+   "tags": [
+    "Model: gemini-2.5-flash",
+    "Org: Google DeepMind",
+    "System: Attempts - 1",
+    "Mini: 1.0.0"
+   ]
+  },
+  {
+   "name": "gpt-oss-120b",
+   "model_display": "gpt-oss-120b",
+   "resolved": 26.0,
+   "date": "2025-08-07",
+   "tags": [
+    "Model: gpt-oss-120b",
+    "Org: OpenAI",
+    "System: Attempts - 1",
+    "Mini: 1.7.0"
+   ]
+  },
+  {
+   "name": "Lingma Agent + Lingma SWE-GPT 72b (v0918)",
+   "model_display": "Lingma SWE-GPT 72b (v0918)",
+   "resolved": 25.0,
+   "date": "2024-09-18",
+   "tags": [
+    "Org: Alibaba",
+    "System: Attempts - 2+"
+   ]
+  },
+  {
+   "name": "GPT 4.1 mini (2025-04-14)",
+   "model_display": "GPT 4.1 mini",
+   "resolved": 23.94,
+   "date": "2025-07-20",
+   "tags": [
+    "Model: gpt-4.1-mini-20250414",
+    "Org: OpenAI",
+    "System: Attempts - 1",
+    "Mini: 0.0.0"
+   ]
+  },
+  {
+   "name": "MCTS-Refine-7B",
+   "model_display": "MCTS Refine 7B",
+   "resolved": 23.2,
+   "date": "2025-06-27",
+   "tags": [
+    "Model: MCTS-Refine-7B",
+    "System: Attempts - 1"
+   ]
+  },
+  {
+   "name": "GPT 4o (2024-11-20)",
+   "model_display": "GPT 4o",
+   "resolved": 21.62,
+   "date": "2025-07-20",
+   "tags": [
+    "Model: gpt-4o-20241120",
+    "Org: OpenAI",
+    "System: Attempts - 1",
+    "Mini: 0.0.0"
+   ]
+  },
+  {
+   "name": "Llama 4 Maverick Instruct",
+   "model_display": "Llama 4 Maverick Instruct",
+   "resolved": 21.04,
+   "date": "2025-07-20",
+   "tags": [
+    "Model: llama-4-maverick-instruct",
+    "Org: Meta",
+    "System: Attempts - 1",
+    "Mini: 0.0.0"
+   ]
+  },
+  {
+   "name": "Lingma Agent + Lingma SWE-GPT 7b (v0925)",
+   "model_display": "Lingma SWE-GPT 7b (v0925)",
+   "resolved": 18.2,
+   "date": "2024-10-02",
+   "tags": [
+    "Org: Alibaba",
+    "System: Attempts - 2+"
+   ]
+  },
+  {
+   "name": "Gemini 2.0 Flash",
+   "model_display": "Gemini 2.0 Flash",
+   "resolved": 13.52,
+   "date": "2025-07-26",
+   "tags": [
+    "Model: gemini-2.0-flash",
+    "Org: Google DeepMind",
+    "System: Attempts - 1",
+    "Mini: 0.0.0"
+   ]
+  },
+  {
+   "name": "Lingma Agent + Lingma SWE-GPT 7b (v0918)",
+   "model_display": "Lingma SWE-GPT 7b (v0918)",
+   "resolved": 10.2,
+   "date": "2024-09-18",
+   "tags": [
+    "Org: Alibaba",
+    "System: Attempts - 2+"
+   ]
+  },
+  {
+   "name": "Llama 4 Scout Instruct",
+   "model_display": "Llama 4 Scout Instruct",
+   "resolved": 9.06,
+   "date": "2025-07-20",
+   "tags": [
+    "Model: llama-4-scout-instruct",
+    "Org: Meta",
+    "System: Attempts - 1",
+    "Mini: 0.0.0"
+   ]
+  },
+  {
+   "name": "Qwen2.5-Coder 32B Instruct",
+   "model_display": "Qwen2.5-Coder 32B Instruct",
+   "resolved": 9.0,
+   "date": "2025-08-03",
+   "tags": [
+    "Model: Qwen2.5-Coder-32B-Instruct",
+    "Org: Qwen",
+    "System: Attempts - 1",
+    "Mini: 1.0.0"
+   ]
+  },
+  {
+   "name": "RAG + SWE-Llama 7B",
+   "model_display": "SWE-Llama 7B",
+   "resolved": 1.4,
+   "date": "2023-10-10",
+   "tags": [
+    "Model: SWE-Llama",
+    "Org: SWE-agent",
+    "System: Attempts - 1"
+   ]
+  },
+  {
+   "name": "RAG + SWE-Llama 13B",
+   "model_display": "SWE-Llama 13B",
+   "resolved": 1.2,
+   "date": "2023-10-10",
+   "tags": [
+    "Org: SWE-agent",
+    "System: Attempts - 1"
+   ]
+  }
+ ]
+}

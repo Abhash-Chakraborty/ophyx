@@ -24,6 +24,26 @@ own template; the other models get their chat template.
 | Qwen2.5-Coder-1.5B-Instruct | 1.54B | 1 | 4 | 2 | 7 |
 | Qwen2.5-Coder-7B-Instruct | 7.62B | 10 | 5 | 2 | 17 |
 
+The same 33 tasks through Kaggle Benchmarks' model proxy, scored in the same sandbox:
+
+| Model | Python (25) | SQL, Bash, JavaScript (6) | Explanations (2) | Total (33) |
+|---|---|---|---|---|
+| GPT-5.5 | 25 | 6 | 2 | 33 |
+| Claude Sonnet 5.5 | 25 | 6 | 2 | 33 |
+| Gemini 3.1 Pro | 25 | 6 | 2 | 33 |
+| GPT-5.4 mini | 25 | 6 | 2 | 33 |
+| Claude Haiku 5.5 | 25 | 6 | 2 | 33 |
+| Gemini 3.8 Flash | 24 | 6 | 2 | 32 |
+| Gemma 4 31B | 23 | 6 | 2 | 31 |
+
+Their three misses are real: Gemma's `retry_backoff` reads a variable before setting it, its
+`fix_pagination_described` answer fails before the tests run, and Flash spent its whole token budget
+reasoning about `extract_links` and never finished the code. Haiku's answers exposed two problems on
+my side, both fixed before these numbers: the first `node` start in a session could take longer than a
+JavaScript test allows, and the `order_total` test wanted the quantity check in `LineItem` although the
+prompt puts it in `Order`. Neither fix changed a score in the table above. So the tasks are fair: a
+current API model passes nearly all of them, and the gap below 7B is the models, not the tests.
+
 The two prose tasks are checked for one fact each, which is a low bar. Ophyx passes
 `list_vs_tuple` because its answer contains the word "immutable", but the code below that says
 `my_list[0] = 4  # This will raise an error, as the list is immutable.` That's wrong, so by hand v2

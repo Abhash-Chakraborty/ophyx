@@ -299,3 +299,32 @@ columns count the 131 runnable tasks; over all 148 they would be about 11% lower
 - LiveCodeBench: leaderboard per-problem data (2025-08-01), recomputed for the Feb-May 2025 window.
 - CRUXEval: leaderboard data.csv (2024-12-06), T=0.2 with n=10; our runs are greedy, so they are close but not identical.
 - Rows from model cards and papers are left out here: they use their own prompts and windows.
+
+## SWE-bench, for context
+
+SWE-bench Verified hands a model a real GitHub issue and a checkout of the repository. It has to find
+the right files, edit them and pass the project's hidden tests. Each task runs in its own Docker
+container through an agent loop that needs far more context than the 4,096 tokens Ophyx reads. I
+didn't run it on Ophyx: Kaggle sessions have no Docker, and a model that small scores 0.
+
+These are the official leaderboard's numbers from its mini-SWE-agent runs, where every model gets the
+same bash-only harness:
+
+| Model | Weights | Resolved, % of 500 |
+|---|---|---|
+| Claude 4.5 Opus (high) | closed | 76.8 |
+| Gemini 3 Flash (high) | closed | 75.8 |
+| GPT 5.2 (high) | closed | 72.8 |
+| DeepSeek V3.2 (high) | open | 70.0 |
+| Claude 4.5 Haiku (high) | closed | 66.6 |
+| Devstral Small (2512) | open | 56.4 |
+| GPT 5 nano (medium) | closed | 34.8 |
+| Qwen2.5-Coder-32B-Instruct | open | 9.0 |
+
+A general 32B coder resolves 9%. Small models score only when they're trained for this exact task
+and run in their own agent: Lingma SWE-GPT 7B resolves 18.2%, MCTS-Refine-7B 23.2% and SWE-Llama 7B
+with retrieval 1.4%. The frontier models in the table above (GPT-5.5, Sonnet 5.5, Gemini 3.8) aren't
+on the leaderboard yet; its newest rows are from February 2026.
+
+Source: `eval/published/swebench_verified.json`, extracted on 28 Oct 2026 from the leaderboard's data
+file (last changed 1 Sep 2026).

@@ -527,8 +527,8 @@ def test_price_is_decimal():
 def test_bad_input():
     with pytest.raises(ValueError):
         Order(ITEMS, "FREE")
-    with pytest.raises(ValueError):
-        LineItem("A", "1.00", 0)
+    with pytest.raises(ValueError):  # the prompt allows the check in LineItem or in Order
+        Order([LineItem("A", "1.00", 0)])
 ''', r'''
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
