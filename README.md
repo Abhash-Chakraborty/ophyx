@@ -57,10 +57,12 @@ GGUF files for llama.cpp (f32, f16 and q8_0) are in
 | SFT v2 | 800M tokens at 4,096, adding problem-bank answers and bug-and-fix rows | TPU v5e-8, 4.7 h | 37.8 |
 | Averaging | 70% SFT v2 plus 30% SFT v1, weight by weight | Kaggle CPU | 41.5 |
 | GRPO | One pass over 1,399 problems; the only reward is passing their tests | one T4, 5.4 h | **43.9** |
+| SFT v3 (not shipped) | 64M tokens on contest problems with checked answers, from v2 | TPU v5e-8, 25 min | 43.9 |
 
 The 4,096-token run lost ground on short tasks: it rambled, and nearly three times as many MBPP answers
 hit the length limit (51 against 19). Averaging the long-context fine-tune with the short one won that back, and RL took it
-further. A DPO pilot and an earlier GRPO round stayed within noise, so they didn't ship. The
+further. A DPO pilot, an earlier GRPO round and a fine-tune on contest problems stayed within noise, so they
+didn't ship. The
 details of every run are in [eval/R1_RESULTS.md](eval/R1_RESULTS.md).
 
 The architecture is Qwen3's layout, so standard tools load it: 28 layers, hidden size 1,024, 16
@@ -83,7 +85,19 @@ answer ran in the same offline sandbox.
 | deepseek-coder-1.3b-instruct | 1.35B | 61.6 | 52.6 | 3.8 | 5.6 | 28.8 | 14 |
 | Qwen2.5-Coder-7B-Instruct | 7.62B | 86.0 | 72.5 | 16.9 | 17.5 | 53.9 | 26 |
 
-- [eval/R1_RESULTS.md](eval/R1_RESULTS.md): 55 models from 0.13B to 8B, frontier
+Beyond Python functions it falls further behind. It answers every JavaScript, C++ and Bash prompt in
+Python, and library-heavy tasks are hard at this size:
+
+| Model | MultiPL-E JS | MultiPL-E C++ | MultiPL-E Bash | BigCodeBench instruct (1,140) | DS-1000 |
+|---|---|---|---|---|---|
+| **Ophyx 350M v2** | 0.0 | 0.0 | 0.0 | 21.0 | 3.4 |
+| Qwen2.5-Coder-0.5B-Instruct | 52.2 | 45.3 | 25.3 | 11.3 | 6.6 |
+| Qwen3-0.6B | 30.4 | 21.1 | 5.1 | 10.1 | 5.3 |
+| deepseek-coder-1.3b-instruct | 60.2 | 50.3 | 16.5 | 22.3 | 27.2 |
+| Qwen2.5-Coder-7B-Instruct | 82.6 | 80.7 | 51.9 | 42.4 | 42.0 |
+
+- [eval/R1_RESULTS.md](eval/R1_RESULTS.md): 56 models from 0.13B to 8B, MultiPL-E (JavaScript, C++, Bash), all
+  of BigCodeBench and DS-1000 for ten of them, frontier
   models through Kaggle Benchmarks, and published leaderboard scores with sources.
 - [eval/HANDS_ON_REVIEW.md](eval/HANDS_ON_REVIEW.md): all 42 hands-on answers read by hand, and
   why 33 of them fail.

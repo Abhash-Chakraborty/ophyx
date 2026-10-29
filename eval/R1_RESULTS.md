@@ -1,7 +1,7 @@
 # R1 results
 
 Every open model below ran the same way on Kaggle's free T4s and was scored offline on Kaggle CPUs,
-in October 2026: 55 models from 0.13B to 8B parameters, ours included. Seven frontier API models
+in October 2026: 56 models from 0.13B to 8B parameters, ours included. Seven frontier API models
 answered two or three of the benchmarks through Kaggle Benchmarks and were scored the same way.
 
 ## How it was run
@@ -40,6 +40,7 @@ All numbers are pass@1 in percent.
 | ophyx-350m-grpo-p3-lr1e6 | ours | 0.35B | 35.4 | 32.9 | 57.1 | 48.1 | 1.0 | 3.1 | 2.3 | 2.0 | 24.6 | 19.5 | 19.0 |
 | ophyx-350m-grpo-p3-lr3e6 | ours | 0.35B | 39.0 | 36.0 | 57.9 | 48.1 | 0.7 | 2.3 | 3.1 | 1.2 | 24.2 | 19.4 | 21.4 |
 | ophyx-350m-grpo-p4-lr2e6 | ours | 0.35B | 45.1 | 43.9 | 58.2 | 47.4 | 1.3 | 3.8 | 4.6 | 2.0 | 20.6 | 21.9 | 21.4 |
+| ophyx-350m-sft3 | ours | 0.35B | 45.1 | 43.9 | 56.1 | 46.8 | 1.7 | 2.3 | 3.8 | 2.6 | 20.1 | 21.5 | 21.4 |
 | ophyx-350m-grpo-p4-lr4e6 | ours | 0.35B | 43.3 | 42.1 | 58.7 | 47.6 | 1.3 | 3.8 | 2.3 | 1.8 | 21.2 | 21.5 | 21.4 |
 | ophyx-350m-sft | ours | 0.35B | 37.2 | 35.4 | 57.4 | 48.1 | 1.7 | 2.3 | 3.8 | 1.5 | 24.9 | 19.5 | 23.8 |
 | ophyx-350m-sft2 | ours | 0.35B | 39.0 | 37.8 | 55.8 | 46.0 | 0.3 | 3.1 | 1.5 | 2.3 | 19.2 | 19.1 | 19.0 |
@@ -120,6 +121,12 @@ All numbers are pass@1 in percent.
   ahead of the average on every benchmark: HumanEval+ 43.9, MBPP+ 47.4, BigCodeBench-Hard 3.8 and
   4.6, LiveCodeBench 2.0, 9 hands-on tasks. Against ophyx-350m-sft that is +8.5 on HumanEval+ and
   lower on CRUX-I (20.6 against 24.9), MBPP+ (-0.7) and the hands-on tasks (one fewer).
+- SFT v3 trained 64M more tokens on top of v2: 30% the verified contest bank (11,585 problems from
+  CodeContests, TACO, APPS, LeetCode and Codeforces), 1.5% solutions a 14B teacher wrote for 429
+  problems v2 couldn't solve, and the rest v2's mix. It didn't help. HumanEval+ (43.9), the hands-on
+  tasks (9) and the real-world tasks (2 of 33) are unchanged, LiveCodeBench gained 0.6 (two problems),
+  and MBPP+ (46.8), BigCodeBench-Hard (2.3 and 3.8), CRUX-I (20.1) and DS-1000 (2.6) dropped a little.
+  It was set to ship only if nothing dropped, so v2 stays the release.
 
 - The 7B and 8B models show how far the size class is from the next one up. On HumanEval+,
   ophyx-350m-v2 (the table's ophyx-350m-grpo-p4-lr2e6, 43.9) is ahead of three of the four 7B base
@@ -146,6 +153,47 @@ Scoring notes:
   problem. Two lost one, Qwen2.5-Coder-7B and -3B-Instruct on complete: their answers draw random
   values, and the tests pass on some draws only (BigCodeBench/720 asks for humidity in 50 to 60, and
   the 7B answer draws it from 40 to 60).
+
+## Other languages, all of BigCodeBench, DS-1000
+
+Added on 29 Oct 2026 for Ophyx and eight open models up to 7B, with the same generation and
+scoring as above.
+
+| Benchmark | Problems | What counts |
+|---|---|---|
+| MultiPL-E JS, C++, Bash | 161, 161, 158 | HumanEval translated by MultiPL-E, with its tests; node, g++ -std=c++17, bash |
+| BCB complete, instruct | 1,140 | all of BigCodeBench, scored on the 1,037 tasks whose reference solution passes offline |
+| DS-1000 | 1,000 | NumPy, pandas, Matplotlib, SciPy, scikit-learn, PyTorch and TensorFlow, scored on the 945 problems whose reference passes offline |
+
+| Model | Kind | MultiPL-E JS | MultiPL-E C++ | MultiPL-E Bash | BCB complete | BCB instruct | DS-1000 |
+|---|---|---|---|---|---|---|---|
+| ophyx-350m-v2 | ours | 0.0 | 0.0 | 0.0 | 18.6 | 21.0 | 3.4 |
+| ophyx-350m-sft3 | ours | 0.0 | 0.0 | 0.0 | 18.3 | 20.0 | 2.6 |
+| SmolLM2-360M-Instruct | instruct | 13.7 | 6.2 | 0.0 | 5.1 | 3.1 | 1.4 |
+| Qwen2.5-Coder-0.5B | base | 28.6 | 24.8 | 7.0 | 16.2 |  | 8.8 |
+| Qwen2.5-Coder-0.5B-Instruct | instruct | 52.2 | 45.3 | 25.3 | 11.9 | 11.3 | 6.6 |
+| Qwen3-0.6B | instruct | 30.4 | 21.1 | 5.1 | 13.8 | 10.1 | 5.3 |
+| deepseek-coder-1.3b-base | base | 30.4 | 28.6 | 9.5 | 26.4 |  | 17.5 |
+| deepseek-coder-1.3b-instruct | instruct | 60.2 | 50.3 | 16.5 | 30.4 | 22.3 | 27.2 |
+| Qwen2.5-Coder-1.5B-Instruct | instruct | 61.5 | 52.2 | 33.5 | 30.5 | 25.7 | 12.8 |
+| Qwen2.5-Coder-7B-Instruct | instruct | 82.6 | 80.7 | 51.9 | 51.7 | 42.4 | 42.0 |
+
+- Ophyx scores 0 on MultiPL-E. Its template ends with `<|python|>` and its fine-tuning data was
+  Python only, so a JavaScript, C++ or Bash prompt gets a Python function back. None of its 161 C++
+  answers compiled. [REALWORLD_REVIEW.md](REALWORLD_REVIEW.md) has the same finding on everyday tasks.
+- On all of BigCodeBench it does better than the hard subset suggests: 18.6 complete and 21.0
+  instruct. That is ahead of every model under 1B here and behind the 1.3B and 1.5B models (about 30).
+  Its rank matches BigCodeBench-Hard, where it was also ahead of Qwen2.5-Coder-0.5B-Instruct and
+  Qwen3-0.6B. BigCodeBench is in the decontamination index for pretraining and fine-tuning (10-gram
+  and MinHash matches). 12 of the 220 passing instruct answers are close to the reference solution,
+  all short tasks whose docstring spells out each step.
+- DS-1000 is its weakest benchmark at 3.4, and most of that is Matplotlib (15.5 of 155 problems).
+  It scores 1.8 on NumPy, 0.7 on pandas and 0 on SciPy, scikit-learn and PyTorch. These problems
+  need exact library calls, and the small open models are low here too, from 1.4 to 8.8.
+- Qwen2.5-Coder-7B-Instruct leads on all six: 82.6 on JavaScript, 42.4 on BigCodeBench instruct and
+  42.0 on DS-1000.
+
+Generation config: `eval/runs/r8_more.json` and `eval/runs/r9_sft3.json`.
 
 ## Frontier API models
 
