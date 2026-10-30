@@ -1,12 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <defs><clipPath id="top"><rect width="64" height="9"/></clipPath></defs>
-  <path id="tile" d="M25 0H39C60 0 64 4 64 25V39C64 60 60 64 39 64H25C4 64 0 60 0 39V25C0 4 4 0 25 0Z" fill="#1D1C1A"/>
-  <g id="rim" fill="none" stroke="#FFFFFF">
-    <path d="M25 0H39C60 0 64 4 64 25V39C64 60 60 64 39 64H25C4 64 0 60 0 39V25C0 4 4 0 25 0Z" transform="translate(.5 .5) scale(.984)" stroke-opacity=".07" stroke-width="1"/>
-    <path d="M25 0H39C60 0 64 4 64 25V39C64 60 60 64 39 64H25C4 64 0 60 0 39V25C0 4 4 0 25 0Z" transform="translate(.75 .75) scale(.9766)" stroke-opacity=".16" stroke-width="1.2" clip-path="url(#top)"/>
-  </g>
-  <g id="glyph">
-    <path d="M43.22 22.77A15 15 0 1 0 43.22 41.23" fill="none" stroke="#F1F0EC" stroke-width="5.4" stroke-linecap="round"/>
-    <rect x="45.4" y="24.5" width="5.2" height="15" rx="1.4" fill="#8FD9B6"/>
-  </g>
+<path d="M25 0H39C60 0 64 4 64 25V39C64 60 60 64 39 64H25C4 64 0 60 0 39V25C0 4 4 0 25 0Z" fill="#121211"/>
+<circle cx="32" cy="32" r="17" fill="#F1F0EC"/>
+<circle cx="33.7" cy="30.3" r="13.8" fill="#121211"/>
 </svg>
