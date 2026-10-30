@@ -152,8 +152,8 @@ settings. My rules aren't secret, they're in serve/replies.py: {REPO}
 Describe a Python function and I'll write it."""
 
 REFUSE = """\
-I won't write that. I don't help with code meant to break into systems, steal data or passwords, \
-spy on people or cause harm.
+I won't help with that. I don't write code or give steps for breaking into systems, stealing data \
+or passwords, spying on people, weapons, or anything else meant to cause harm.
 
 If you're protecting a system, ask for the defensive side, for example:
   Write is_strong_password(p) that checks length and character classes."""
