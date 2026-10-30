@@ -11,13 +11,18 @@ Endpoints (FastAPI), private: Modal's edge refuses any request without a workspa
 container starts. Only the website's server holds the token; browsers talk to the website, which
 checks Turnstile and its own rate limits first.
   GET  /health                     {"ok": true, "model": ..., "hw": ...}; also wakes the model ahead of a chat
-  POST /generate                   {"prompt": "...", "max_tokens": 512, "temperature": 0.2}
+  POST /generate                   {"prompt": "...", "max_tokens": 512, "temperature": 0.2, "concise": false}
                                    -> text/event-stream of {"text": "..."} chunks, then {"done": true, ...}
                                    Questions about the model itself ("who made you?") get a fixed answer
                                    from replies.py, marked by a first {"route": "about"} event; answers
                                    that start repeating themselves end early with "looped": true.
                                    The done event carries "tokens" (new), "prompt_tokens" and "length"
-                                   (true when the answer hit max_tokens).
+                                   (true when the answer hit max_tokens), "cold" (it waited for a container
+                                   start; "boot_s" says how long loading took) and "queued_s" (time
+                                   waiting for the one generation slot).
+                                   "concise": true strips comments and docstrings and stops at an example
+                                   or test block (replies.ConciseFilter), unless the prompt asks for them;
+                                   the done event then says "concise" and "trimmed" (a tail was cut).
 
 Cost controls: one container at most, it shuts down after SCALEDOWN_S idle seconds, each request is
 capped in prompt length, new tokens and wall time, and each client (the X-Ophyx-Client hash the
@@ -79,6 +84,7 @@ class Ophyx:
     @modal.enter()
     def load(self):
         import threading
+        started = time.time()
         self.lock = threading.Lock()  # one generation at a time; the others wait their turn
         self.buckets = {}
         if HW == "cpu":
@@ -94,6 +100,7 @@ class Ophyx:
             self.tok = PreTrainedTokenizerFast(tokenizer_file=f"{MODEL_DIR}/tokenizer.json")
             self.model = AutoModelForCausalLM.from_pretrained(MODEL_DIR, torch_dtype=torch.float32).to("cuda").eval()
             self.encode = lambda text: self.tok(text, add_special_tokens=False)["input_ids"]
+        self.ready_at, self.boot_s, self.answered = time.time(), round(time.time() - started, 2), 0
 
     def allowed(self, client):
         now = time.monotonic()
@@ -107,9 +114,11 @@ class Ophyx:
 
     def generate(self, ids, max_new, temperature, stop, out, used):
         """Runs in a thread: puts text chunks on `out`, then None. Stops early once `stop` is set.
-        `used` gets the number of new tokens, for the API's usage and finish_reason."""
+        `used` gets the number of new tokens, for the API's usage and finish_reason, and how long
+        the answer waited for the one generation slot."""
         try:
             with self.lock:
+                used["queued_s"] = round(time.time() - used["t0"], 2)
                 if stop.is_set():
                     return
                 if HW == "cpu":
@@ -165,7 +174,7 @@ class Ophyx:
 
         from fastapi import FastAPI, HTTPException, Request
         from fastapi.responses import StreamingResponse
-        from replies import RepeatGuard, canned_reply
+        from replies import ConciseFilter, RepeatGuard, canned_reply, wants_extras
 
         api = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -185,6 +194,7 @@ class Ophyx:
                 prompt = str(body.get("prompt", "")).strip()
                 max_new = max(1, min(int(body.get("max_tokens", 512)), MAX_NEW_TOKENS))
                 temperature = max(0.0, min(float(body.get("temperature", 0.2)), 1.5))
+                concise = body.get("concise") is True
             except (ValueError, TypeError, AssertionError):
                 raise HTTPException(400, "send a JSON object: prompt, and optionally max_tokens and temperature")
             if not prompt:
@@ -208,8 +218,13 @@ class Ophyx:
             stop = threading.Event()  # set when the client leaves or time runs out, so generation stops too
             out = queue.Queue()
             t0 = time.time()
+            # the first answer of a fresh container that arrives as start-up finishes waited for it
+            cold = self.answered == 0 and t0 - self.ready_at < 5
+            self.answered += 1
             budget = min(max_new, CTX - len(ids))
-            used = {}
+            used = {"t0": t0}
+            # plain code unless the prompt asks for comments, docstrings, examples or tests
+            trim = ConciseFilter() if concise and not wants_extras(prompt) else None
             threading.Thread(target=self.generate, args=(ids, budget, temperature, stop, out, used),
                              daemon=True).start()
 
@@ -229,21 +244,28 @@ class Ophyx:
                             break
                         first = first or time.time() - t0
                         text = guard.feed(chunk)
+                        if trim:
+                            text = trim.feed(text)
                         if text:
                             n += 1
                             yield f"data: {json.dumps({'text': text})}\n\n"
-                        if guard.looping:
+                        if guard.looping or (trim and trim.done):
                             break  # the finally below stops generation
                         if time.time() - t0 > REQUEST_TIMEOUT_S:
                             break
                     rest = guard.flush()
+                    if trim:
+                        rest = trim.feed(rest) + trim.flush()
                     if rest:
                         n += 1
                         yield f"data: {json.dumps({'text': rest})}\n\n"
                     done = {"done": True, "seconds": round(time.time() - t0, 2), "chunks": n,
                             "first_s": round(first or 0, 2), "looped": guard.looping, "hw": HW,
                             "tokens": used.get("tokens", 0), "prompt_tokens": len(ids),
-                            "length": used.get("length", used.get("tokens", 0) >= budget)}
+                            "length": used.get("length", used.get("tokens", 0) >= budget),
+                            "concise": trim is not None, "trimmed": bool(trim and trim.done),
+                            "cold": cold, "boot_s": self.boot_s if cold else 0,
+                            "queued_s": used.get("queued_s", 0)}
                     yield f"data: {json.dumps(done)}\n\n"
                 finally:
                     stop.set()

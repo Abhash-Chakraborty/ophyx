@@ -114,3 +114,154 @@ class RepeatGuard:
             return False
         earlier = self.lines[: -self.WINDOW]
         return any(earlier[i : i + self.WINDOW] == window for i in range(len(earlier) - self.WINDOW + 1))
+
+
+# Prompts that ask for the parts the concise filter removes keep them
+_WANTS_EXTRAS = re.compile(
+    r"\b(comments?|commented|docstrings?|documentation|document(ed)?|docs|explain\w*|annotat\w*"
+    r"|examples?|usage|tests?|testing|pytest|unittest|demo|doctests?)\b",
+    re.IGNORECASE,
+)
+_TAIL = re.compile(
+    r"(if\s+__name__\s*==|import\s+(pytest|unittest)\b|from\s+(pytest|unittest)\b|def\s+test_|class\s+Test"
+    r"|print\(|assert\b)"
+)
+_TAIL_COMMENT = re.compile(r"#.*\b(example|usage|test|tests|testing|demo|output)\b", re.IGNORECASE)
+_DEF = re.compile(r"(async\s+def|def|class)\s+(\w+)")
+
+
+def wants_extras(prompt: str) -> bool:
+    """True when the prompt asks for comments, docstrings, examples or tests: then nothing is stripped."""
+    return bool(_WANTS_EXTRAS.search(prompt))
+
+
+def _split_comment(line: str, in_string: str | None) -> tuple[str, str | None]:
+    """Drops a trailing # comment that sits outside strings. Returns the line and the triple quote
+    still open at its end, if any, so the next line knows it starts inside a string."""
+    i, quote = 0, in_string
+    while i < len(line):
+        if quote:
+            if line[i] == "\\":
+                i += 2
+                continue
+            if line.startswith(quote, i):
+                i += len(quote)
+                quote = None
+                continue
+            i += 1
+            continue
+        ch = line[i]
+        if ch == "#":
+            return line[:i].rstrip(), None
+        if ch in "\"'":
+            quote = ch * 3 if line.startswith(ch * 3, i) else ch
+            i += len(quote)
+            continue
+        i += 1
+    if quote and len(quote) == 1:  # an unclosed one-quote string ends with the line (a syntax error anyway)
+        quote = None
+    return line, quote
+
+
+class ConciseFilter:
+    """Turns a streamed answer into plain code: no comments, no docstrings and no example or test
+    block after the solution. It only removes text, line by line, and never changes a line of code:
+    comments and docstrings don't change what the code does, and the tail it cuts (a __main__ demo,
+    prints, asserts, pytest tests) only runs when the file is run as a script. A function left with
+    no body after its docstring goes gets `pass`. When the tail starts, `done` turns true so the
+    caller can stop generating. A __main__ block stays when the code defines main(): that's a CLI.
+    """
+
+    def __init__(self):
+        self.partial = ""
+        self.string = None  # the triple quote of a multi-line string we're inside, if any
+        self.docstring = None  # the same, when that string is a docstring being dropped
+        self.after_header = None  # indent of a def/class whose body hasn't started yet
+        self.open_header = None  # indent of a def/class whose signature spans several lines
+        self.pass_indent = None  # a body emptied by a dropped docstring, waiting to see the next line
+        self.seen_def = False
+        self.has_main = False
+        self.blank = 0
+        self.started = False
+        self.done = False
+
+    def feed(self, chunk: str) -> str:
+        if self.done:
+            return ""
+        self.partial += chunk
+        *complete, self.partial = self.partial.split("\n")
+        out = []
+        for line in complete:
+            out.append(self._line(line))
+            if self.done:
+                break
+        return "".join(out)
+
+    def flush(self) -> str:
+        rest = "" if self.done else self._line(self.partial, final=True) if self.partial else ""
+        if self.pass_indent is not None:
+            rest += f"{self.pass_indent}    pass\n"
+            self.pass_indent = None
+        self.partial = ""
+        return rest
+
+    def _line(self, line: str, final: bool = False) -> str:
+        end = "" if final else "\n"
+        stripped = line.strip()
+        indent = line[: len(line) - len(line.lstrip())]
+
+        if self.docstring:  # inside a docstring being dropped
+            if self.docstring in line:
+                self.docstring = None
+            return ""
+        if self.string:  # inside a multi-line string that is data: keep it as written
+            _, self.string = _split_comment(line, self.string)
+            return line + end
+
+        if not stripped:  # held until more code follows, so nothing trails a cut answer
+            if self.started:
+                self.blank = min(self.blank + 1, 2)
+            return ""
+
+        # a docstring: the first statement after a def/class header, or of the file
+        opener = re.match(r"[rRuU]?(\"\"\"|''')", stripped)
+        if opener and (self.after_header is not None or not self.started):
+            quote = opener.group(1)
+            if stripped.count(quote) < 2 or stripped == quote:
+                self.docstring = quote
+            if self.after_header is not None:
+                self.pass_indent = self.after_header
+                self.after_header = None
+            return ""
+
+        if stripped.startswith("#"):
+            if not indent and self.seen_def and _TAIL_COMMENT.match(stripped):
+                self.done = True
+            return ""
+
+        if not indent and self.seen_def and _TAIL.match(stripped):
+            if not (stripped.startswith("if") and self.has_main):
+                self.done = True
+                return ""
+
+        out = ""
+        if self.pass_indent is not None:
+            if len(indent) <= len(self.pass_indent):
+                out += f"{self.pass_indent}    pass\n"
+            self.pass_indent = None
+        self.after_header = None
+
+        code, self.string = _split_comment(line, None)
+        header = _DEF.match(stripped)
+        if header:
+            self.seen_def = self.seen_def or not indent
+            self.has_main = self.has_main or (not indent and header.group(2) == "main")
+            self.open_header = indent
+        if self.open_header is not None and code.rstrip().endswith(":"):
+            self.after_header, self.open_header = self.open_header, None
+        elif self.open_header is not None and header and not code.rstrip().endswith((",", "(", "[", "\\")):
+            self.open_header = None  # a one-line def such as `def f(x): return x`
+        out += "\n" * self.blank
+        self.started = True
+        self.blank = 0
+        return out + code + end
