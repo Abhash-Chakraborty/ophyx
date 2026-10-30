@@ -1,3 +1,5 @@
+<img src="docs/figures/logo.svg" width="72" height="72" alt="">
+
 # Ophyx
 
 <p align="center">
@@ -126,7 +128,7 @@ but holds no keys.
 | `train/` | `pretrain.py` (JAX, TPU), `dpo_t4.py`, `grpo_t4.py`, `average_ckpt.py`, `export_ckpt.py`, `export_gguf.py` |
 | `eval/` | `bench_kit.py`, `bench_gen.py`, `bench_exec.py`, `bench_report.py`, the concept suite, the hands-on set and the results |
 | `kaggle/` | `launch.py` (push any script as a Kaggle kernel), `watchdog.py` and `chains/` (multi-session training), tools |
-| `serve/` | A Modal endpoint for a demo: scales to zero, rate-limited per IP |
+| `serve/` | The Modal endpoint behind the chat on my website: llama.cpp on 4 CPU cores, scales to zero, private behind a proxy token |
 | `docs/` | [The plan](docs/plan.md), [the data](docs/data.md), [the training regime](docs/training.md) and [how to reproduce it](docs/reproduce.md) |
 | `tests/` | CPU tests for the scoring helpers, averaging, the launcher, the watchdog and the task sets |
 
@@ -152,7 +154,7 @@ walks through the accounts, keys and commands for each stage.
 | `HF_TOKEN` | upload jobs, the watchdog, the Modal secret | Reading and writing private Hugging Face repos |
 | `NTFY_TOPIC` | `kaggle/watchdog.py` | Phone notifications when a training chain stops |
 | `OPHYX_CONFIG` | every job script | A job's CONFIG when run outside `launch.py` |
-| `OPHYX_MODEL`, `OPHYX_GPU`, `OPHYX_ORIGINS` | `serve/modal_app.py` | Model repo, GPU type and allowed origins for the demo |
+| `OPHYX_HW`, `OPHYX_APP` | `serve/modal_app.py` | `cpu` (default) or `t4`, and the Modal app name |
 
 Keep them in a `.env` at the repo root (it's ignored by git). Inside Kaggle, a private dataset holds
 `keys.json` with the HF token and is attached only to sessions that run no generated code.

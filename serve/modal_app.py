@@ -1,16 +1,23 @@
-"""ophyx demo endpoint on Modal: fp32 weights on a T4, scales to zero when nobody is using it.
+"""ophyx demo endpoint on Modal. Scales to zero when nobody is using it.
 
-    modal deploy serve/modal_app.py          # needs `modal token new` once, and a Modal secret "ophyx-hf"
-                                             # with HF_TOKEN while the model repo is private
+    modal deploy serve/modal_app.py                    # CPU: the GGUF build on llama.cpp (default)
+    OPHYX_HW=t4 modal deploy serve/modal_app.py        # GPU: fp32 weights with transformers on a T4
 
-Endpoints (FastAPI):
-  GET  /health                     {"ok": true, "model": ...}
+Both need `modal token new` once and a Modal secret "ophyx-hf" (HF_TOKEN; the repos are public now,
+so an empty token works). OPHYX_APP renames the app, to run both side by side for a comparison.
+
+Endpoints (FastAPI), private: Modal's edge refuses any request without a workspace proxy token
+(`modal workspace proxy-tokens create`, sent as the Modal-Key and Modal-Secret headers), before a
+container starts. Only the website's server holds the token; browsers talk to the website, which
+checks Turnstile and its own rate limits first.
+  GET  /health                     {"ok": true, "model": ..., "hw": ...}; also wakes the model ahead of a chat
   POST /generate                   {"prompt": "...", "max_tokens": 512, "temperature": 0.2}
                                    -> text/event-stream of {"text": "..."} chunks, then {"done": true, ...}
 
 Cost controls: one container at most, it shuts down after SCALEDOWN_S idle seconds, each request is
-capped in prompt length, new tokens and wall time, and each client IP gets a small token bucket.
-Set a monthly budget for the workspace in the Modal dashboard as well; that is the hard cap.
+capped in prompt length, new tokens and wall time, and each client (the X-Ophyx-Client hash the
+website sends) gets a small token bucket. Set a monthly budget for the workspace in the Modal
+dashboard as well; that is the hard cap.
 """
 
 import os
@@ -18,87 +25,145 @@ import time
 
 import modal
 
+HW = os.environ.get("OPHYX_HW", "cpu")
 MODEL_REPO = os.environ.get("OPHYX_MODEL", "abhash-chakraborty/ophyx-350m-v2")
+GGUF_REPO = os.environ.get("OPHYX_GGUF", "abhash-chakraborty/ophyx-350m-v2-gguf")
+GGUF_FILE = os.environ.get("OPHYX_GGUF_FILE", "ophyx-350m-v2-f16.gguf")
 MODEL_DIR = "/model"
-GPU = os.environ.get("OPHYX_GPU", "T4")
+CPU_CORES = 4
 SCALEDOWN_S = 180
 MAX_PROMPT_TOKENS = 1536
 MAX_NEW_TOKENS = 1024
+CTX = 4096
 REQUEST_TIMEOUT_S = 90
-PER_IP_PER_MIN = 6
-ALLOWED_ORIGINS = [o for o in os.environ.get("OPHYX_ORIGINS", "*").split(",") if o]
+PER_CLIENT_PER_MIN = 6
+END_ID, USER_ID = 0, 1  # <|end|> and <|user|>: an answer stops at either
 
 
 def download():
-    from huggingface_hub import snapshot_download
-    snapshot_download(MODEL_REPO, local_dir=MODEL_DIR, token=os.environ.get("HF_TOKEN"),
-                      allow_patterns=["*.json", "*.safetensors", "*.txt", "*.model"])
+    from huggingface_hub import hf_hub_download, snapshot_download
+    token = os.environ.get("HF_TOKEN") or None
+    if HW == "cpu":
+        hf_hub_download(GGUF_REPO, GGUF_FILE, local_dir=MODEL_DIR, token=token)
+    else:
+        snapshot_download(MODEL_REPO, local_dir=MODEL_DIR, token=token,
+                          allow_patterns=["*.json", "*.safetensors", "*.txt", "*.model"])
 
 
-image = (
-    modal.Image.debian_slim(python_version="3.12")
-    .pip_install("torch==2.6.0", "transformers==4.51.3", "fastapi[standard]==0.115.12", "huggingface_hub==0.30.2")
-    .env({"OPHYX_MODEL": MODEL_REPO, "OPHYX_ORIGINS": ",".join(ALLOWED_ORIGINS)})  # the container re-imports this file
-    .run_function(download, secrets=[modal.Secret.from_name("ophyx-hf")])
-)
-app = modal.App("ophyx-demo", image=image)
+env = {"OPHYX_HW": HW, "OPHYX_MODEL": MODEL_REPO, "OPHYX_GGUF": GGUF_REPO, "OPHYX_GGUF_FILE": GGUF_FILE}
+if HW == "cpu":
+    image = (
+        modal.Image.debian_slim(python_version="3.12")
+        .apt_install("build-essential", "cmake")
+        # portable build: the image is built on one machine and runs on others
+        .env({"CMAKE_ARGS": "-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON"})
+        .pip_install("llama-cpp-python==0.3.36", "fastapi[standard]==0.115.12", "huggingface_hub==0.30.2")
+    )
+else:
+    image = modal.Image.debian_slim(python_version="3.12").pip_install(
+        "torch==2.6.0", "transformers==4.51.3", "fastapi[standard]==0.115.12", "huggingface_hub==0.30.2")
+image = image.env(env).run_function(download, secrets=[modal.Secret.from_name("ophyx-hf")])  # the container re-imports this file
+app = modal.App(os.environ.get("OPHYX_APP", "ophyx-demo"), image=image)
+resources = dict(cpu=CPU_CORES, memory=2048) if HW == "cpu" else dict(gpu="T4")
 
 
-@app.cls(gpu=GPU, scaledown_window=SCALEDOWN_S, max_containers=1, timeout=600)
+@app.cls(**resources, scaledown_window=SCALEDOWN_S, max_containers=1, timeout=600)
 @modal.concurrent(max_inputs=4)
 class Ophyx:
     @modal.enter()
     def load(self):
-        import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-        self.torch = torch
-        self.tok = AutoTokenizer.from_pretrained(MODEL_DIR)
-        self.model = AutoModelForCausalLM.from_pretrained(MODEL_DIR, torch_dtype=torch.float32).to("cuda").eval()
-        self.end_id = self.tok.convert_tokens_to_ids("<|end|>")
-        self.ctx = self.model.config.max_position_embeddings
-        self.stop_ids = [self.end_id, self.tok.convert_tokens_to_ids("<|user|>")]
+        import threading
+        self.lock = threading.Lock()  # one generation at a time; the others wait their turn
         self.buckets = {}
+        if HW == "cpu":
+            from llama_cpp import Llama
+            self.llm = Llama(model_path=f"{MODEL_DIR}/{GGUF_FILE}", n_ctx=CTX, n_threads=CPU_CORES,
+                             n_batch=512, verbose=False)
+            self.encode = lambda text: self.llm.tokenize(text.encode(), add_bos=False, special=True)
+        else:
+            import torch
+            from transformers import AutoModelForCausalLM, PreTrainedTokenizerFast
+            self.torch = torch
+            # the repo's tokenizer_config names a transformers 5 class; the tokenizer file itself loads anywhere
+            self.tok = PreTrainedTokenizerFast(tokenizer_file=f"{MODEL_DIR}/tokenizer.json")
+            self.model = AutoModelForCausalLM.from_pretrained(MODEL_DIR, torch_dtype=torch.float32).to("cuda").eval()
+            self.encode = lambda text: self.tok(text, add_special_tokens=False)["input_ids"]
 
-    def allowed(self, ip):
+    def allowed(self, client):
         now = time.monotonic()
         if len(self.buckets) > 10_000:  # a bucket refills in a minute; older ones carry no state
             self.buckets = {k: v for k, v in self.buckets.items() if now - v[1] < 60}
-        tokens, last = self.buckets.get(ip, (PER_IP_PER_MIN, now))
-        tokens = min(PER_IP_PER_MIN, tokens + (now - last) * PER_IP_PER_MIN / 60)
+        tokens, last = self.buckets.get(client, (PER_CLIENT_PER_MIN, now))
+        tokens = min(PER_CLIENT_PER_MIN, tokens + (now - last) * PER_CLIENT_PER_MIN / 60)
         ok = tokens >= 1
-        self.buckets[ip] = (tokens - 1 if ok else tokens, now)
+        self.buckets[client] = (tokens - 1 if ok else tokens, now)
         return ok
 
-    @modal.asgi_app()
+    def generate(self, ids, max_new, temperature, stop, out):
+        """Runs in a thread: puts text chunks on `out`, then None. Stops early once `stop` is set."""
+        try:
+            with self.lock:
+                if stop.is_set():
+                    return
+                if HW == "cpu":
+                    from llama_cpp import StoppingCriteriaList
+
+                    def halt(tokens, logits):
+                        return stop.is_set() or tokens[-1] in (END_ID, USER_ID)
+                    for part in self.llm.create_completion(
+                            ids, max_tokens=max_new, temperature=temperature, top_p=0.95 if temperature > 0 else 1.0,
+                            stream=True, stopping_criteria=StoppingCriteriaList([halt])):
+                        text = part["choices"][0]["text"]
+                        if text:
+                            out.put(text)
+                else:
+                    from transformers import StoppingCriteria, StoppingCriteriaList, TextIteratorStreamer
+
+                    class Halt(StoppingCriteria):
+                        def __call__(self, input_ids, scores, **kw):
+                            return stop.is_set()
+
+                    streamer = TextIteratorStreamer(self.tok, skip_prompt=True, skip_special_tokens=True)
+                    kw = dict(input_ids=self.torch.tensor([ids], device="cuda"), max_new_tokens=max_new,
+                              streamer=streamer, stopping_criteria=StoppingCriteriaList([Halt()]),
+                              eos_token_id=[END_ID, USER_ID], pad_token_id=END_ID, do_sample=temperature > 0,
+                              temperature=temperature or None, top_p=0.95 if temperature > 0 else None)
+                    import threading
+
+                    def work():
+                        with self.torch.no_grad():  # thread-local, so it goes inside the worker
+                            self.model.generate(**kw)
+
+                    worker = threading.Thread(target=work, daemon=True)
+                    worker.start()
+                    for text in streamer:
+                        if text:
+                            out.put(text)
+                    worker.join()
+        finally:
+            out.put(None)
+
+    @modal.asgi_app(requires_proxy_auth=True)
     def web(self):
+        import asyncio
         import json
+        import queue
         import threading
 
         from fastapi import FastAPI, HTTPException, Request
-        from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import StreamingResponse
-        from transformers import StoppingCriteria, StoppingCriteriaList, TextIteratorStreamer
 
-        class Stop(StoppingCriteria):
-            def __init__(self, event):
-                self.event = event
-
-            def __call__(self, input_ids, scores, **kw):
-                return self.event.is_set()
-
-        api = FastAPI()
-        api.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_methods=["GET", "POST"],
-                           allow_headers=["content-type"])
+        api = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
         @api.get("/health")
         def health():
-            return {"ok": True, "model": MODEL_REPO}
+            return {"ok": True, "model": MODEL_REPO, "hw": HW}
 
         @api.post("/generate")
         async def generate(req: Request):
-            # the proxy appends the address it saw; earlier entries come from the client and can be anything
-            ip = req.headers.get("x-forwarded-for", req.client.host if req.client else "?").split(",")[-1].strip()
-            if not self.allowed(ip):
+            # a second line of defence behind the website's own limits: one bucket per visitor hash
+            client = req.headers.get("x-ophyx-client", "")[:64] or "website"
+            if not self.allowed(client):
                 raise HTTPException(429, "Too many requests. Try again in a minute.")
             try:
                 body = await req.json()
@@ -110,32 +175,36 @@ class Ophyx:
                 raise HTTPException(400, "send a JSON object: prompt, and optionally max_tokens and temperature")
             if not prompt:
                 raise HTTPException(400, "prompt is empty")
-            ids = self.tok(f"<|user|>\n{prompt}\n<|python|>\n", return_tensors="pt")["input_ids"]
-            if ids.shape[1] > MAX_PROMPT_TOKENS:
-                raise HTTPException(413, f"prompt is too long ({ids.shape[1]} tokens, max {MAX_PROMPT_TOKENS})")
-            streamer = TextIteratorStreamer(self.tok, skip_prompt=True, skip_special_tokens=True, timeout=REQUEST_TIMEOUT_S)
-            stop = threading.Event()  # set when the client leaves or time runs out, so the GPU stops too
-            kw = dict(input_ids=ids.to("cuda"), max_new_tokens=min(max_new, self.ctx - ids.shape[1]), streamer=streamer,
-                      stopping_criteria=StoppingCriteriaList([Stop(stop)]),
-                      eos_token_id=self.stop_ids, pad_token_id=self.end_id,
-                      do_sample=temperature > 0, temperature=temperature or None, top_p=0.95 if temperature > 0 else None)
-
-            def run():
-                with self.torch.no_grad():
-                    self.model.generate(**kw)
-
-            threading.Thread(target=run, daemon=True).start()
+            ids = self.encode(f"<|user|>\n{prompt}\n<|python|>\n")
+            if len(ids) > MAX_PROMPT_TOKENS:
+                raise HTTPException(413, f"prompt is too long ({len(ids)} tokens, max {MAX_PROMPT_TOKENS})")
+            stop = threading.Event()  # set when the client leaves or time runs out, so generation stops too
+            out = queue.Queue()
             t0 = time.time()
+            threading.Thread(target=self.generate, args=(ids, min(max_new, CTX - len(ids)), temperature, stop, out),
+                             daemon=True).start()
 
-            def events():
-                n = 0
+            async def events():
+                n, first = 0, None
                 try:
-                    for chunk in streamer:
+                    while True:
+                        try:
+                            chunk = await asyncio.to_thread(out.get, True, 1.0)
+                        except queue.Empty:
+                            if time.time() - t0 > REQUEST_TIMEOUT_S:
+                                break
+                            yield ": waiting\n\n"  # keeps the connection open while queued behind another answer
+                            continue
+                        if chunk is None:
+                            break
+                        first = first or time.time() - t0
                         n += 1
                         yield f"data: {json.dumps({'text': chunk})}\n\n"
                         if time.time() - t0 > REQUEST_TIMEOUT_S:
                             break
-                    yield f"data: {json.dumps({'done': True, 'seconds': round(time.time() - t0, 2), 'chunks': n})}\n\n"
+                    done = {"done": True, "seconds": round(time.time() - t0, 2), "chunks": n,
+                            "first_s": round(first or 0, 2), "hw": HW}
+                    yield f"data: {json.dumps(done)}\n\n"
                 finally:
                     stop.set()
 
