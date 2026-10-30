@@ -11,11 +11,14 @@ Endpoints (FastAPI), private: Modal's edge refuses any request without a workspa
 container starts. Only the website's server holds the token; browsers talk to the website, which
 checks Turnstile and its own rate limits first.
   GET  /health                     {"ok": true, "model": ..., "hw": ...}; also wakes the model ahead of a chat
+  GET  /system                     {"system": "..."}: the rules every answer follows (replies.SYSTEM_PROMPT)
   POST /generate                   {"prompt": "...", "max_tokens": 512, "temperature": 0.2, "concise": false}
                                    -> text/event-stream of {"text": "..."} chunks, then {"done": true, ...}
-                                   Questions about the model itself ("who made you?") get a fixed answer
-                                   from replies.py, marked by a first {"route": "about"} event; answers
-                                   that start repeating themselves end early with "looped": true.
+                                   Prompts the model shouldn't answer get a fixed answer from replies.route():
+                                   questions about Ophyx or Abhash, small talk, off-topic questions, other
+                                   languages, attempts to change its role and harmful requests. A first
+                                   {"route": "about", "reply": <kind>} event marks them. Answers that start
+                                   repeating themselves end early with "looped": true.
                                    The done event carries "tokens" (new), "prompt_tokens" and "length"
                                    (true when the answer hit max_tokens), "cold" (it waited for a container
                                    start; "boot_s" says how long loading took) and "queued_s" (time
@@ -174,13 +177,17 @@ class Ophyx:
 
         from fastapi import FastAPI, HTTPException, Request
         from fastapi.responses import StreamingResponse
-        from replies import ConciseFilter, RepeatGuard, canned_reply, wants_extras
+        from replies import SYSTEM_PROMPT, ConciseFilter, RepeatGuard, route, wants_extras
 
         api = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
         @api.get("/health")
         def health():
             return {"ok": True, "model": MODEL_REPO, "hw": HW}
+
+        @api.get("/system")
+        def system():
+            return {"system": SYSTEM_PROMPT}
 
         @api.post("/generate")
         async def generate(req: Request):
@@ -199,16 +206,19 @@ class Ophyx:
                 raise HTTPException(400, "send a JSON object: prompt, and optionally max_tokens and temperature")
             if not prompt:
                 raise HTTPException(400, "prompt is empty")
-            reply = canned_reply(prompt)
-            if reply is not None:
-                # questions about the model itself: a fixed answer, streamed line by line like the model's
+            fixed = route(prompt)
+            if fixed is not None:
+                # the rules in SYSTEM_PROMPT: a fixed answer, streamed line by line like the model's.
+                # "about" tells the website to show it as text, not code
+                kind, reply = fixed
+
                 async def canned():
-                    yield f"data: {json.dumps({'route': 'about'})}\n\n"
+                    yield f"data: {json.dumps({'route': 'about', 'reply': kind})}\n\n"
                     for line in reply.splitlines(keepends=True):
                         yield f"data: {json.dumps({'text': line})}\n\n"
                         await asyncio.sleep(0.03)
                     done = {"done": True, "seconds": 0, "chunks": len(reply.splitlines()),
-                            "tokens": len(self.encode(reply)), "route": "about", "hw": HW}
+                            "tokens": len(self.encode(reply)), "route": "about", "reply": kind, "hw": HW}
                     yield f"data: {json.dumps(done)}\n\n"
 
                 return StreamingResponse(canned(), media_type="text/event-stream")
