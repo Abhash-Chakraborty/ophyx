@@ -16,6 +16,8 @@ checks Turnstile and its own rate limits first.
                                    Questions about the model itself ("who made you?") get a fixed answer
                                    from replies.py, marked by a first {"route": "about"} event; answers
                                    that start repeating themselves end early with "looped": true.
+                                   The done event carries "tokens" (new), "prompt_tokens" and "length"
+                                   (true when the answer hit max_tokens).
 
 Cost controls: one container at most, it shuts down after SCALEDOWN_S idle seconds, each request is
 capped in prompt length, new tokens and wall time, and each client (the X-Ophyx-Client hash the
@@ -103,8 +105,9 @@ class Ophyx:
         self.buckets[client] = (tokens - 1 if ok else tokens, now)
         return ok
 
-    def generate(self, ids, max_new, temperature, stop, out):
-        """Runs in a thread: puts text chunks on `out`, then None. Stops early once `stop` is set."""
+    def generate(self, ids, max_new, temperature, stop, out, used):
+        """Runs in a thread: puts text chunks on `out`, then None. Stops early once `stop` is set.
+        `used` gets the number of new tokens, for the API's usage and finish_reason."""
         try:
             with self.lock:
                 if stop.is_set():
@@ -117,7 +120,12 @@ class Ophyx:
                     for part in self.llm.create_completion(
                             ids, max_tokens=max_new, temperature=temperature, top_p=0.95 if temperature > 0 else 1.0,
                             stream=True, stopping_criteria=StoppingCriteriaList([halt])):
-                        text = part["choices"][0]["text"]
+                        choice = part["choices"][0]
+                        if choice.get("finish_reason") == "length":
+                            used["length"] = True
+                        text = choice["text"]
+                        if text or not choice.get("finish_reason"):  # one streamed part per token
+                            used["tokens"] = used.get("tokens", 0) + 1
                         if text:
                             out.put(text)
                 else:
@@ -142,6 +150,7 @@ class Ophyx:
                     worker.start()
                     for text in streamer:
                         if text:
+                            used["tokens"] = used.get("tokens", 0) + len(self.encode(text))
                             out.put(text)
                     worker.join()
         finally:
@@ -188,7 +197,8 @@ class Ophyx:
                     for line in reply.splitlines(keepends=True):
                         yield f"data: {json.dumps({'text': line})}\n\n"
                         await asyncio.sleep(0.03)
-                    done = {"done": True, "seconds": 0, "chunks": len(reply.splitlines()), "route": "about", "hw": HW}
+                    done = {"done": True, "seconds": 0, "chunks": len(reply.splitlines()),
+                            "tokens": len(self.encode(reply)), "route": "about", "hw": HW}
                     yield f"data: {json.dumps(done)}\n\n"
 
                 return StreamingResponse(canned(), media_type="text/event-stream")
@@ -198,7 +208,9 @@ class Ophyx:
             stop = threading.Event()  # set when the client leaves or time runs out, so generation stops too
             out = queue.Queue()
             t0 = time.time()
-            threading.Thread(target=self.generate, args=(ids, min(max_new, CTX - len(ids)), temperature, stop, out),
+            budget = min(max_new, CTX - len(ids))
+            used = {}
+            threading.Thread(target=self.generate, args=(ids, budget, temperature, stop, out, used),
                              daemon=True).start()
 
             async def events():
@@ -229,7 +241,9 @@ class Ophyx:
                         n += 1
                         yield f"data: {json.dumps({'text': rest})}\n\n"
                     done = {"done": True, "seconds": round(time.time() - t0, 2), "chunks": n,
-                            "first_s": round(first or 0, 2), "looped": guard.looping, "hw": HW}
+                            "first_s": round(first or 0, 2), "looped": guard.looping, "hw": HW,
+                            "tokens": used.get("tokens", 0), "prompt_tokens": len(ids),
+                            "length": used.get("length", used.get("tokens", 0) >= budget)}
                     yield f"data: {json.dumps(done)}\n\n"
                 finally:
                     stop.set()
