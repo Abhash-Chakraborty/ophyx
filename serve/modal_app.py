@@ -13,6 +13,9 @@ checks Turnstile and its own rate limits first.
   GET  /health                     {"ok": true, "model": ..., "hw": ...}; also wakes the model ahead of a chat
   POST /generate                   {"prompt": "...", "max_tokens": 512, "temperature": 0.2}
                                    -> text/event-stream of {"text": "..."} chunks, then {"done": true, ...}
+                                   Questions about the model itself ("who made you?") get a fixed answer
+                                   from replies.py, marked by a first {"route": "about"} event; answers
+                                   that start repeating themselves end early with "looped": true.
 
 Cost controls: one container at most, it shuts down after SCALEDOWN_S idle seconds, each request is
 capped in prompt length, new tokens and wall time, and each client (the X-Ophyx-Client hash the
@@ -63,6 +66,7 @@ else:
     image = modal.Image.debian_slim(python_version="3.12").pip_install(
         "torch==2.6.0", "transformers==4.51.3", "fastapi[standard]==0.115.12", "huggingface_hub==0.30.2")
 image = image.env(env).run_function(download, secrets=[modal.Secret.from_name("ophyx-hf")])  # the container re-imports this file
+image = image.add_local_python_source("replies")  # serve/replies.py; added last, so editing it needs no rebuild
 app = modal.App(os.environ.get("OPHYX_APP", "ophyx-demo"), image=image)
 resources = dict(cpu=CPU_CORES, memory=2048) if HW == "cpu" else dict(gpu="T4")
 
@@ -152,6 +156,7 @@ class Ophyx:
 
         from fastapi import FastAPI, HTTPException, Request
         from fastapi.responses import StreamingResponse
+        from replies import RepeatGuard, canned_reply
 
         api = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -175,6 +180,18 @@ class Ophyx:
                 raise HTTPException(400, "send a JSON object: prompt, and optionally max_tokens and temperature")
             if not prompt:
                 raise HTTPException(400, "prompt is empty")
+            reply = canned_reply(prompt)
+            if reply is not None:
+                # questions about the model itself: a fixed answer, streamed line by line like the model's
+                async def canned():
+                    yield f"data: {json.dumps({'route': 'about'})}\n\n"
+                    for line in reply.splitlines(keepends=True):
+                        yield f"data: {json.dumps({'text': line})}\n\n"
+                        await asyncio.sleep(0.03)
+                    done = {"done": True, "seconds": 0, "chunks": len(reply.splitlines()), "route": "about", "hw": HW}
+                    yield f"data: {json.dumps(done)}\n\n"
+
+                return StreamingResponse(canned(), media_type="text/event-stream")
             ids = self.encode(f"<|user|>\n{prompt}\n<|python|>\n")
             if len(ids) > MAX_PROMPT_TOKENS:
                 raise HTTPException(413, f"prompt is too long ({len(ids)} tokens, max {MAX_PROMPT_TOKENS})")
@@ -186,6 +203,7 @@ class Ophyx:
 
             async def events():
                 n, first = 0, None
+                guard = RepeatGuard()
                 try:
                     while True:
                         try:
@@ -198,12 +216,20 @@ class Ophyx:
                         if chunk is None:
                             break
                         first = first or time.time() - t0
-                        n += 1
-                        yield f"data: {json.dumps({'text': chunk})}\n\n"
+                        text = guard.feed(chunk)
+                        if text:
+                            n += 1
+                            yield f"data: {json.dumps({'text': text})}\n\n"
+                        if guard.looping:
+                            break  # the finally below stops generation
                         if time.time() - t0 > REQUEST_TIMEOUT_S:
                             break
+                    rest = guard.flush()
+                    if rest:
+                        n += 1
+                        yield f"data: {json.dumps({'text': rest})}\n\n"
                     done = {"done": True, "seconds": round(time.time() - t0, 2), "chunks": n,
-                            "first_s": round(first or 0, 2), "hw": HW}
+                            "first_s": round(first or 0, 2), "looped": guard.looping, "hw": HW}
                     yield f"data: {json.dumps(done)}\n\n"
                 finally:
                     stop.set()
