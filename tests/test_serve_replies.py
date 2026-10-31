@@ -242,3 +242,11 @@ def test_benchmark_tasks_reach_the_model():
     rows += [json.loads(line) for line in open(root / "concept_suite/tasks.jsonl")]
     routed = [row["prompt"] for row in rows if route(row["prompt"])]
     assert routed == ["hi! what can you do?"]
+
+
+def test_follow_ups_reach_the_model():
+    # route() sees only the new message; follow-ups to an earlier answer must still reach the model
+    for p in ["no, it should show in red", "no like it should display in red color in terminal",
+              "this code it not complete where is saaksham?", "it should display in red color dont print red",
+              "make it shorter", "it doesnt work", "now use your own function instead", "good, now add a menu"]:
+        assert route(p) is None, p

@@ -29,7 +29,7 @@ ignore = ["E731", "E741"]
 [tool.ruff.lint.per-file-ignores]
 # kaggle/launch.py prepends a CONFIG dict and any --include files before these run, so some names
 # are defined only in the assembled script. launch.py lints that assembled file before every push.
-"data/jobs/{bank_judge,bank_sample,bug_inject,problem_bank,verify_bank}.py" = ["F821"]
+"data/jobs/{bank_judge,bank_sample,bug_inject,chat_check,problem_bank,verify_bank}.py" = ["F821"]
 "data/synth/{t4_generate,t4_teacher}.py" = ["F821", "E402"]
 "train/{grpo_t4,run_sequence,validate_tpu}.py" = ["F821"]
 "eval/frontier_task.py" = ["F821"]
