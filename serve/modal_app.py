@@ -12,7 +12,8 @@ container starts. Only the website's server holds the token; browsers talk to th
 checks Turnstile and its own rate limits first.
   GET  /health                     {"ok": true, "model": ..., "hw": ...}; also wakes the model ahead of a chat
   GET  /system                     {"system": "..."}: the rules every answer follows (replies.SYSTEM_PROMPT)
-  POST /generate                   {"prompt": "...", "max_tokens": 512, "temperature": 0.2, "concise": false}
+  POST /generate                   {"prompt": "...", "max_tokens": 512, "temperature": 0.2, "concise": false,
+                                    "history": [{"prompt": "...", "answer": "..."}, ...]}
                                    -> text/event-stream of {"text": "..."} chunks, then {"done": true, ...}
                                    Prompts the model shouldn't answer get a fixed answer from replies.route():
                                    questions about Ophyx or Abhash, small talk, attempts to change its
@@ -26,6 +27,11 @@ checks Turnstile and its own rate limits first.
                                    "concise": true strips comments and docstrings and stops at an example
                                    or test block (replies.ConciseFilter), unless the prompt asks for them;
                                    the done event then says "concise" and "trimmed" (a tail was cut).
+                                   "history" holds earlier turns the model answered, oldest first, so a
+                                   follow-up ("no, print it in red") sees the code it refers to. Turns go
+                                   in as <|user|> prompt <|python|> answer <|end|>, joined by a newline; the
+                                   oldest are dropped until the whole prompt fits MAX_CONTEXT_TOKENS, and
+                                   the done event says how many were used ("history").
 
 Cost controls: one container at most, it shuts down after SCALEDOWN_S idle seconds, each request is
 capped in prompt length, new tokens and wall time, and each client (the X-Ophyx-Client hash the
@@ -50,7 +56,9 @@ CPU_REQUEST = float(os.environ.get("OPHYX_CPU_REQUEST", "0.125"))  # idle llama.
 MEMORY_MB = 2048
 MEMORY_REQUEST_MB = int(os.environ.get("OPHYX_MEMORY_REQUEST_MB", "1024"))  # f16 model: ~0.95 GiB
 SCALEDOWN_S = 90  # one cold start per visit; questions in a visit come 20-90 s apart
-MAX_PROMPT_TOKENS = 1536
+MAX_PROMPT_TOKENS = 1536  # the new message
+MAX_CONTEXT_TOKENS = 3072  # the new message plus the history kept in front of it
+MAX_HISTORY = 8
 MAX_NEW_TOKENS = 1024
 CTX = 4096
 REQUEST_TIMEOUT_S = 90
@@ -209,8 +217,13 @@ class Ophyx:
                 max_new = max(1, min(int(body.get("max_tokens", 512)), MAX_NEW_TOKENS))
                 temperature = max(0.0, min(float(body.get("temperature", 0.2)), 1.5))
                 concise = body.get("concise") is True
+                history = body.get("history") or []
+                assert isinstance(history, list)
+                turns = [(str(t.get("prompt", "")).strip(), str(t.get("answer", "")).strip())
+                         for t in history[-MAX_HISTORY:] if isinstance(t, dict)]
+                turns = [(p, a) for p, a in turns if p and a]
             except (ValueError, TypeError, AssertionError):
-                raise HTTPException(400, "send a JSON object: prompt, and optionally max_tokens and temperature")
+                raise HTTPException(400, "send a JSON object: prompt, and optionally max_tokens, temperature, concise and history")
             if not prompt:
                 raise HTTPException(400, "prompt is empty")
             fixed = route(prompt)
@@ -232,6 +245,13 @@ class Ophyx:
             ids = self.encode(f"<|user|>\n{prompt}\n<|python|>\n")
             if len(ids) > MAX_PROMPT_TOKENS:
                 raise HTTPException(413, f"prompt is too long ({len(ids)} tokens, max {MAX_PROMPT_TOKENS})")
+            kept = 0
+            for p, a in reversed(turns):
+                # strings, not ids: the tokenizer must see the special tokens it was trained on
+                prev = self.encode(f"<|user|>\n{p}\n<|python|>\n{a}\n<|end|>\n")
+                if len(prev) + len(ids) > MAX_CONTEXT_TOKENS:
+                    break
+                ids, kept = prev + ids, kept + 1
             stop = threading.Event()  # set when the client leaves or time runs out, so generation stops too
             out = queue.Queue()
             t0 = time.time()
@@ -282,7 +302,7 @@ class Ophyx:
                             "length": used.get("length", used.get("tokens", 0) >= budget),
                             "concise": trim is not None, "trimmed": bool(trim and trim.done),
                             "cold": cold, "boot_s": self.boot_s if cold else 0,
-                            "queued_s": used.get("queued_s", 0)}
+                            "queued_s": used.get("queued_s", 0), "history": kept}
                     yield f"data: {json.dumps(done)}\n\n"
                 finally:
                     stop.set()
