@@ -16,13 +16,16 @@ Phases, each in a forked process so vLLM gives all GPU memory back when it ends:
   4. ophyx      the current model answers a share of the requests (greedy plus samples)
   5. complaints the teacher plays the user: reads Ophyx's answer and, when it misses, writes the
                 user's complaint; then answers the complaint with a full fixed program
+  6. docs       answers still missing a docstring (two in three after the first run) go back to the
+                teacher to add them; a rewrite counts only if its code, docstrings aside, is the same
+                syntax tree, so the checks stay valid
 
 CONFIG: teacher (HF id, default Qwen/Qwen2.5-Coder-14B-Instruct-AWQ), ophyx (HF id or /kaggle glob),
 n_calls (request calls, 4 requests each), followup_frac (0.3), ophyx_n (requests Ophyx answers),
 ophyx_samples (2), phases (default all), budget_s, seed.
 
 Output in /kaggle/working/chat/: requests.jsonl, answers.jsonl, followups.jsonl, ophyx.jsonl,
-complaints.jsonl, logs/, meta.json.
+complaints.jsonl, docs.jsonl, logs/, meta.json.
 """
 
 import glob
@@ -277,6 +280,31 @@ class Teacher:
         return out
 
 
+DOCS_PROMPT = """Add docstrings to this Python code. Change nothing else: keep every line of code, name, type \
+hint and comment exactly as it is.
+
+- At the top, a module docstring: one line saying what the program does, then a Usage line \
+naming a file that fits what the code does (a script run with python, or a module to import from).
+- On every function, method and class that lacks one, including main, __init__ and nested functions: \
+a one-line summary, then Args and Returns lines when it takes arguments or returns a value.
+
+```python
+{code}
+```
+
+Reply with the whole file in one ```python block."""
+
+
+def bare(code):
+    """The syntax tree with every docstring removed, to tell a docstring-only edit from a real one."""
+    import ast
+    tree = ast.parse(code)
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and ast.get_docstring(n) is not None:
+            n.body = n.body[1:] or [ast.Pass()]
+    return ast.dump(tree)
+
+
 def plain(tok, text):
     return tok.apply_chat_template([{"role": "user", "content": text}], add_generation_prompt=True, tokenize=False)
 
@@ -403,8 +431,28 @@ def phase_complaints():
     log(f"complaints: {len(out)} (teacher said OK to {ok} of {len(oph)})")
 
 
+def phase_docs():
+    t = Teacher()
+    todo = [("answers", r["id"], r["answer"]) for r in read("answers.jsonl") if not documented(r["answer"])]
+    for name in ("followups", "complaints"):
+        todo += [(name, c["id"], c["turns"][-1][1]) for c in read(f"{name}.jsonl") if not documented(c["turns"][-1][1])]
+    done = {}
+    for temp in (0.2, 0.7):
+        left = [x for x in todo if x[:2] not in done]
+        prompts = [plain(t.tok, DOCS_PROMPT.format(code=code)) for _, _, code in left]
+        for (name, i, code), (text, fin) in zip(left, t.run(prompts, temp, 3072)):
+            new = code_block(text) if fin == "stop" else None
+            try:
+                if new and documented(new) and bare(new) == bare(code):
+                    done[(name, i)] = new
+            except (SyntaxError, ValueError, RecursionError):
+                pass
+        log(f"docs at T={temp}: {len(done)}/{len(todo)} fixed")
+    write("docs.jsonl", [{"file": n, "id": i, "answer": a} for (n, i), a in done.items()])
+
+
 PHASES = {"requests": phase_requests, "answers": phase_answers, "followups": phase_followups, "ophyx": phase_ophyx,
-          "complaints": phase_complaints}
+          "complaints": phase_complaints, "docs": phase_docs}
 
 
 def child(name, logf):
@@ -438,7 +486,7 @@ def main():
     ctx = mp.get_context("fork")
     status = {}
     files = {"requests": "requests.jsonl", "answers": "answers.jsonl", "followups": "followups.jsonl",
-             "ophyx": "ophyx.jsonl", "complaints": "complaints.jsonl"}
+             "ophyx": "ophyx.jsonl", "complaints": "complaints.jsonl", "docs": "docs.jsonl"}
     for name in CONFIG.get("phases", list(PHASES)):
         if os.path.exists(os.path.join(OUT, files[name])):
             log(f"{name}: already done")
