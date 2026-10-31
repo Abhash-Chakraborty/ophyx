@@ -8,6 +8,7 @@ change its role, small talk and questions about Ophyx or its author get a fixed 
 everything else reaches the model. Kept free of Modal and llama.cpp so the tests can import it.
 """
 
+import copy
 import random
 import re
 
@@ -535,6 +536,30 @@ class ConciseFilter:
             self.pass_indent = None
         self.partial = ""
         return rest
+
+    def preview(self, text: str) -> str:
+        """What `text` (lines not settled yet plus the line being written) will most likely add, for
+        live streaming. A copy of the filter takes the complete lines; the unfinished line shows only
+        once it is plain code, never while it could still be a comment, a docstring or the start of
+        the tail. Nothing changes in this filter."""
+        probe = copy.deepcopy(self)
+        out = probe.feed(text)
+        line = probe.partial
+        if probe.done or probe.docstring or not line.strip():
+            return out
+        if probe.string:  # a multi-line string that is data shows as written
+            return out + line
+        stripped = line.lstrip()
+        indent = line[: len(line) - len(stripped)]
+        if stripped[0] in "#\"'" or re.match(r"[rRuUbBfF]{1,2}[\"']", stripped):
+            return out
+        if not indent and probe.seen_def:  # a top-level line after a def could start the tail
+            return out
+        if probe.pass_indent is not None and len(indent) <= len(probe.pass_indent):
+            return out  # `pass` goes in first; wait for the line
+        code, _ = _split_comment(line, None)
+        # trailing spaces wait: a comment after them would take them back
+        return out + "\n" * probe.blank + code.rstrip()
 
     def _line(self, line: str, final: bool = False) -> str:
         end = "" if final else "\n"

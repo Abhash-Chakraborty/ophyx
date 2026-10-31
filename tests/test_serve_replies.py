@@ -250,3 +250,24 @@ def test_follow_ups_reach_the_model():
               "this code it not complete where is saaksham?", "it should display in red color dont print red",
               "make it shorter", "it doesnt work", "now use your own function instead", "good, now add a menu"]:
         assert route(p) is None, p
+
+
+def test_live_preview_never_takes_back_kept_code():
+    # Streaming token by token: settled text plus the filter's preview must only ever grow for an
+    # answer it keeps, and must end on exactly what the line-by-line mode sends
+    answer = (
+        'import math\n\ndef area(r):\n    """Area of a circle."""\n    # pi r squared\n'
+        "    return math.pi * r ** 2  # done\n\n\ndef perimeter(r):\n    return 2 * math.pi * r\n\n"
+        "# Example usage\nprint(area(2))\n"
+    )
+    trim, guard, settled, shown = ConciseFilter(), RepeatGuard(), "", ""
+    for i in range(0, len(answer), 3):
+        settled += trim.feed(guard.feed(answer[i : i + 3]))
+        if trim.done:
+            break
+        target = settled + trim.preview("".join(guard.held) + guard.partial)
+        assert target.startswith(shown), (shown, target)
+        shown = target
+    settled += trim.feed(guard.flush()) + trim.flush()
+    assert settled.startswith(shown)
+    assert settled == "import math\n\ndef area(r):\n    return math.pi * r ** 2\n\n\ndef perimeter(r):\n    return 2 * math.pi * r\n"

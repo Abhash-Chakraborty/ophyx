@@ -32,6 +32,13 @@ checks Turnstile and its own rate limits first.
                                    in as <|user|> prompt <|python|> answer <|end|>, joined by a newline; the
                                    oldest are dropped until the whole prompt fits MAX_CONTEXT_TOKENS, and
                                    the done event says how many were used ("history").
+                                   "live": true streams the answer token by token instead of line by line.
+                                   The loop guard and the concise filter decide per line, so a token
+                                   they later remove is taken back: an event may carry "undo": n, the
+                                   number of characters to delete from the end before adding its
+                                   "text". Without it, lines arrive whole and the last two wait for the
+                                   loop check (what the OpenAI-style API needs, since it can't take
+                                   text back).
 
 Cost controls: one container at most, it shuts down after SCALEDOWN_S idle seconds, each request is
 capped in prompt length, new tokens and wall time, and each client (the X-Ophyx-Client hash the
@@ -188,6 +195,8 @@ class Ophyx:
         import asyncio
         import json
         import queue
+        import re
+        from os.path import commonprefix
         import threading
 
         from fastapi import FastAPI, HTTPException, Request
@@ -217,6 +226,7 @@ class Ophyx:
                 max_new = max(1, min(int(body.get("max_tokens", 512)), MAX_NEW_TOKENS))
                 temperature = max(0.0, min(float(body.get("temperature", 0.2)), 1.5))
                 concise = body.get("concise") is True
+                live = body.get("live") is True
                 history = body.get("history") or []
                 assert isinstance(history, list)
                 turns = [(str(t.get("prompt", "")).strip(), str(t.get("answer", "")).strip())
@@ -234,9 +244,9 @@ class Ophyx:
 
                 async def canned():
                     yield f"data: {json.dumps({'route': 'about', 'reply': kind})}\n\n"
-                    for line in reply.splitlines(keepends=True):
-                        yield f"data: {json.dumps({'text': line})}\n\n"
-                        await asyncio.sleep(0.03)
+                    for word in re.findall(r"\S+\s*|\s+", reply):
+                        yield f"data: {json.dumps({'text': word})}\n\n"
+                        await asyncio.sleep(0.015)
                     done = {"done": True, "seconds": 0, "chunks": len(reply.splitlines()),
                             "tokens": len(self.encode(reply)), "route": "about", "reply": kind, "hw": HW}
                     yield f"data: {json.dumps(done)}\n\n"
@@ -268,6 +278,25 @@ class Ophyx:
             async def events():
                 n, first = 0, None
                 guard = RepeatGuard()
+                settled = ""  # text past both checks; in live mode `shown` is what the client has
+                shown = ""
+
+                def event(text: str) -> str:
+                    nonlocal n
+                    n += 1
+                    return f"data: {json.dumps({'text': text})}\n\n"
+
+                def sync(target: str) -> str | None:
+                    """The event that turns what the client shows into `target`, if they differ."""
+                    nonlocal n, shown
+                    keep = len(commonprefix([shown, target]))
+                    undo, add = len(shown) - keep, target[keep:]
+                    if not undo and not add:
+                        return None
+                    shown = target
+                    n += 1
+                    return f"data: {json.dumps({'undo': undo, 'text': add} if undo else {'text': add})}\n\n"
+
                 try:
                     while True:
                         try:
@@ -283,9 +312,17 @@ class Ophyx:
                         text = guard.feed(chunk)
                         if trim:
                             text = trim.feed(text)
-                        if text:
-                            n += 1
-                            yield f"data: {json.dumps({'text': text})}\n\n"
+                        settled += text
+                        if live:
+                            # settled text plus a best guess at what the held lines and the line being
+                            # written will add; a wrong guess is taken back with "undo"
+                            pending = "" if guard.looping else "".join(guard.held) + guard.partial
+                            ahead = trim.preview(pending) if trim and not trim.done else ("" if trim else pending)
+                            update = sync(settled + ahead)
+                            if update:
+                                yield update
+                        elif text:
+                            yield event(text)
                         if guard.looping or (trim and trim.done):
                             break  # the finally below stops generation
                         if time.time() - t0 > REQUEST_TIMEOUT_S:
@@ -293,9 +330,13 @@ class Ophyx:
                     rest = guard.flush()
                     if trim:
                         rest = trim.feed(rest) + trim.flush()
-                    if rest:
-                        n += 1
-                        yield f"data: {json.dumps({'text': rest})}\n\n"
+                    settled += rest
+                    if live:
+                        update = sync(settled)
+                        if update:
+                            yield update
+                    elif rest:
+                        yield event(rest)
                     done = {"done": True, "seconds": round(time.time() - t0, 2), "chunks": n,
                             "first_s": round(first or 0, 2), "looped": guard.looping, "hw": HW,
                             "tokens": used.get("tokens", 0), "prompt_tokens": len(ids),
