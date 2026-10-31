@@ -15,8 +15,8 @@ checks Turnstile and its own rate limits first.
   POST /generate                   {"prompt": "...", "max_tokens": 512, "temperature": 0.2, "concise": false}
                                    -> text/event-stream of {"text": "..."} chunks, then {"done": true, ...}
                                    Prompts the model shouldn't answer get a fixed answer from replies.route():
-                                   questions about Ophyx or Abhash, small talk, off-topic questions, other
-                                   languages, attempts to change its role and harmful requests. A first
+                                   questions about Ophyx or Abhash, small talk, attempts to change its
+                                   role and harmful requests. Everything else reaches the model. A first
                                    {"route": "about", "reply": <kind>} event marks them. Answers that start
                                    repeating themselves end early with "looped": true.
                                    The done event carries "tokens" (new), "prompt_tokens" and "length"
