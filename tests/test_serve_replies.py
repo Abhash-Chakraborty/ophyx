@@ -15,27 +15,45 @@ def kind(prompt):
 
 
 def test_questions_about_the_model_get_the_fixed_answer():
-    for prompt in [
-        "what are you and who developed you?? what are your works and name your creator",
-        "Who are you?",
-        "who made you",
-        "What's your name?",
-        "which model is this",
-        "are you chatgpt?",
-        "tell me about yourself",
-        "what can you do",
-        "what's the name of the model?",
-        "are you open source?",
-        "what's your license?",
-    ]:
+    for prompt in ["Who are you?", "tell me about yourself", "what can you do", "what is ophyx"]:
         assert route(prompt) == ("about", ABOUT), prompt
     for prompt in ["hi", "Hello!", "hey there", "good morning"]:
         assert route(prompt) == ("hello", HELLO), prompt
-    for prompt in ["who is abhash?", "tell me about your creator", "who is your developer"]:
+    for prompt in ["who is abhash?", "who is abhash chakraborty"]:
         assert route(prompt) == ("creator", CREATOR), prompt
-    for prompt in ["how were you trained?", "why were you made", "what is your architecture", "how big are you",
-                   "how many parameters do you have"]:
+    for prompt in ["how were you trained?", "why were you made"]:
         assert route(prompt) == ("training", TRAINING), prompt
+
+
+def test_specific_questions_get_a_short_answer_to_that_question():
+    for prompt, needle in [
+        ("What's your name?", "Ophyx"),
+        ("what's the name of the model?", "Ophyx"),
+        ("which model is this", "Ophyx 350M v2"),
+        ("are you chatgpt?", "Ophyx 350M v2"),
+        ("tell me about your creator", "Abhash Chakraborty"),
+        ("who made you", "Abhash Chakraborty"),
+        ("who is your developer", "Abhash Chakraborty"),
+        ("how many parameters do you have", "349"),
+        ("how big are you", "349"),
+        ("what is your architecture", "28 layers"),
+        ("what is your context length", "4,096"),
+        ("are you open source?", "Apache-2.0"),
+        ("what's your license?", "Apache-2.0"),
+        ("how good are you?", "43.9"),
+        ("what were you trained on?", "12 billion"),
+        ("what hardware were you trained on", "T4"),
+        ("do you remember what I said?", "message"),
+        ("where do you run?", "CPU cores"),
+    ]:
+        for _ in range(6):  # every wording carries the fact
+            reply = route(prompt)
+            assert reply and reply[0] == "fact" and needle in reply[1], (prompt, reply)
+    both = route("what is your name and who made you?")[1]
+    assert "Ophyx" in both and "Abhash" in both
+    assert "12 billion" not in route("what hardware were you trained on")[1]
+    # asking again doesn't always give the same words
+    assert len({route("what's your name?")[1] for _ in range(40)}) > 1
 
 
 def test_code_requests_go_to_the_model():

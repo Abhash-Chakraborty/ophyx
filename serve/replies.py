@@ -8,6 +8,7 @@ change its role, small talk and questions about Ophyx or its author get a fixed 
 everything else reaches the model. Kept free of Modal and llama.cpp so the tests can import it.
 """
 
+import random
 import re
 
 SITE = "https://abhashchakraborty.tech"
@@ -149,6 +150,13 @@ Elsewhere, findahelpline.com lists free, confidential lines in your country.
 
 If you're in danger right now, call your local emergency number."""
 
+# The line under a short answer, pointing back at what it's for
+NEXT = [
+    "What should I write?",
+    "Describe a Python function and I'll write it.",
+    "Got a function you need? Describe it.",
+]
+
 SMALL_TALK = {
     "thanks": "You're welcome. Send the next function whenever you're ready.",
     "how": "All good, thanks. What should I write?",
@@ -259,8 +267,99 @@ _TAKEOVER = re.compile(
     re.IGNORECASE,
 )
 _DAN = re.compile(r"\bDAN\b")
+# Questions about everything at once get the whole of ABOUT
+_BROAD = re.compile(
+    r"\b(who|what)\s+(are|r)\s+(you|u)\s*[?.!]*$|\b(about|introduce)\s+yourself\b|\btell\s+me\s+about\s+(you|ophyx)\b"
+    r"|\bwhat\s+is\s+ophyx\b",
+    re.IGNORECASE,
+)
 # A prompt that asks for code goes to the model even if it mentions "you"
 _CODE = re.compile(r"\bdef\b|\bclass\b|\bimport\b|\blambda\b|\bfunction\b|\bimplement\b|```|\w\(.*\)")
+# Short, true answers to one question about the model, each in a few wordings so asking twice
+# doesn't read like a recording. A prompt can match several (name and maker); broad questions
+# ("tell me about yourself") still get ABOUT, TRAINING or CREATOR.
+_FACTS = [
+    ("name", r"\byour\s+name\b|\bname\s+of\s+(the|this|your)\s+(model|llm|ai|bot|assistant)\b"
+     r"|\bwhat\s+(should\s+i|do\s+i|can\s+i)\s+call\s+(you|u)\b", [
+        "I'm Ophyx, Ophyx 350M v2 in full.",
+        "My name is Ophyx. This version is Ophyx 350M v2.",
+        "Ophyx. The full name is Ophyx 350M v2, after its size.",
+    ]),
+    ("model", r"\b(what|which)\s+(model|llm|ai|language\s+model)\b|\bbased\s+on\b|\bpowers?\s+(you|this)\b"
+     r"|\bare\s+(you|u)\s+(an?\s+)?(chatgpt|gpt|claude|gemini|llama|qwen|copilot|mistral|deepseek)\b", [
+        "I'm Ophyx 350M v2, my own model, not ChatGPT, Claude, Llama or Qwen. I use Qwen3's layout, "
+        "but every weight was trained from scratch.",
+        "None of the big ones: I'm Ophyx 350M v2. My shape follows Qwen3, so the usual tools can run me, "
+        "but Abhash trained me from zero.",
+    ]),
+    ("maker", r"\bwho\s+(made|built|created|developed|trained|wrote|owns|designed|programmed)\s+(you|u|this|ophyx)\b"
+     r"|\byour\s+(creator|maker|author|developer|owner|dev)\b", [
+        f"Abhash Chakraborty. He wrote my tokenizer, my JAX training loop, the data jobs and this "
+        f"endpoint. His site: {SITE}",
+        f"Abhash Chakraborty built me from scratch, on Kaggle's free compute. More of his work: {SITE}",
+    ]),
+    ("size", r"\bhow\s+many\s+(parameters|params|layers)\b|\b(your|ophyx'?s?)\s+(size|parameters|params|architecture)\b"
+     r"|\bhow\s+(big|large)\s+(are\s+(you|u)|is\s+ophyx)\b", [
+        "349 million parameters: 28 layers, hidden size 1,024, 16 query and 4 key-value heads and a "
+        "32,768-token vocabulary.",
+        "I'm small: 349M parameters in Qwen3's layout, 28 layers deep with a hidden size of 1,024.",
+    ]),
+    ("context", r"\bcontext(\s+(length|window|size))?\b|\bhow\s+(long|many\s+tokens)\b.{0,20}\b(read|handle|take)\b", [
+        "I read up to 4,096 tokens: the prompt and my answer together.",
+        "4,096 tokens of context, prompt and answer combined. Long files won't fit.",
+    ]),
+    ("open", r"\bopen[\s-]?(source|weights?)\b|\blicen[cs]e\b|\bdownload\s+(you|u|the\s+weights|your)\b"
+     r"|\b(your|the)\s+weights\b|\brun\s+(you|u)\s+(locally|myself|offline)\b", [
+        f"My weights are open under Apache-2.0: {WEIGHTS}. There's a GGUF build for llama.cpp too, "
+        f"and the training code is at {REPO}",
+        f"Apache-2.0, weights and code both. Weights: {WEIGHTS}. Code and every benchmark: {REPO}",
+    ]),
+    ("score", r"\b(benchmarks?|scores?|humaneval\+?|mbpp\+?)\b|\bhow\s+(good|smart|accurate)\s+(are\s+(you|u)|is\s+ophyx)\b", [
+        f"Pass@1: 43.9 on HumanEval+ and 47.4 on MBPP+. That's about half of what frontier models get on "
+        f"one well-described function. Every result: {REPO}",
+        f"43.9 on HumanEval+, ahead of Qwen3-0.6B at 36.6, and 47.4 on MBPP+. Details: {REPO}",
+    ]),
+    ("data", r"^(?!.*\b(hardware|gpus?|tpus?|kaggle)\b).*\btrained\s+on\b|\b(your|what)\s+(training\s+)?(data|dataset)\b|\bhow\s+many\s+tokens\b", [
+        "12 billion tokens of open code and text, then 2 billion more at a longer context, about 1.4 "
+        "billion tokens of instructions and tested problems, and finally reinforcement learning on 1,399 "
+        "problems where passing the tests was the only reward.",
+        "Open code and text first, 12 billion tokens of it. Then instructions, problems with tests and "
+        "bug-and-fix pairs, and a last round of reinforcement learning on 1,399 problems.",
+    ]),
+    ("hardware", r"\b(what|which)\s+(hardware|gpus?|tpus?)\b|\bfree\s+compute\b|\bhow\s+much\s+did\s+(you|it)\s+cost\b"
+     r"|\b(trained|train)\b.{0,20}\b(on\s+)?(kaggle|tpu|gpu)\b", [
+        "All on Kaggle's free quota: pretraining on a TPU v5e-8, about 31 hours, and reinforcement "
+        "learning on one T4 GPU.",
+        "Free compute only: a Kaggle TPU v5e-8 for pretraining and a single T4 for the "
+        "reinforcement learning.",
+    ]),
+    ("memory", r"\b(do|can)\s+(you|u)\s+remember\b|\byour\s+memory\b|\bearlier\s+messages?\b", [
+        "No, every message stands alone. Paste the code again if you want me to change it.",
+        "I don't keep anything between messages, so include everything I need in each one.",
+    ]),
+    ("running", r"\bwhere\s+(do|are)\s+(you|u)\s+(run|hosted|running)\b|\bwhat\s+(do|are)\s+(you|u)\s+run(ning)?\s+on\b", [
+        "Here I run on four CPU cores with llama.cpp. I shut down 90 seconds after the last question, "
+        "which is why the first answer of a visit takes a few seconds longer.",
+        "On four CPU cores, through llama.cpp. When nobody asks for 90 seconds I switch off, so the first "
+        "question wakes me up.",
+    ]),
+]
+_FACTS = [(kind, re.compile(pattern, re.IGNORECASE), answers) for kind, pattern, answers in _FACTS]
+
+
+# A fact answers only a question aimed at the model, never a task that happens to say "scores"
+_ABOUT_ME = re.compile(r"\b(you|your|yours|yourself|u|ur|ophyx)\b|\b(the|this)\s+model\b|\bis\s+this\b",
+                       re.IGNORECASE)
+
+
+def _facts(text: str) -> str | None:
+    """The short answers this prompt asks for, up to three, or None"""
+    if not _ABOUT_ME.search(text):
+        return None
+    picked = [random.choice(answers) for _, pattern, answers in _FACTS if pattern.search(text)][:3]
+    return "\n\n".join(picked) if picked else None
+
+
 def route(prompt: str) -> tuple[str, str] | None:
     """The fixed answer for a prompt that shouldn't reach the model, as (kind, text), or None to let
     the model answer. The order matters: harm first, then the small, short prompts. Everything else,
@@ -280,6 +379,11 @@ def route(prompt: str) -> tuple[str, str] | None:
     if short and not code:
         if _TAKEOVER.search(text) or _DAN.search(text):
             return "in_character", IN_CHARACTER
+        if _BROAD.search(text):
+            return "about", ABOUT
+        facts = _facts(text)
+        if facts:
+            return "fact", f"{facts}\n\n{random.choice(NEXT)}"
         if _TRAINING.search(text):
             return "training", TRAINING
         if _IDENTITY.search(text):
