@@ -44,6 +44,11 @@ GGUF_REPO = os.environ.get("OPHYX_GGUF", "abhash-chakraborty/ophyx-350m-v2-gguf"
 GGUF_FILE = os.environ.get("OPHYX_GGUF_FILE", "ophyx-350m-v2-f16.gguf")
 MODEL_DIR = "/model"
 CPU_CORES = 4
+# Modal bills the higher of the request and actual use, so a small request with a 4-core limit costs
+# little while the container waits for the next question and up to 4 cores while it answers
+CPU_REQUEST = float(os.environ.get("OPHYX_CPU_REQUEST", "0.125"))  # idle llama.cpp uses ~0 CPU
+MEMORY_MB = 2048
+MEMORY_REQUEST_MB = int(os.environ.get("OPHYX_MEMORY_REQUEST_MB", "1024"))  # f16 model: ~0.95 GiB
 SCALEDOWN_S = 90  # one cold start per visit; questions in a visit come 20-90 s apart
 MAX_PROMPT_TOKENS = 1536
 MAX_NEW_TOKENS = 1024
@@ -63,7 +68,8 @@ def download():
                           allow_patterns=["*.json", "*.safetensors", "*.txt", "*.model"])
 
 
-env = {"OPHYX_HW": HW, "OPHYX_MODEL": MODEL_REPO, "OPHYX_GGUF": GGUF_REPO, "OPHYX_GGUF_FILE": GGUF_FILE}
+env = {"OPHYX_HW": HW, "OPHYX_MODEL": MODEL_REPO, "OPHYX_GGUF": GGUF_REPO, "OPHYX_GGUF_FILE": GGUF_FILE,
+       "OPHYX_CPU_REQUEST": str(CPU_REQUEST), "OPHYX_MEMORY_REQUEST_MB": str(MEMORY_REQUEST_MB)}
 if HW == "cpu":
     image = (
         modal.Image.debian_slim(python_version="3.12")
@@ -78,7 +84,8 @@ else:
 image = image.env(env).run_function(download, secrets=[modal.Secret.from_name("ophyx-hf")])  # the container re-imports this file
 image = image.add_local_python_source("replies")  # serve/replies.py; added last, so editing it needs no rebuild
 app = modal.App(os.environ.get("OPHYX_APP", "ophyx-demo"), image=image)
-resources = dict(cpu=CPU_CORES, memory=2048) if HW == "cpu" else dict(gpu="T4")
+resources = (dict(cpu=(CPU_REQUEST, CPU_CORES), memory=(MEMORY_REQUEST_MB, MEMORY_MB)) if HW == "cpu"
+             else dict(gpu="T4"))
 
 
 @app.cls(**resources, scaledown_window=SCALEDOWN_S, max_containers=1, timeout=600)
