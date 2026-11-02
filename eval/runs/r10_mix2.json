@@ -1,0 +1,5 @@
+{"budget_s": 10800, "models": [
+  {"id": "/kaggle/input/**/mix-d30", "kind": "ours", "name": "ophyx-350m-mix-d30", "max_len": 4096,
+   "benches": ["humaneval", "mbpp", "manual", "realworld", "bcbf_instruct"]},
+  {"id": "/kaggle/input/**/mix-d40", "kind": "ours", "name": "ophyx-350m-mix-d40", "max_len": 4096,
+   "benches": ["humaneval", "mbpp", "manual", "realworld", "bcbf_instruct"]}]}

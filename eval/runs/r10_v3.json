@@ -1,0 +1,1 @@
+{"budget_s": 10800, "models": [{"id": "/kaggle/input/**/ophyx-v3-hf/v3", "kind": "ours", "name": "ophyx-350m-v3", "max_len": 4096, "benches": ["humaneval", "mbpp", "concept", "crux_o", "crux_i", "lcb", "bcb_complete", "bcb_instruct", "manual", "realworld", "mple_js", "mple_cpp", "mple_sh", "bcbf_complete", "bcbf_instruct", "ds1000"]}]}

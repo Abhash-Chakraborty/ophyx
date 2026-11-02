@@ -1,0 +1,7 @@
+{"budget_s": 10800, "models": [
+  {"id": "/kaggle/input/**/mix-b50", "kind": "ours", "name": "ophyx-350m-mix-b50", "max_len": 4096,
+   "benches": ["humaneval", "mbpp", "manual", "realworld", "bcbf_instruct"]},
+  {"id": "/kaggle/input/**/mix-b70", "kind": "ours", "name": "ophyx-350m-mix-b70", "max_len": 4096,
+   "benches": ["humaneval", "mbpp", "manual", "realworld", "bcbf_instruct"]},
+  {"id": "/kaggle/input/**/mix-a50", "kind": "ours", "name": "ophyx-350m-mix-a50", "max_len": 4096,
+   "benches": ["humaneval", "mbpp", "manual", "realworld", "bcbf_instruct"]}]}

@@ -1,0 +1,9 @@
+{"budget_s": 10800, "models": [
+  {"id": "/kaggle/input/**/dpo/a/final", "kind": "ours", "name": "ophyx-350m-dpo-a", "max_len": 4096,
+   "benches": ["humaneval", "mbpp", "manual", "realworld", "bcbf_instruct"]},
+  {"id": "/kaggle/input/**/dpo/b/final", "kind": "ours", "name": "ophyx-350m-dpo-b", "max_len": 4096,
+   "benches": ["humaneval", "mbpp", "manual", "realworld", "bcbf_instruct"]},
+  {"id": "/kaggle/input/**/mix-d50", "kind": "ours", "name": "ophyx-350m-mix-d50", "max_len": 4096,
+   "benches": ["humaneval", "mbpp", "manual", "realworld", "bcbf_instruct"]},
+  {"id": "/kaggle/input/**/mix-d70", "kind": "ours", "name": "ophyx-350m-mix-d70", "max_len": 4096,
+   "benches": ["humaneval", "mbpp", "manual", "realworld", "bcbf_instruct"]}]}

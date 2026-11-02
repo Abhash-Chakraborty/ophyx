@@ -52,9 +52,9 @@ import time
 import modal
 
 HW = os.environ.get("OPHYX_HW", "cpu")
-MODEL_REPO = os.environ.get("OPHYX_MODEL", "abhash-chakraborty/ophyx-350m-v2")
-GGUF_REPO = os.environ.get("OPHYX_GGUF", "abhash-chakraborty/ophyx-350m-v2-gguf")
-GGUF_FILE = os.environ.get("OPHYX_GGUF_FILE", "ophyx-350m-v2-f16.gguf")
+MODEL_REPO = os.environ.get("OPHYX_MODEL", "abhash-chakraborty/ophyx-350m-v3")
+GGUF_REPO = os.environ.get("OPHYX_GGUF", "abhash-chakraborty/ophyx-350m-v3-gguf")
+GGUF_FILE = os.environ.get("OPHYX_GGUF_FILE", "ophyx-350m-v3-f16.gguf")
 MODEL_DIR = "/model"
 CPU_CORES = 4
 # Modal bills the higher of the request and actual use, so a small request with a 4-core limit costs

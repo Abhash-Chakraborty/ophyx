@@ -29,8 +29,8 @@ def test_specific_questions_get_a_short_answer_to_that_question():
     for prompt, needle in [
         ("What's your name?", "Ophyx"),
         ("what's the name of the model?", "Ophyx"),
-        ("which model is this", "Ophyx 350M v2"),
-        ("are you chatgpt?", "Ophyx 350M v2"),
+        ("which model is this", "Ophyx 350M v3"),
+        ("are you chatgpt?", "Ophyx 350M v3"),
         ("tell me about your creator", "Abhash Chakraborty"),
         ("who made you", "Abhash Chakraborty"),
         ("who is your developer", "Abhash Chakraborty"),
@@ -40,10 +40,10 @@ def test_specific_questions_get_a_short_answer_to_that_question():
         ("what is your context length", "4,096"),
         ("are you open source?", "Apache-2.0"),
         ("what's your license?", "Apache-2.0"),
-        ("how good are you?", "43.9"),
+        ("how good are you?", "44.5"),
         ("what were you trained on?", "12 billion"),
         ("what hardware were you trained on", "T4"),
-        ("do you remember what I said?", "message"),
+        ("do you remember what I said?", "turns"),
         ("where do you run?", "CPU cores"),
     ]:
         for _ in range(6):  # every wording carries the fact
