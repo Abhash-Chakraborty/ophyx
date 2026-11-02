@@ -15,8 +15,8 @@ ops = ["kaggle==2.2.4", "huggingface_hub>=0.30"]
 dev = ["pytest>=8", "ruff>=0.6", "numpy", "safetensors"]
 
 [project.urls]
-Model = "https://huggingface.co/abhash-chakraborty/ophyx-350m-v2"
-GGUF = "https://huggingface.co/abhash-chakraborty/ophyx-350m-v2-gguf"
+Model = "https://huggingface.co/abhash-chakraborty/ophyx-350m-v3"
+GGUF = "https://huggingface.co/abhash-chakraborty/ophyx-350m-v3-gguf"
 
 [tool.ruff]
 line-length = 120

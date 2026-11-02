@@ -40,6 +40,7 @@ All numbers are pass@1 in percent.
 | ophyx-350m-grpo-p3-lr1e6 | ours | 0.35B | 35.4 | 32.9 | 57.1 | 48.1 | 1.0 | 3.1 | 2.3 | 2.0 | 24.6 | 19.5 | 19.0 |
 | ophyx-350m-grpo-p3-lr3e6 | ours | 0.35B | 39.0 | 36.0 | 57.9 | 48.1 | 0.7 | 2.3 | 3.1 | 1.2 | 24.2 | 19.4 | 21.4 |
 | ophyx-350m-grpo-p4-lr2e6 | ours | 0.35B | 45.1 | 43.9 | 58.2 | 47.4 | 1.3 | 3.8 | 4.6 | 2.0 | 20.6 | 21.9 | 21.4 |
+| ophyx-350m-v3 | ours | 0.35B | 45.1 | 44.5 | 59.0 | 48.7 | 1.0 | 3.8 | 5.3 | 1.2 | 20.4 | 21.0 | 28.6 |
 | ophyx-350m-sft3 | ours | 0.35B | 45.1 | 43.9 | 56.1 | 46.8 | 1.7 | 2.3 | 3.8 | 2.6 | 20.1 | 21.5 | 21.4 |
 | ophyx-350m-grpo-p4-lr4e6 | ours | 0.35B | 43.3 | 42.1 | 58.7 | 47.6 | 1.3 | 3.8 | 2.3 | 1.8 | 21.2 | 21.5 | 21.4 |
 | ophyx-350m-sft | ours | 0.35B | 37.2 | 35.4 | 57.4 | 48.1 | 1.7 | 2.3 | 3.8 | 1.5 | 24.9 | 19.5 | 23.8 |
@@ -128,6 +129,13 @@ All numbers are pass@1 in percent.
   and MBPP+ (46.8), BigCodeBench-Hard (2.3 and 3.8), CRUX-I (20.1) and DS-1000 (2.6) dropped a little.
   It was set to ship only if nothing dropped, so v2 stays the release.
 
+- ophyx-350m-v3 is the release after v2. Round three fine-tuned v2 on 4,498 everyday requests,
+  follow-ups and fixes with documented answers, ran DPO on 2,497 pass/fail pairs of its own answers,
+  then averaged 30% of that model with 70% of v2. Alone, the DPO model passed 160 of 239 held-out chat
+  requests (v2 132) but fell to 42.1 on HumanEval+ and 8 hands-on tasks. The 30% average keeps most
+  of v2's coding: HumanEval+ 44.5, MBPP+ 48.7, 12 hands-on tasks, and passes 140 chat requests.
+  LiveCodeBench (1.2, three problems fewer), CRUX-O (21.0) and BigCodeBench (20.5) are slightly lower.
+
 - The 7B and 8B models show how far the size class is from the next one up. On HumanEval+,
   ophyx-350m-v2 (the table's ophyx-350m-grpo-p4-lr2e6, 43.9) is ahead of three of the four 7B base
   models: deepseek-coder-6.7b-base 38.4, CodeLlama-7b-Python 34.1 and starcoder2-7b 31.1.
@@ -168,6 +176,7 @@ scoring as above.
 | Model | Kind | MultiPL-E JS | MultiPL-E C++ | MultiPL-E Bash | BCB complete | BCB instruct | DS-1000 |
 |---|---|---|---|---|---|---|---|
 | ophyx-350m-v2 | ours | 0.0 | 0.0 | 0.0 | 18.6 | 21.0 | 3.4 |
+| ophyx-350m-v3 | ours | 0.0 | 0.0 | 0.0 | 17.9 | 20.5 | 3.3 |
 | ophyx-350m-sft3 | ours | 0.0 | 0.0 | 0.0 | 18.3 | 20.0 | 2.6 |
 | SmolLM2-360M-Instruct | instruct | 13.7 | 6.2 | 0.0 | 5.1 | 3.1 | 1.4 |
 | Qwen2.5-Coder-0.5B | base | 28.6 | 24.8 | 7.0 | 16.2 |  | 8.8 |

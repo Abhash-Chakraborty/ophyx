@@ -3,13 +3,13 @@
 # Ophyx
 
 <p align="center">
-  <a href="https://huggingface.co/abhash-chakraborty/ophyx-350m-v2"><picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/Hugging%20Face-ophyx--350m--v2-ffd21e.svg?logo=huggingface&variant=secondary&mode=dark" />
-    <img alt="Model on Hugging Face" src="https://shieldcn.dev/badge/Hugging%20Face-ophyx--350m--v2-ffd21e.svg?logo=huggingface&variant=secondary&mode=light" />
+  <a href="https://huggingface.co/abhash-chakraborty/ophyx-350m-v3"><picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/Hugging%20Face-ophyx--350m--v3-ffd21e.svg?logo=huggingface&variant=secondary&mode=dark" />
+    <img alt="Model on Hugging Face" src="https://shieldcn.dev/badge/Hugging%20Face-ophyx--350m--v3-ffd21e.svg?logo=huggingface&variant=secondary&mode=light" />
   </picture></a>
   <a href="eval/R1_RESULTS.md"><picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/HumanEval%2B-43.9-1e6b4f.svg?variant=secondary&mode=dark" />
-    <img alt="HumanEval+ 43.9" src="https://shieldcn.dev/badge/HumanEval%2B-43.9-1e6b4f.svg?variant=secondary&mode=light" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/HumanEval%2B-44.5-1e6b4f.svg?variant=secondary&mode=dark" />
+    <img alt="HumanEval+ 44.5" src="https://shieldcn.dev/badge/HumanEval%2B-44.5-1e6b4f.svg?variant=secondary&mode=light" />
   </picture></a>
   <a href="https://github.com/Abhash-Chakraborty/ophyx/actions/workflows/ci.yml"><picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/ci/Abhash-Chakraborty/ophyx.svg?workflow=ci.yml&variant=secondary&mode=dark" />
@@ -22,9 +22,10 @@
 </p>
 
 A 350M-parameter Python code model, trained from scratch on Kaggle's free TPU, GPU and CPU quota.
-The finished model, [ophyx-350m-v2](https://huggingface.co/abhash-chakraborty/ophyx-350m-v2),
-scores 43.9 on HumanEval+. This repo holds everything that made it: the data jobs, a JAX trainer,
-fine-tuning, reinforcement learning and the benchmark harness.
+The current model, [ophyx-350m-v3](https://huggingface.co/abhash-chakraborty/ophyx-350m-v3),
+scores 44.5 on HumanEval+, writes docstrings and follows up on its own earlier answers. This repo holds
+everything that made it: the data jobs, a JAX trainer, fine-tuning, reinforcement learning, DPO and
+the benchmark harness.
 
 ![Ophyx 350M v2 against small chat models on HumanEval+ and MBPP+](docs/figures/results-anim.webp)
 
@@ -33,19 +34,19 @@ fine-tuning, reinforcement learning and the benchmark harness.
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-repo = "abhash-chakraborty/ophyx-350m-v2"
+repo = "abhash-chakraborty/ophyx-350m-v3"
 tok = AutoTokenizer.from_pretrained(repo)
 model = AutoModelForCausalLM.from_pretrained(repo).eval()
 
 prompt = "Write a function `is_palindrome(s)` that ignores case and non-letters."
 ids = tok(f"<|user|>\n{prompt}\n<|python|>\n", return_tensors="pt", add_special_tokens=False).input_ids
 end = tok.convert_tokens_to_ids("<|end|>")
-out = model.generate(ids, max_new_tokens=256, do_sample=False, eos_token_id=end, pad_token_id=end)
+out = model.generate(ids, max_new_tokens=512, do_sample=False, eos_token_id=end, pad_token_id=end)
 print(tok.decode(out[0, ids.shape[1]:], skip_special_tokens=True))
 ```
 
 GGUF files for llama.cpp (f32, f16 and q8_0) are in
-[ophyx-350m-v2-gguf](https://huggingface.co/abhash-chakraborty/ophyx-350m-v2-gguf).
+[ophyx-350m-v3-gguf](https://huggingface.co/abhash-chakraborty/ophyx-350m-v3-gguf).
 
 ## How it was built
 
@@ -58,13 +59,18 @@ GGUF files for llama.cpp (f32, f16 and q8_0) are in
 | SFT v1 | 600M tokens at 2,048: one Python module per answer | TPU v5e-8 | 35.4 |
 | SFT v2 | 800M tokens at 4,096, adding problem-bank answers and bug-and-fix rows | TPU v5e-8, 4.7 h | 37.8 |
 | Averaging | 70% SFT v2 plus 30% SFT v1, weight by weight | Kaggle CPU | 41.5 |
-| GRPO | One pass over 1,399 problems; the only reward is passing their tests | one T4, 5.4 h | **43.9** |
-| SFT v3 (not shipped) | 64M tokens on contest problems with checked answers, from v2 | TPU v5e-8, 25 min | 43.9 |
+| GRPO (v2) | One pass over 1,399 problems; the only reward is passing their tests | one T4, 5.4 h | 43.9 |
+| Contest SFT (not shipped) | 64M tokens on contest problems with checked answers, from v2 | TPU v5e-8, 25 min | 43.9 |
+| Chat SFT | 4,498 everyday requests, follow-ups and fixes with documented answers, from v2 | one T4 | 38.4 |
+| DPO | 2,497 pairs: a passing, documented answer against a failing one | one T4, 48 min | 42.1 |
+| Averaging (v3) | 30% of the DPO model plus 70% v2 | Kaggle CPU | **44.5** |
 
 The 4,096-token run lost ground on short tasks: it rambled, and nearly three times as many MBPP answers
 hit the length limit (51 against 19). Averaging the long-context fine-tune with the short one won that back, and RL took it
 further. A DPO pilot, an earlier GRPO round and a fine-tune on contest problems stayed within noise, so they
-didn't ship. The
+didn't ship. The chat round taught the model everyday requests, follow-ups and docstrings, but cost
+benchmark points on its own. Averaging 30% of it back into v2 kept both: 140
+of 239 held-out chat requests pass against v2's 132, and nothing below drops by more than noise. The
 details of every run are in [eval/R1_RESULTS.md](eval/R1_RESULTS.md).
 
 The architecture is Qwen3's layout, so standard tools load it: 28 layers, hidden size 1,024, 16
@@ -79,7 +85,8 @@ answer ran in the same offline sandbox.
 
 | Model | Params | HumanEval+ | MBPP+ | BCB-Hard instruct | LiveCodeBench | CRUX-O | Hands-on (of 42) |
 |---|---|---|---|---|---|---|---|
-| **Ophyx 350M v2** | 0.35B | **43.9** | 47.4 | 4.6 | 2.0 | 21.9 | 9 |
+| **Ophyx 350M v3** | 0.35B | **44.5** | 48.7 | 5.3 | 1.2 | 21.0 | 12 |
+| Ophyx 350M v2 | 0.35B | 43.9 | 47.4 | 4.6 | 2.0 | 21.9 | 9 |
 | Ophyx 350M v1 | 0.35B | 35.4 | 48.1 | 3.8 | 1.5 | 19.5 | 10 |
 | SmolLM2-360M-Instruct | 0.36B | 15.9 | 27.5 | 0.0 | 0.9 | 20.4 | 4 |
 | Qwen2.5-Coder-0.5B-Instruct | 0.49B | 54.9 | 42.1 | 2.3 | 0.6 | 25.1 | 5 |
@@ -92,7 +99,8 @@ Python, and library-heavy tasks are hard at this size:
 
 | Model | MultiPL-E JS | MultiPL-E C++ | MultiPL-E Bash | BigCodeBench instruct (1,140) | DS-1000 |
 |---|---|---|---|---|---|
-| **Ophyx 350M v2** | 0.0 | 0.0 | 0.0 | 21.0 | 3.4 |
+| **Ophyx 350M v3** | 0.0 | 0.0 | 0.0 | 20.5 | 3.3 |
+| Ophyx 350M v2 | 0.0 | 0.0 | 0.0 | 21.0 | 3.4 |
 | Qwen2.5-Coder-0.5B-Instruct | 52.2 | 45.3 | 25.3 | 11.3 | 6.6 |
 | Qwen3-0.6B | 30.4 | 21.1 | 5.1 | 10.1 | 5.3 |
 | deepseek-coder-1.3b-instruct | 60.2 | 50.3 | 16.5 | 22.3 | 27.2 |
