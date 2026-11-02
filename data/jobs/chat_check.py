@@ -50,9 +50,11 @@ def clog(*a):
 
 def contains(out, want):
     m = _ANSI.match(want)
-    if m:  # \x1b[31m also matches \x1b[1;31m or \x1b[0;31;40m
+    if m:  # \x1b[31m also matches \x1b[1;31m, \x1b[0;31;40m or bright red, \x1b[91m
         codes = [c for c in m.group(1).split(";") if c not in ("0", "1")]
-        return all(_re.search(rf"\x1b\[(?:[0-9]+;)*{c}(?:;[0-9]+)*m", out) for c in codes)
+        alt = {c: f"(?:{c}|{int(c) + 60})" if c.isdigit() and (30 <= int(c) <= 37 or 40 <= int(c) <= 47) else c
+               for c in codes}
+        return all(_re.search(rf"\x1b\[(?:[0-9]+;)*{alt[c]}(?:;[0-9]+)*m", out) for c in codes)
     if want in out or " ".join(want.split()) in " ".join(out.split()):
         return True
     if _NUM.fullmatch(want.strip()):

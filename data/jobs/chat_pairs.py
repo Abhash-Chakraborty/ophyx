@@ -1,12 +1,16 @@
 """DPO pairs from the SFT model's own answers to the chat prompts. Runs anywhere, light.
 
     python data/jobs/chat_pairs.py <chat-check output dir> <chat_sft.jsonl> <out.jsonl> [--model sft]
+        [--teacher_checked <checked.jsonl of the teacher data>]
 
 Inputs: samples-<model>.jsonl (eval/chat_gen.py on chat_prompts.jsonl: greedy plus samples) and
 checked.jsonl (data/jobs/chat_check.py) from the same directory, plus the SFT rows for teacher answers.
 
 For each prompt with a real check (program or asserts):
-  chosen    a sample that passed and has the house-style docstrings; if none did, the teacher's answer
+  chosen    a sample that passed and has the house-style docstrings; if none did, the teacher's answer,
+            but only one that passed its check (with --teacher_checked: the SFT set also keeps teacher
+            programs that ran cleanly and missed an expected string, and those can't be preferred
+            over a sample that missed the same string)
   rejected  a sample that failed (wrong output, crash, timeout), or one without docstrings
 Up to two pairs per prompt, each with a different rejected answer. Prompts the model always gets
 right teach nothing and are skipped.
@@ -45,6 +49,7 @@ def main():
     ap.add_argument("out")
     ap.add_argument("--model", default="sft")
     ap.add_argument("--per_prompt", type=int, default=2)
+    ap.add_argument("--teacher_checked")
     a = ap.parse_args()
     name = f"samples-{a.model}"
     res = {}
@@ -53,8 +58,13 @@ def main():
         if r["file"] == name:
             res[(r["id"], r["i"])] = r
     teacher = {r["id"]: r["turns"][-1][1] for r in map(json.loads, open(a.sft))}
+    if a.teacher_checked:
+        passed = {r["id"] for r in map(json.loads, open(a.teacher_checked))
+                  if r["i"] == 0 and r["file"] in ("answers", "followups", "complaints") and r["ok"]}
+        teacher = {i: t for i, t in teacher.items() if i in passed}
     rng = random.Random(0)
-    pairs, stats = [], {"prompts": 0, "all_pass": 0, "no_signal": 0, "teacher_chosen": 0, "sample_chosen": 0}
+    pairs, stats = [], {"prompts": 0, "all_pass": 0, "no_signal": 0, "teacher_chosen": 0,
+                         "sample_chosen": 0}
     for line in open(os.path.join(a.src, f"{name}.jsonl")):
         r = json.loads(line)
         if (r.get("check") or {}).get("kind") not in ("program", "asserts"):

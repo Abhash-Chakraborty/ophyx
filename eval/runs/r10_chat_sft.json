@@ -1,0 +1,5 @@
+{"budget_s": 10800, "models": [
+  {"id": "/kaggle/input/**/sft/a/final", "kind": "ours", "name": "ophyx-350m-chat-a", "max_len": 4096,
+   "benches": ["humaneval", "mbpp", "manual", "realworld", "concept", "bcbf_instruct"]},
+  {"id": "/kaggle/input/**/sft/b/final", "kind": "ours", "name": "ophyx-350m-chat-b", "max_len": 4096,
+   "benches": ["humaneval", "mbpp", "manual", "realworld", "concept", "bcbf_instruct"]}]}
